@@ -1,0 +1,17 @@
+.git
+.venv
+.pytest_cache
+.mypy_cache
+.ruff_cache
+.tox
+.idea
+.codex
+.agents
+.docker-cli
+__pycache__
+*.py[cod]
+node_modules
+build
+dist
+skills/.skill_runtime
+dialogue.txt

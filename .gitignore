@@ -1,0 +1,9 @@
+.codex/
+.agents/
+.docker-cli/
+.idea/
+.venv/
+__pycache__/
+*.py[cod]
+skills/.skill_runtime/
+dialogue.txt

@@ -1,0 +1,83 @@
+FROM python:3.12-slim
+
+ENV PIP_DISABLE_PIP_VERSION_CHECK=1 \
+    PIP_INDEX_URL=https://mirrors.aliyun.com/pypi/simple/ \
+    PIP_TRUSTED_HOST=mirrors.aliyun.com \
+    PYTHONDONTWRITEBYTECODE=1 \
+    PYTHONUNBUFFERED=1
+
+ARG APT_MIRROR=http://mirrors.aliyun.com/debian
+ARG APT_SECURITY_MIRROR=http://mirrors.aliyun.com/debian-security
+
+RUN set -eux; \
+    . /etc/os-release; \
+    rm -f /etc/apt/sources.list.d/debian.sources; \
+    printf 'deb %s %s main contrib non-free non-free-firmware\n' "$APT_MIRROR" "$VERSION_CODENAME" > /etc/apt/sources.list; \
+    printf 'deb %s %s-updates main contrib non-free non-free-firmware\n' "$APT_MIRROR" "$VERSION_CODENAME" >> /etc/apt/sources.list; \
+    printf 'deb %s %s-security main contrib non-free non-free-firmware\n' "$APT_SECURITY_MIRROR" "$VERSION_CODENAME" >> /etc/apt/sources.list
+
+
+###########################################
+# 基础Linux工具
+###########################################
+
+RUN apt-get update \
+    -o Acquire::Retries=3 \
+    -o Acquire::http::Timeout=30 \
+    -o Acquire::https::Timeout=30 \
+    && apt-get install -y --no-install-recommends \
+    bash \
+    bzip2 \
+    coreutils \
+    ca-certificates \
+#    curl \
+    dash \
+    debianutils \
+    file \
+    findutils \
+    gawk \
+    git \
+    grep \
+    gzip \
+    less \
+    openssh-client \
+    procps \
+    psmisc \
+    ripgrep \
+    sed \
+    tar \
+    time \
+    tree \
+    unzip \
+#    wget \
+    xz-utils \
+    zip \
+    poppler-utils \
+    \
+   ############################################以下是增加部分，不需要可以删除
+    gcc \
+    g++ \
+    make \
+    cmake \
+    clang \
+    clang-format \
+    clang-tidy \
+    cppcheck \
+    lcov \
+    gcovr \
+    valgrind \
+    openjdk-21-jdk \
+    maven \
+    golang \
+    nodejs \
+    npm \
+    pkg-config \
+    libc6-dev \
+   \
+   #############################################以上是增加部分，不需要可以删除 
+    && rm -rf /var/lib/apt/lists/*
+
+WORKDIR /workspace
+
+COPY requirements-sandbox.txt /tmp/requirements-sandbox.txt
+RUN pip install --no-cache-dir -r /tmp/requirements-sandbox.txt

@@ -1,0 +1,21 @@
+openai==2.43.0
+pydantic==2.13.4
+rich==15.0.0
+typer==0.25.1
+httpx==0.28.1
+requests==2.34.2
+python-dotenv==1.2.2
+PyYAML==6.0.3
+orjson==3.11.9
+###########################################
+# Python Testing
+###########################################
+pytest
+pytest-cov
+ruff
+mypy
+black
+###########################################
+# Document Processing
+###########################################
+pypdf
