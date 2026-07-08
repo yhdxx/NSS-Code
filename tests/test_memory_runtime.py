@@ -13,12 +13,15 @@ PROJECT_ROOT = Path(__file__).resolve().parents[1]
 if str(PROJECT_ROOT) not in sys.path:
     sys.path.insert(0, str(PROJECT_ROOT))
 
-openai_stub = types.ModuleType("openai")
-openai_stub.AsyncOpenAI = object
-openai_stub.APIConnectionError = Exception
-openai_stub.APIError = Exception
-openai_stub.APITimeoutError = Exception
-sys.modules.setdefault("openai", openai_stub)
+try:
+    import openai  # noqa: F401
+except ModuleNotFoundError:
+    openai_stub = types.ModuleType("openai")
+    openai_stub.AsyncOpenAI = object
+    openai_stub.APIConnectionError = Exception
+    openai_stub.APIError = Exception
+    openai_stub.APITimeoutError = Exception
+    sys.modules["openai"] = openai_stub
 
 import client as agent_client
 from config import CONFIG
@@ -44,6 +47,7 @@ from tools.memory_lookup import (
     SearchSessionHistory,
     SearchSessionHistoryParams,
 )
+from tools.memory_lookup import GetRecentConversationTurns
 
 
 class FileStateCacheStub:
@@ -90,12 +94,34 @@ def test_workspace_notice_is_temporary_system_message():
 
     rendered = agent_client.with_workspace_change_notice(messages, tracker)
 
-    assert rendered[:-1] == messages
-    assert rendered[-1]["role"] == "system"
-    assert "环境通知" in rendered[-1]["content"]
-    assert "app.py" in rendered[-1]["content"]
-    assert "另有 2 个文件未列出" in rendered[-1]["content"]
+    assert rendered[0] == messages[0]
+    assert rendered[1]["role"] == "system"
+    assert rendered[1]["content"] == (
+        "Historical tool outputs may have been virtualized. "
+        "Recover additional context only if required for correctness."
+    )
+    assert rendered[2]["role"] == "system"
+    assert "环境通知" in rendered[2]["content"]
+    assert "app.py" in rendered[2]["content"]
+    assert "另有 2 个文件未列出" in rendered[2]["content"]
+    assert rendered[3:] == messages[1:]
     assert messages == [{"role": "system", "content": "fixed"}, {"role": "user", "content": "work"}]
+
+
+def test_temporary_system_message_is_stable_and_has_no_dynamic_counts():
+    rendered = agent_client.build_turn_temporary_system_messages(None)
+
+    assert rendered == [
+        {
+            "role": "system",
+            "content": (
+                "Historical tool outputs may have been virtualized. "
+                "Recover additional context only if required for correctness."
+            ),
+        }
+    ]
+    assert "count" not in rendered[0]["content"].lower()
+    assert "数量" not in rendered[0]["content"]
 
 
 def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch):
@@ -137,14 +163,114 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
         assert build_calls == 1
         assert len(tools_seen) == 2
         assert tools_seen[0] is tools_seen[1]
-        assert messages_seen[0][-1]["role"] == "system"
-        assert "changed.py" in messages_seen[0][-1]["content"]
+        assert messages_seen[0][1]["content"] == (
+            "Historical tool outputs may have been virtualized. "
+            "Recover additional context only if required for correctness."
+        )
+        assert messages_seen[0][2]["role"] == "system"
+        assert "changed.py" in messages_seen[0][2]["content"]
         assert messages_seen[1][-1]["role"] == "tool"
+        assert messages_seen[1][1]["content"] == messages_seen[0][1]["content"]
+        assert "changed.py" in messages_seen[1][2]["content"]
         assert not any(
-            message.get("role") == "system" and "环境通知" in message.get("content", "")
+            message.get("role") == "system"
+            and (
+                "环境通知" in message.get("content", "")
+                or "Historical tool outputs may have been virtualized" in message.get("content", "")
+            )
             for message in updated
         )
         assert updated == history
+
+    asyncio.run(scenario())
+
+
+def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypatch):
+    async def scenario():
+        seen_messages = []
+
+        async def fake_stream_one_round(_client, _model, messages, tools):
+            seen_messages.append(copy.deepcopy(messages))
+            return "done", []
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+
+        _text, updated = await agent_client.ask_deepseek(
+            client=object(),
+            prompt="hello",
+            registry=object(),
+            tools=[],
+            messages=None,
+        )
+
+        system_prompt = seen_messages[0][0]["content"]
+        assert "Work Context Sufficiency Protocol" in system_prompt
+        assert "Before producing the final answer, evaluate whether the current Working Context is sufficient" in system_prompt
+        assert "Evidence First Rule" in system_prompt
+        assert "never infer facts that could be verified by available historical context" in system_prompt
+        assert "Do not follow a fixed recovery sequence" in system_prompt
+        assert "GetRecentConversationTurns\n" not in system_prompt
+        assert "SearchSessionHistory\n" not in system_prompt
+        assert updated[0]["content"] == system_prompt
+
+    asyncio.run(scenario())
+
+
+def test_recovery_tool_descriptions_emphasize_evidence_without_fixed_order():
+    descriptions = {
+        "GetStoredToolOutput": GetStoredToolOutput.description,
+        "RecoverContext": RecoverContext.description,
+        "SearchRecoverableContext": SearchRecoverableContext.description,
+        "SearchSessionHistory": SearchSessionHistory.description,
+        "GetRecentConversationTurns": GetRecentConversationTurns.description,
+    }
+
+    assert "Do not assume unavailable information" in descriptions["GetStoredToolOutput"]
+    assert "recover evidence first" in descriptions["RecoverContext"]
+    assert "you do not yet know the relevant context_id" in descriptions["SearchRecoverableContext"]
+    assert "locate prior user requests" in descriptions["SearchSessionHistory"]
+    assert "recent task flow" in descriptions["GetRecentConversationTurns"]
+    combined = "\n".join(descriptions.values())
+    assert "GetRecentConversationTurns -> SearchSessionHistory" not in combined
+    assert "SearchSessionHistory -> SearchRecoverableContext" not in combined
+
+
+def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
+    async def scenario():
+        tool_calls_seen = []
+
+        async def fake_stream_one_round(_client, _model, messages, tools):
+            if len(tool_calls_seen) == 0:
+                return "", [agent_client.PendingToolCall("call_1", "SearchRecoverableContext", '{"query":"build failure"}')]
+            if len(tool_calls_seen) == 1:
+                assert messages[-1]["role"] == "tool"
+                assert "ctx_1" in messages[-1]["content"]
+                return "", [agent_client.PendingToolCall("call_2", "RecoverContext", '{"context_id":"ctx_1"}')]
+            assert messages[-1]["role"] == "tool"
+            assert "exact recovered evidence" in messages[-1]["content"]
+            return "final answer from evidence", []
+
+        async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
+            tool_calls_seen.append(tool_name)
+            if tool_name == "SearchRecoverableContext":
+                return '{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}'
+            if tool_name == "RecoverContext":
+                return "exact recovered evidence"
+            return "unexpected"
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+        monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute_local_tool)
+
+        text, _updated = await agent_client.ask_deepseek(
+            client=object(),
+            prompt="why did the build fail?",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+        )
+
+        assert tool_calls_seen == ["SearchRecoverableContext", "RecoverContext"]
+        assert text == "final answer from evidence"
 
     asyncio.run(scenario())
 
@@ -308,6 +434,47 @@ def test_save_messages_now_is_not_overwritten_by_stale_async_save(tmp_path):
         assert restored.messages == final_messages
 
     asyncio.run(scenario())
+
+
+def test_fork_session_copies_messages_and_switches_current_session(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    source_session_id = runtime.start_session("test")
+    messages = [{"role": "user", "content": "fork me"}, {"role": "assistant", "content": "done"}]
+    runtime.save_messages_now(source_session_id, messages)
+
+    fork_session_id = runtime.fork_session(source_session_id, model="fork-model")
+
+    assert fork_session_id is not None
+    assert fork_session_id != source_session_id
+    assert runtime.get_current_session_id() == fork_session_id
+    source_state = runtime.store.load_session(source_session_id)
+    fork_state = runtime.store.load_session(fork_session_id)
+    assert source_state is not None
+    assert fork_state is not None
+    assert source_state.messages == messages
+    assert fork_state.messages == messages
+    assert runtime.store.list_sessions(limit=10)[0].session_id == fork_session_id
+
+
+def test_fork_session_uses_override_messages_and_copies_snapshots(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    source_session_id = runtime.start_session("test")
+    runtime.save_messages_now(source_session_id, [{"role": "user", "content": "stored"}])
+    runtime.store.save_lrfu_snapshot(session_id=source_session_id, lrfu={"skills": {"python": {"uses": 2}}})
+    runtime.store.save_file_state_snapshot(
+        session_id=source_session_id,
+        file_state={"files": [{"path": "a.py", "content": "old", "mtime_ns": 1}]},
+    )
+    override_messages = [{"role": "user", "content": "live current"}]
+
+    fork_session_id = runtime.fork_session(source_session_id, messages=override_messages)
+
+    assert fork_session_id is not None
+    fork_state = runtime.store.load_session(fork_session_id)
+    assert fork_state is not None
+    assert fork_state.messages == override_messages
+    assert fork_state.latest_lrfu == {"skills": {"python": {"uses": 2}}}
+    assert fork_state.latest_file_state == {"files": [{"path": "a.py", "content": "old", "mtime_ns": 1}]}
 
 
 def test_save_current_session_before_switch_uses_existing_session_id(tmp_path):

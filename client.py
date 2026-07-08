@@ -354,6 +354,18 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -查询、列举或确认当前可用 SKILL/技能/能力时，必须使用 Get_all_tool、search_tool 或 Get_tool_by_name；
                      不要用 Bash、Glob、ReadFile 直接查看 skills 目录、SQLite 数据库或 .skill_runtime
 
+                    ***Work Context Sufficiency Protocol***
+                    Before producing the final answer, evaluate whether the current Working Context is sufficient to answer correctly.
+                    Only recover additional context when unavailable historical information may influence correctness. Do not perform recovery as a formality for simple questions, general reasoning, translation, summarization, or answers that are already fully supported by the visible context.
+                    Evidence First Rule: never infer facts that could be verified by available historical context. If historical tool outputs, previously read file contents, command outputs, test results, prior decisions, constraints, or virtualized context may affect the answer, recover the relevant evidence before answering.
+                    Use the most appropriate recovery tool according to the current task:
+                    -Use RecoverContext when a relevant context_id is already visible or known.
+                    -Use SearchRecoverableContext when you need to locate historical tool outputs or virtualized context by topic, file, command, error, keyword, or decision.
+                    -Use SearchSessionHistory when you need to search historical conversation turns.
+                    -Use GetRecentConversationTurns when you need to understand the recent conversation structure before deciding what evidence matters.
+                    Do not follow a fixed recovery sequence. Choose only the recovery tool that best matches the missing evidence.
+                    After each recovery, re-evaluate whether the current Working Context is now sufficient. If it is still insufficient and more relevant evidence is available, continue recovering. Only produce the final answer when sufficient evidence has been collected, or when the needed evidence is unavailable and that limitation is explicitly stated.
+
                     ***Git安全协议***
                     Git 安全协议：
                     -绝不修改 git config
@@ -408,26 +420,27 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
     temporary_system_messages = build_turn_temporary_system_messages(workspace_tracker)
-    round_messages = [*messages, *temporary_system_messages]
-    persist_context_snapshot = not temporary_system_messages
+    round_messages = list(messages)
     current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)  # 本用户轮内保持 tools schema 稳定。
     seen_tool_failures: set[tuple[str, str]] = set()
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
-        model_messages = round_messages
+        model_messages = with_turn_temporary_system_messages(round_messages, temporary_system_messages)
         if memory_runtime is not None and session_id:
             summary_text = ""
-            if should_generate_summary(memory_runtime, round_messages, current_tools, prompt):
-                summary_text = await summarize_engineering_state(client, MODEL, round_messages)
+            if should_generate_summary(memory_runtime, model_messages, current_tools, prompt):
+                summary_text = await summarize_engineering_state(client, MODEL, model_messages)
             model_messages = memory_runtime.prepare_messages_for_model(
                 session_id=session_id,
                 messages=round_messages,
                 tools=current_tools,
                 current_prompt=prompt,
                 summary_text=summary_text,
-                persist_snapshot=persist_context_snapshot,
+                persist_snapshot=True,
                 current_turn_start=turn_start,
             )
+            if temporary_system_messages:
+                model_messages = with_turn_temporary_system_messages(model_messages, temporary_system_messages)
         assistant_text, tool_calls = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
         if assistant_text.startswith("Error: API ") and not tool_calls:
             del messages[turn_start:]
@@ -589,14 +602,33 @@ def truncate_tool_output(output: str) -> str:
 
 
 def build_turn_temporary_system_messages(workspace_tracker: Any | None) -> list[dict[str, Any]]:
+    messages = [
+        {
+            "role": "system",
+            "content": (
+                "Historical tool outputs may have been virtualized. "
+                "Recover additional context only if required for correctness."
+            ),
+        }
+    ]
     notice = workspace_change_notice_content(workspace_tracker)
-    if not notice:
-        return []
-    return [{"role": "system", "content": notice}]
+    if notice:
+        messages.append({"role": "system", "content": notice})
+    return messages
 
 
 def with_workspace_change_notice(messages: list[dict[str, Any]], workspace_tracker: Any | None) -> list[dict[str, Any]]:
-    return [*messages, *build_turn_temporary_system_messages(workspace_tracker)]
+    return with_turn_temporary_system_messages(messages, build_turn_temporary_system_messages(workspace_tracker))
+
+
+def with_turn_temporary_system_messages(
+    messages: list[dict[str, Any]],
+    temporary_system_messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    if not temporary_system_messages:
+        return list(messages)
+    insert_at = 1 if messages and messages[0].get("role") == "system" else 0
+    return [*messages[:insert_at], *temporary_system_messages, *messages[insert_at:]]
 
 
 def workspace_change_notice_content(workspace_tracker: Any | None) -> str:

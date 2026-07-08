@@ -216,6 +216,46 @@ class MemoryRuntime:
             self.current_session_id = session_id
         return state
 
+    def fork_session(
+        self,
+        source_session_id: str,
+        *,
+        model: str | None = None,
+        messages: list[dict[str, Any]] | None = None,
+    ) -> str | None:
+        source_state = self.store.load_session(source_session_id)
+        if source_state is None:
+            return None
+
+        fork_session_id = uuid4().hex
+        self.current_session_id = fork_session_id
+        model_name = model or self.model
+        fork_messages = copy.deepcopy(messages if messages is not None else source_state.messages)
+        self.store.ensure_session(
+            session_id=fork_session_id,
+            model=model_name,
+            workspace_root=self.workspace_root,
+            workspace_label=self.workspace_label,
+            workspace_fingerprint=self.workspace_fingerprint,
+        )
+        self.save_messages_now(fork_session_id, fork_messages)
+        if model_name != self.model:
+            self.store.ensure_session(
+                session_id=fork_session_id,
+                model=model_name,
+                workspace_root=self.workspace_root,
+                workspace_label=self.workspace_label,
+                workspace_fingerprint=self.workspace_fingerprint,
+            )
+        if source_state.latest_lrfu:
+            self.store.save_lrfu_snapshot(session_id=fork_session_id, lrfu=copy.deepcopy(source_state.latest_lrfu))
+        if source_state.latest_file_state:
+            self.store.save_file_state_snapshot(
+                session_id=fork_session_id,
+                file_state=copy.deepcopy(source_state.latest_file_state),
+            )
+        return fork_session_id
+
     def touch_session(self, session_id: str) -> bool:
         return self.store.touch_session(session_id)
 

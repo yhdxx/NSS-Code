@@ -16,8 +16,8 @@
 myCodingAgent
 ├── 入口层：__main__.py
 │   ├── main()：初始化 Docker、工具、Skill、Memory、命令系统并进入交互循环
-│   ├── build_command_registry()：注册 /resume 与 /delete
-│   └── handle_*_command()：会话恢复、删除、选择与确认
+│   ├── build_command_registry()：注册 /resume、/fork 与 /delete
+│   └── handle_*_command()：会话恢复、分叉、删除、选择与确认
 ├── 模型交互层：client.py
 │   ├── ask_deepseek()：单轮用户请求的模型-工具循环
 │   ├── stream_chat_completion()：流式读取模型响应
@@ -36,21 +36,23 @@ myCodingAgent
 
 ### 3.1 顶层模块
 
-#### `__main__.py` (502 行)
+#### `__main__.py` (598 行)
 - 职责：CLI 启动与主交互循环：准备 Docker 沙箱、工具注册表、Skill 运行时、记忆运行时和会话命令。
 - 模块函数：
   - `async main()` L45
   - `build_command_registry()` L170
-  - `async handle_resume_command(context, arguments)` L223
-  - `async handle_delete_command(context, arguments)` L272
-  - `select_session_interactively(memory_runtime, *limit, *include_all, *action)` L343
-  - `render_session_selector(sessions, selected, *previous_row_count, *include_workspace, *action)` L424
-  - `clear_session_selector(rendered_row_count)` L449
-  - `print_session_options(sessions, *include_workspace)` L463
-  - `format_session_option(session, *selected, *include_workspace)` L468
-  - `confirm_cross_workspace_restore(source_workspace, current_workspace)` L475
-  - `confirm_delete_sessions(sessions, *include_all)` L479
-  - `confirm_cross_workspace_action(action, source_workspace, current_workspace)` L489
+  - `async handle_resume_command(context, arguments)` L244
+  - `async handle_fork_command(context, arguments)` L293
+  - `async handle_delete_command(context, arguments)` L359
+  - `select_session_interactively(memory_runtime, *limit, *include_all, *action)` L430
+  - `render_session_selector(sessions, selected, *previous_row_count, *include_workspace, *action)` L511
+  - `clear_session_selector(rendered_row_count)` L536
+  - `print_session_options(sessions, *include_workspace)` L550
+  - `command_for_session_action(action)` L555
+  - `format_session_option(session, *selected, *include_workspace)` L563
+  - `confirm_cross_workspace_restore(source_workspace, current_workspace)` L570
+  - `confirm_delete_sessions(sessions, *include_all)` L574
+  - `confirm_cross_workspace_action(action, source_workspace, current_workspace)` L584
 
 #### `cache.py` (36 行)
 - 职责：轻量缓存：提供线程安全的内存缓存结构。
@@ -102,7 +104,7 @@ myCodingAgent
   - `hard_wrap_ansi(text, columns)` L348
   - `character_width(char)` L376
 
-#### `client.py` (653 行)
+#### `client.py` (685 行)
 - 职责：模型交互层：封装 OpenAI 兼容 Chat Completions、流式响应、工具调用循环、工具结果回填与上下文压缩接入。
 - 类：
   - `class PendingToolCall` L32
@@ -119,14 +121,15 @@ myCodingAgent
   - `async execute_local_tool(registry, tool_name, raw_args, skill_runtime)` L177
   - `async stream_one_round(client, model, messages, tools)` L206
   - `async ask_deepseek(client, prompt, registry, tools, messages, skill_runtime, core_tool...)` L275
-  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L532
-  - `async summarize_engineering_state(client, model, messages)` L548
-  - `truncate_tool_output(output)` L584
-  - `build_turn_temporary_system_messages(workspace_tracker)` L591
-  - `with_workspace_change_notice(messages, workspace_tracker)` L598
-  - `workspace_change_notice_content(workspace_tracker)` L602
-  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L621
-  - `async main()` L633
+  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L545
+  - `async summarize_engineering_state(client, model, messages)` L561
+  - `truncate_tool_output(output)` L597
+  - `build_turn_temporary_system_messages(workspace_tracker)` L604
+  - `with_workspace_change_notice(messages, workspace_tracker)` L620
+  - `with_turn_temporary_system_messages(messages, temporary_system_messages)` L624
+  - `workspace_change_notice_content(workspace_tracker)` L634
+  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L653
+  - `async main()` L665
 
 #### `config.py` (370 行)
 - 职责：配置层：集中定义 API、客户端、沙箱、Docker、Skill、记忆、Milvus、Embedding 等环境变量配置。
@@ -294,40 +297,40 @@ myCodingAgent
   - `_iter_search_files(base, include_pattern, sandbox_root)` L68
   - `_include_matches(relative_path, include_pattern)` L90
 
-#### `tools/memory_lookup.py` (378 行)
+#### `tools/memory_lookup.py` (387 行)
 - 类：
   - `class GetStoredToolOutputParams extends BaseModel` L15
   - `class GetStoredToolOutput extends Tool` L21
-    - `__init__(self, memory_runtime)` L31
-    - `async execute(self, params)` L34
-  - `class RecoverContextParams extends BaseModel` L44
-  - `class RecoverContext extends Tool` L50
-    - `__init__(self, memory_runtime)` L60
-    - `async execute(self, params)` L63
-  - `class SearchRecoverableContextParams extends BaseModel` L73
-  - `class SearchRecoverableContext extends Tool` L78
-    - `__init__(self, memory_runtime)` L88
-    - `async execute(self, params)` L91
-  - `class SearchSessionHistoryParams extends BaseModel` L106
-  - `class SearchSessionHistory extends Tool` L112
-    - `__init__(self, memory_runtime, *preview_chars)` L122
-    - `async execute(self, params)` L126
-  - `class GetRecentConversationTurnsParams extends BaseModel` L190
-  - `class GetRecentConversationTurns extends Tool` L194
-    - `__init__(self, memory_runtime)` L204
-    - `async execute(self, params)` L207
-  - `class SummarizeCurrentTurnMessageParams extends BaseModel` L230
-  - `class SummarizeCurrentTurnMessage extends Tool` L238
-    - `__init__(self, memory_runtime)` L249
-    - `async execute(self, params)` L252
-  - `class RestoreSessionParams extends BaseModel` L271
-  - `class RestoreSession extends Tool` L275
-    - `__init__(self, memory_runtime)` L285
-    - `async execute(self, params)` L288
+    - `__init__(self, memory_runtime)` L33
+    - `async execute(self, params)` L36
+  - `class RecoverContextParams extends BaseModel` L46
+  - `class RecoverContext extends Tool` L52
+    - `__init__(self, memory_runtime)` L65
+    - `async execute(self, params)` L68
+  - `class SearchRecoverableContextParams extends BaseModel` L78
+  - `class SearchRecoverableContext extends Tool` L83
+    - `__init__(self, memory_runtime)` L94
+    - `async execute(self, params)` L97
+  - `class SearchSessionHistoryParams extends BaseModel` L112
+  - `class SearchSessionHistory extends Tool` L118
+    - `__init__(self, memory_runtime, *preview_chars)` L130
+    - `async execute(self, params)` L134
+  - `class GetRecentConversationTurnsParams extends BaseModel` L198
+  - `class GetRecentConversationTurns extends Tool` L202
+    - `__init__(self, memory_runtime)` L213
+    - `async execute(self, params)` L216
+  - `class SummarizeCurrentTurnMessageParams extends BaseModel` L239
+  - `class SummarizeCurrentTurnMessage extends Tool` L247
+    - `__init__(self, memory_runtime)` L258
+    - `async execute(self, params)` L261
+  - `class RestoreSessionParams extends BaseModel` L280
+  - `class RestoreSession extends Tool` L284
+    - `__init__(self, memory_runtime)` L294
+    - `async execute(self, params)` L297
 - 模块函数：
-  - `message_to_search_text(message)` L304
-  - `recover_context_output(memory_runtime, *context_id, *offset, *limit)` L316
-  - `truncate_one_line(text, *max_chars)` L373
+  - `message_to_search_text(message)` L313
+  - `recover_context_output(memory_runtime, *context_id, *offset, *limit)` L325
+  - `truncate_one_line(text, *max_chars)` L382
 
 #### `tools/read_file.py` (74 行)
 - 类：
@@ -490,7 +493,7 @@ myCodingAgent
   - `class SessionState` L147
   - `class SessionListItem` L161
 
-#### `memory/runtime.py` (1276 行)
+#### `memory/runtime.py` (1315 行)
 - 类：
   - `class MemoryWriteTask` L39
   - `class MemoryRuntime` L44
@@ -509,13 +512,14 @@ myCodingAgent
     - `_next_message_version(self, session_id)` L194
     - `_save_messages_if_current(self, session_id, messages, historical_turns, version)` L199
     - `load_session(self, session_id)` L212
-    - `touch_session(self, session_id)` L219
-    - `delete_session(self, session_id)` L222
-    - `delete_sessions(self, session_ids)` L228
-    - `cleanup_expired_sessions(self)` L235
-    - `list_sessions(self, *limit, *include_all)` L241
-    - `list_migrated_workspace_sessions(self, *limit)` L246
-    - `save_tool_output(self, *session_id, *tool_call_id, *tool_name, *arguments, *output)` L250
+    - `fork_session(self, source_session_id, *model, *messages)` L219
+    - `touch_session(self, session_id)` L259
+    - `delete_session(self, session_id)` L262
+    - `delete_sessions(self, session_ids)` L268
+    - `cleanup_expired_sessions(self)` L275
+    - `list_sessions(self, *limit, *include_all)` L281
+    - `list_migrated_workspace_sessions(self, *limit)` L286
+    - `save_tool_output(self, *session_id, *tool_call_id, *tool_name, *arguments, *output)` L290
     - `get_tool_output(self, output_id)` L298
     - `get_context_metadata(self, context_id)` L301
     - `load_context(self, context_id)` L304
@@ -975,7 +979,7 @@ myCodingAgent
   - `test_render_screen_tracks_input_cursor_after_hard_wrap(monkeypatch)` L335
   - `test_render_uses_crlf_in_raw_mode(monkeypatch)` L345
 
-#### `tests/test_command_registry.py` (101 行)
+#### `tests/test_command_registry.py` (111 行)
 - 模块函数：
   - `async noop_handler(context, arguments)` L9
   - `test_command_registry_matches_command_and_alias()` L13
@@ -985,7 +989,7 @@ myCodingAgent
   - `test_history_message_formatting_skips_system_and_folds_tool_output()` L87
   - `test_history_message_formatting_truncates_long_content()` L97
 
-#### `tests/test_memory_runtime.py` (1222 行)
+#### `tests/test_memory_runtime.py` (1384 行)
 - 类：
   - `class FileStateCacheStub` L49
     - `__init__(self)` L50
@@ -997,53 +1001,59 @@ myCodingAgent
     - `__init__(self, changed_paths, omitted)` L75
     - `consume_external_changes(self)` L80
 - 模块函数：
-  - `test_workspace_notice_is_temporary_system_message()` L87
-  - `test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch)` L101
-  - `test_session_id_is_stable_and_messages_restore(tmp_path)` L152
-  - `test_delete_session_removes_related_records(tmp_path)` L166
-  - `test_expired_sessions_are_deleted_by_last_access_time(tmp_path)` L191
-  - `test_load_session_refreshes_expiry_clock(tmp_path)` L211
-  - `test_legacy_database_backfills_last_accessed_at(tmp_path)` L226
-  - `test_async_writer_persists_after_drain(tmp_path)` L265
-  - `test_save_messages_now_persists_without_drain(tmp_path)` L282
-  - `test_save_messages_now_is_not_overwritten_by_stale_async_save(tmp_path)` L294
-  - `test_save_current_session_before_switch_uses_existing_session_id(tmp_path)` L313
-  - `test_file_state_snapshot_round_trip_and_recheck(tmp_path)` L336
-  - `test_empty_current_session_is_not_saved_before_switch(tmp_path)` L366
-  - `test_session_list_uses_last_non_exit_user_message(tmp_path)` L374
-  - `test_session_list_defaults_to_current_workspace(tmp_path)` L396
-  - `test_migrated_workspace_sessions_match_fingerprint(tmp_path)` L412
-  - `test_session_preview_falls_back_when_no_user_message()` L431
-  - `test_current_turn_small_tool_output_stays_inline(tmp_path)` L436
-  - `test_get_stored_tool_output_returns_current_session_chunk(tmp_path)` L474
-  - `test_recover_context_returns_partial_context_metadata(tmp_path)` L494
-  - `test_search_recoverable_context_finds_metadata(tmp_path)` L515
-  - `test_get_stored_tool_output_recovers_other_session_with_owner_metadata(tmp_path)` L534
-  - `test_search_session_history_finds_virtualized_turns(tmp_path)` L555
-  - `test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)` L577
-  - `test_large_tool_output_becomes_recoverable_preview(tmp_path)` L597
-  - `test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_path)` L627
-  - `test_skill_related_calls_are_retained_for_historical_placeholders()` L654
-  - `test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_path)` L679
-  - `test_summary_stage_keeps_recent_context(tmp_path)` L742
-  - `test_compression_report_contains_required_metrics(tmp_path)` L768
-  - `test_reproducible_tool_classification()` L804
-  - `test_lrfu_snapshot_round_trip(tmp_path)` L812
-  - `budget_snapshot(usage_ratio)` L835
-  - `test_checkpoint_decision_requires_completed_turn(tmp_path)` L849
-  - `test_checkpoint_decision_uses_soft_and_hard_thresholds(tmp_path)` L860
-  - `test_snapshot_has_version(tmp_path)` L878
-  - `test_incremental_snapshot_merges_previous_snapshot_and_delta(tmp_path)` L897
-  - `test_snapshot_delta_only_uses_messages_since_last_checkpoint(tmp_path)` L927
-  - `test_rollover_marks_old_session_historical(tmp_path)` L949
-  - `test_rollover_new_session_contains_only_system_and_snapshot(tmp_path)` L978
-  - `test_recover_context_works_after_session_rollover(tmp_path)` L1002
-  - `test_restore_session_returns_snapshot_not_messages(tmp_path)` L1033
-  - `test_restore_session_does_not_persist_merge(tmp_path)` L1060
-  - `test_prefix_cache_prompt_shape_stable_after_rollover(tmp_path)` L1086
-  - `test_snapshot_continuity_across_multiple_rollovers(tmp_path)` L1110
-  - `test_recover_context_survives_multiple_rollovers(tmp_path)` L1148
-  - `test_recover_context_reports_missing_after_owner_session_delete(tmp_path)` L1199
+  - `test_workspace_notice_is_temporary_system_message()` L91
+  - `test_temporary_system_message_is_stable_and_has_no_dynamic_counts()` L111
+  - `test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch)` L127
+  - `test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypatch)` L188
+  - `test_recovery_tool_descriptions_emphasize_evidence_without_fixed_order()` L219
+  - `test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch)` L238
+  - `test_session_id_is_stable_and_messages_restore(tmp_path)` L278
+  - `test_delete_session_removes_related_records(tmp_path)` L292
+  - `test_expired_sessions_are_deleted_by_last_access_time(tmp_path)` L317
+  - `test_load_session_refreshes_expiry_clock(tmp_path)` L337
+  - `test_legacy_database_backfills_last_accessed_at(tmp_path)` L352
+  - `test_async_writer_persists_after_drain(tmp_path)` L391
+  - `test_save_messages_now_persists_without_drain(tmp_path)` L408
+  - `test_save_messages_now_is_not_overwritten_by_stale_async_save(tmp_path)` L420
+  - `test_fork_session_copies_messages_and_switches_current_session(tmp_path)` L439
+  - `test_fork_session_uses_override_messages_and_copies_snapshots(tmp_path)` L459
+  - `test_save_current_session_before_switch_uses_existing_session_id(tmp_path)` L480
+  - `test_file_state_snapshot_round_trip_and_recheck(tmp_path)` L503
+  - `test_empty_current_session_is_not_saved_before_switch(tmp_path)` L533
+  - `test_session_list_uses_last_non_exit_user_message(tmp_path)` L541
+  - `test_session_list_defaults_to_current_workspace(tmp_path)` L563
+  - `test_migrated_workspace_sessions_match_fingerprint(tmp_path)` L579
+  - `test_session_preview_falls_back_when_no_user_message()` L598
+  - `test_current_turn_small_tool_output_stays_inline(tmp_path)` L603
+  - `test_get_stored_tool_output_returns_current_session_chunk(tmp_path)` L641
+  - `test_recover_context_returns_partial_context_metadata(tmp_path)` L661
+  - `test_search_recoverable_context_finds_metadata(tmp_path)` L682
+  - `test_get_stored_tool_output_recovers_other_session_with_owner_metadata(tmp_path)` L701
+  - `test_search_session_history_finds_virtualized_turns(tmp_path)` L722
+  - `test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)` L744
+  - `test_large_tool_output_becomes_recoverable_preview(tmp_path)` L764
+  - `test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_path)` L794
+  - `test_skill_related_calls_are_retained_for_historical_placeholders()` L821
+  - `test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_path)` L846
+  - `test_summary_stage_keeps_recent_context(tmp_path)` L909
+  - `test_compression_report_contains_required_metrics(tmp_path)` L935
+  - `test_reproducible_tool_classification()` L971
+  - `test_lrfu_snapshot_round_trip(tmp_path)` L979
+  - `budget_snapshot(usage_ratio)` L1002
+  - `test_checkpoint_decision_requires_completed_turn(tmp_path)` L1016
+  - `test_checkpoint_decision_uses_soft_and_hard_thresholds(tmp_path)` L1027
+  - `test_snapshot_has_version(tmp_path)` L1045
+  - `test_incremental_snapshot_merges_previous_snapshot_and_delta(tmp_path)` L1064
+  - `test_snapshot_delta_only_uses_messages_since_last_checkpoint(tmp_path)` L1094
+  - `test_rollover_marks_old_session_historical(tmp_path)` L1116
+  - `test_rollover_new_session_contains_only_system_and_snapshot(tmp_path)` L1145
+  - `test_recover_context_works_after_session_rollover(tmp_path)` L1169
+  - `test_restore_session_returns_snapshot_not_messages(tmp_path)` L1200
+  - `test_restore_session_does_not_persist_merge(tmp_path)` L1227
+  - `test_prefix_cache_prompt_shape_stable_after_rollover()` L1253
+  - `test_snapshot_continuity_across_multiple_rollovers(tmp_path)` L1277
+  - `test_recover_context_survives_multiple_rollovers(tmp_path)` L1315
+  - `test_recover_context_reports_missing_after_owner_session_delete(tmp_path)` L1366
 
 #### `tests/test_skill_router_lrfu.py` (127 行)
 - 类：
@@ -3071,15 +3081,16 @@ myCodingAgent
 ```text
 client.ask_deepseek()
 ├── 构造/追加用户消息
-├── build_turn_temporary_system_messages() 生成本用户轮临时 system message，不写入持久历史
+├── 固定 system prompt 执行 Work Context Sufficiency Protocol / Evidence First Rule
+├── build_turn_temporary_system_messages() 生成稳定临时 system message，不写入持久历史
 ├── build_round_tools() 每个用户轮构造一次 tools，同一用户轮内复用
 ├── MemoryRuntime.render_messages_for_model() 压缩上下文
 ├── SkillRuntime.select_tools_for_prompt() 每个用户轮动态选择 Skill
-├── stream_chat_completion() 读取流式 assistant 输出
+├── stream_chat_completion() 读取流式 assistant 输出；模型按需判断 working context 是否充足
 ├── 如果存在 tool_calls: execute_tool_call()
-│   └── ToolRegistry.execute() -> 具体工具 run()
+│   └── ToolRegistry.execute() -> 具体工具 run()，可多轮 Search/Recover 历史证据
 ├── MemoryRuntime.save_tool_output() 保存可恢复工具输出
-└── 循环直到 finish_reason=stop 或达到 MAX_TOOL_ROUNDS
+└── 循环直到模型认为证据充足并 finish_reason=stop，或达到 MAX_TOOL_ROUNDS
 ```
 
 ### 5.3 长上下文与会话恢复

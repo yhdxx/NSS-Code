@@ -36,6 +36,17 @@ def test_command_registry_matches_command_and_alias():
     assert registry.match("/delete abc") is not None
     assert registry.match("delete abc") is not None
     assert registry.match("删除会话 abc") is not None
+    registry.register(
+        CommandSpec(
+            name="/fork",
+            aliases=("fork", "分叉会话"),
+            description="分叉历史会话",
+            handler=noop_handler,
+        )
+    )
+    assert registry.match("/fork abc") is not None
+    assert registry.match("fork abc") is not None
+    assert registry.match("分叉会话 abc") is not None
     assert registry.match("/path") is None
 
 

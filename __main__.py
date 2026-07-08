@@ -192,6 +192,27 @@ def build_command_registry() -> CommandRegistry:
     )
     registry.register(
         CommandSpec(
+            name="/fork",
+            aliases=("fork", "分叉会话"),
+            description="从历史会话创建分叉，并切换到新的分叉会话",
+            usage="[session_id|--all|--help]",
+            usages=(
+                ("", "显示当前工作目录下的历史会话，并通过 ↑/↓ 选择分叉"),
+                (" --all", "显示所有工作目录下的历史会话；跨目录分叉前会要求确认"),
+                (" <session_id>", "直接分叉指定会话 id；可用于非交互终端"),
+                (" --help", "显示 /fork 的完整参数说明"),
+            ),
+            examples=(
+                "/fork",
+                "/fork --all",
+                "/fork <session_id>",
+                "/fork --help",
+            ),
+            handler=handle_fork_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/delete",
             aliases=("delete", "删除会话"),
             description="删除本地历史会话；默认通过 ↑/↓ 选择删除",
@@ -267,6 +288,72 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
     render_conversation_history(state.messages)
     print(f"已恢复会话：{resume_session_id}（{len(state.messages)} 条消息）", flush=True)
     return CommandResult(messages=state.messages)
+
+
+async def handle_fork_command(context: CommandContext, arguments: str) -> CommandResult:
+    memory_runtime = context.memory_runtime
+    if memory_runtime is None:
+        print("记忆模块未启用，无法分叉会话。", flush=True)
+        return CommandResult()
+    fork_spec = build_command_registry().match("/fork")[0]
+    argument = arguments.strip()
+    if argument in {"--help", "-h", "help"}:
+        print(fork_spec.help_text(), flush=True)
+        return CommandResult()
+
+    await memory_runtime.drain()
+    deleted_count = memory_runtime.cleanup_expired_sessions()
+    if deleted_count:
+        print(f"已清理 {deleted_count} 个超过 {CONFIG.memory.session_ttl_days} 天未访问的会话。", flush=True)
+
+    current_session_id = save_current_session_if_needed(
+        memory_runtime=memory_runtime,
+        messages=context.messages,
+        skill_runtime=context.skill_runtime,
+        file_state_cache=context.file_state_cache,
+    )
+    await memory_runtime.drain()
+
+    include_all = argument == "--all"
+    source_session_id = "" if include_all else argument
+    if not source_session_id:
+        source_session_id = select_session_interactively(memory_runtime, include_all=include_all, action="分叉")
+        if not source_session_id:
+            return CommandResult()
+
+    source_state = memory_runtime.store.load_session(source_session_id)
+    if source_state is None:
+        print(f"未找到会话：{source_session_id}", flush=True)
+        return CommandResult()
+    if source_state.workspace_root and source_state.workspace_root != memory_runtime.workspace_root:
+        if not confirm_cross_workspace_action("分叉", source_state.workspace_root, memory_runtime.workspace_root):
+            print("已取消跨工作目录分叉。", flush=True)
+            return CommandResult()
+
+    fork_messages = source_state.messages
+    if source_session_id == current_session_id and has_conversation_content(context.messages):
+        fork_messages = context.messages
+    fork_session_id = memory_runtime.fork_session(
+        source_session_id,
+        model=client.MODEL,
+        messages=fork_messages,
+    )
+    if fork_session_id is None:
+        print(f"未找到会话：{source_session_id}", flush=True)
+        return CommandResult()
+
+    memory_runtime.load_lrfu_snapshot(fork_session_id, context.skill_runtime)
+    memory_runtime.load_file_state_snapshot(
+        fork_session_id,
+        context.file_state_cache,
+        context.workspace_tracker,
+    )
+    render_conversation_history(fork_messages)
+    print(
+        f"已分叉会话：{fork_session_id}（源会话：{source_session_id}，{len(fork_messages)} 条消息）",
+        flush=True,
+    )
+    return CommandResult(messages=fork_messages)
 
 
 async def handle_delete_command(context: CommandContext, arguments: str) -> CommandResult:
@@ -352,14 +439,14 @@ def select_session_interactively(
         if include_all:
             print(f"暂无可{action}会话。", flush=True)
         else:
-            command = "/resume" if action == "恢复" else "/delete"
+            command = command_for_session_action(action)
             print(f"当前工作目录下没有历史会话。可使用 {command} --all 查看其他工作目录会话。", flush=True)
             migrated_sessions = memory_runtime.list_migrated_workspace_sessions(limit=limit)
             if migrated_sessions:
                 print(f"检测到可能来自迁移前同一项目的会话，可使用 {command} --all 查看。", flush=True)
         return ""
     if not sys.stdin.isatty():
-        command = "/resume" if action == "恢复" else "/delete"
+        command = command_for_session_action(action)
         print(f"当前终端不支持方向键选择，使用 {command} <session_id> {action}指定会话。", flush=True)
         print_session_options(sessions, include_workspace=include_all)
         return ""
@@ -465,6 +552,14 @@ def print_session_options(sessions: list[SessionListItem], *, include_workspace:
         print(format_session_option(session, selected=False, include_workspace=include_workspace), flush=True)
 
 
+def command_for_session_action(action: str) -> str:
+    return {
+        "恢复": "/resume",
+        "分叉": "/fork",
+        "删除": "/delete",
+    }.get(action, "/resume")
+
+
 def format_session_option(session: SessionListItem, *, selected: bool, include_workspace: bool = False) -> str:
     marker = ">" if selected else " "
     short_id = session.session_id[:8]
@@ -492,6 +587,8 @@ def confirm_cross_workspace_action(action: str, source_workspace: str, current_w
     print(f"  当前：{current_workspace}", flush=True)
     if action == "恢复":
         print("恢复后会加载历史对话，并按当前工作目录重新检查文件状态。", flush=True)
+    elif action == "分叉":
+        print("分叉后会复制历史对话到新会话，并按当前工作目录重新检查文件状态。", flush=True)
     else:
         print("删除后该会话及其关联消息、工具输出、压缩快照会从本地移除。", flush=True)
     answer = input(f"确认{action}？输入 y 确认，其它任意键取消：").strip().lower()

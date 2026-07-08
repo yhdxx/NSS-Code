@@ -21,8 +21,10 @@ class GetStoredToolOutputParams(BaseModel):
 class GetStoredToolOutput(Tool):
     name = "GetStoredToolOutput"
     description = (
-        "Read the full stored output for a compressed tool-output reference by output_id. "
-        "Use this when a tool message says its full output is available by output_id."
+        "Read full or partial stored tool output by output_id. Use this when exact historical "
+        "tool output, file content, command output, test result, or other virtualized context "
+        "may affect correctness and the output_id is known. Do not assume unavailable information; "
+        "recover evidence first when it may affect the answer."
     )
     params_model = GetStoredToolOutputParams
     category = "read"
@@ -50,8 +52,11 @@ class RecoverContextParams(BaseModel):
 class RecoverContext(Tool):
     name = "RecoverContext"
     description = (
-        "Recover full or partial content for any stored recoverable context object by context_id. "
-        "Prefer partial recovery with offset and limit when the prompt budget is tight."
+        "Recover full or partial stored context by context_id. Use this whenever your answer may "
+        "rely on a known historical tool output, file content, command output, test result, or "
+        "other virtualized context that is not currently visible. Do not assume unavailable "
+        "information; recover evidence first when it may affect correctness. Prefer partial "
+        "recovery with offset and limit when the prompt budget is tight."
     )
     params_model = RecoverContextParams
     category = "read"
@@ -78,8 +83,9 @@ class SearchRecoverableContextParams(BaseModel):
 class SearchRecoverableContext(Tool):
     name = "SearchRecoverableContext"
     description = (
-        "Search recoverable context metadata for the current session. "
-        "Use this before RecoverContext when compressed history only shows lightweight metadata."
+        "Search stored recoverable contexts by topic, file path, command, error text, keyword, "
+        "or decision. Use this when your answer may depend on historical tool outputs or other "
+        "virtualized context, but you do not yet know the relevant context_id."
     )
     params_model = SearchRecoverableContextParams
     category = "read"
@@ -112,8 +118,10 @@ class SearchSessionHistoryParams(BaseModel):
 class SearchSessionHistory(Tool):
     name = "SearchSessionHistory"
     description = (
-        "Search historical user queries, final answers, and virtualized tool metadata for the current session. "
-        "This does not return full historical tool outputs; use RecoverContext with a returned context_id."
+        "Search historical conversation turns. Use this when you need to locate prior user "
+        "requests, assistant decisions, constraints, or references to tool outputs before "
+        "answering. This does not return full historical tool outputs; use RecoverContext when "
+        "exact stored output is needed."
     )
     params_model = SearchSessionHistoryParams
     category = "read"
@@ -194,8 +202,9 @@ class GetRecentConversationTurnsParams(BaseModel):
 class GetRecentConversationTurns(Tool):
     name = "GetRecentConversationTurns"
     description = (
-        "Return recent historical turns with full user queries and final assistant answers, plus tool metadata only. "
-        "Use RecoverContext(context_id, offset, limit) to inspect non-skill tool outputs."
+        "Inspect recent conversation structure and visible turn summaries. Use this when you "
+        "need to understand recent task flow, prior decisions, or which historical outputs may "
+        "matter. Use RecoverContext only if exact hidden output is needed."
     )
     params_model = GetRecentConversationTurnsParams
     category = "read"
