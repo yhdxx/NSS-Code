@@ -35,6 +35,12 @@ from memory.stores import session_preview
 from memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
 from session_switch import has_conversation_content, save_current_session_if_needed
 from skills.session_skill_cache import SessionSkillCache
+from runtime_context import (
+    PromptRenderer,
+    RuntimeContextBuilder,
+    extract_user_request_from_rendered_prompt,
+    is_rendered_runtime_prompt,
+)
 from tools import create_default_registry
 from tools.memory_lookup import (
     GetStoredToolOutput,
@@ -89,40 +95,25 @@ class WorkspaceTrackerStub:
         return [], 0
 
 
-def test_workspace_notice_is_temporary_system_message():
-    messages = [{"role": "system", "content": "fixed"}, {"role": "user", "content": "work"}]
+def test_workspace_changes_render_inside_current_user_runtime_context():
     tracker = WorkspaceTrackerStub(["app.py"], omitted=2)
 
-    rendered = agent_client.with_workspace_change_notice(messages, tracker)
+    runtime_context = RuntimeContextBuilder(workspace_tracker=tracker).build()
+    rendered = PromptRenderer.render_current_user_message(runtime_context, "work")
 
-    assert rendered[0] == messages[0]
-    assert rendered[1]["role"] == "system"
-    assert rendered[1]["content"] == (
-        "Historical tool outputs may have been virtualized. "
-        "Recover additional context only if required for correctness."
-    )
-    assert rendered[2]["role"] == "system"
-    assert "环境通知" in rendered[2]["content"]
-    assert "app.py" in rendered[2]["content"]
-    assert "另有 2 个文件未列出" in rendered[2]["content"]
-    assert rendered[3:] == messages[1:]
-    assert messages == [{"role": "system", "content": "fixed"}, {"role": "user", "content": "work"}]
+    assert rendered.role == "user"
+    assert is_rendered_runtime_prompt(rendered.content)
+    assert extract_user_request_from_rendered_prompt(rendered.content) == "work"
+    assert runtime_context.workspace_changes.paths == ("app.py",)
+    assert runtime_context.workspace_changes.omitted == 2
+    assert '"workspace_changes"' in rendered.runtime_context_json
+    assert '"app.py"' in rendered.runtime_context_json
 
 
-def test_temporary_system_message_is_stable_and_has_no_dynamic_counts():
+def test_temporary_system_messages_are_disabled():
     rendered = agent_client.build_turn_temporary_system_messages(None)
 
-    assert rendered == [
-        {
-            "role": "system",
-            "content": (
-                "Historical tool outputs may have been virtualized. "
-                "Recover additional context only if required for correctness."
-            ),
-        }
-    ]
-    assert "count" not in rendered[0]["content"].lower()
-    assert "数量" not in rendered[0]["content"]
+    assert rendered == []
 
 
 def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch):
@@ -164,15 +155,13 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
         assert build_calls == 1
         assert len(tools_seen) == 2
         assert tools_seen[0] is tools_seen[1]
-        assert messages_seen[0][1]["content"] == (
-            "Historical tool outputs may have been virtualized. "
-            "Recover additional context only if required for correctness."
-        )
-        assert messages_seen[0][2]["role"] == "system"
-        assert "changed.py" in messages_seen[0][2]["content"]
+        assert messages_seen[0][1]["role"] == "user"
+        assert is_rendered_runtime_prompt(messages_seen[0][1]["content"])
+        assert extract_user_request_from_rendered_prompt(messages_seen[0][1]["content"]) == "do work"
+        assert "changed.py" in messages_seen[0][1]["content"]
         assert messages_seen[1][-1]["role"] == "tool"
         assert messages_seen[1][1]["content"] == messages_seen[0][1]["content"]
-        assert "changed.py" in messages_seen[1][2]["content"]
+        assert "changed.py" in messages_seen[1][1]["content"]
         assert not any(
             message.get("role") == "system"
             and (
@@ -181,6 +170,7 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
             )
             for message in updated
         )
+        assert not any(is_rendered_runtime_prompt(str(message.get("content", ""))) for message in updated)
         assert updated == history
 
     asyncio.run(scenario())
@@ -347,6 +337,7 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
             )
 
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+        monkeypatch.setattr(agent_client, "DEBUG", False)
 
         text, _updated = await agent_client.ask_deepseek(
             client=object(),
@@ -366,13 +357,7 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
     output = capsys.readouterr().out
 
     assert text == "done"
-    assert "[PromptDebug]" in output
-    assert "fixed_system_tokens≈" in output
-    assert "temporary_system_tokens≈" in output
-    assert "historical_messages_tokens≈" in output
-    assert "current_turn_tokens≈" in output
-    assert "tools_tokens≈" in output
-    assert "first_changed_section=" in output
+    assert "[PromptDebug]" not in output
     assert "=================" in output
     assert "[Token] 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
     assert "[Token][本轮] 请求 1 | 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
@@ -381,6 +366,38 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
     assert restored.token_usage.request_count == 1
     assert restored.token_usage.prompt_cache_hit_tokens == 70
     assert restored.token_usage.prompt_cache_miss_tokens == 30
+
+
+def test_debug_true_prints_prompt_debug(monkeypatch, capsys):
+    async def scenario():
+        async def fake_stream_one_round(_client, _model, messages, tools):
+            return "done", [], None
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+        monkeypatch.setattr(agent_client, "DEBUG", True)
+
+        return await agent_client.ask_deepseek(
+            client=object(),
+            prompt="hello",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+        )
+
+    text, _updated = asyncio.run(scenario())
+    output = capsys.readouterr().out
+
+    assert text == "done"
+    assert "[PromptDebug]" in output
+    assert "fixed_system_tokens≈" in output
+    assert "temporary_system_tokens≈" in output
+    assert "historical_messages_tokens≈" in output
+    assert "runtime_context_tokens≈" in output
+    assert "rendered_prompt_tokens≈" in output
+    assert "stored_user_prompt_tokens≈" in output
+    assert "current_turn_tokens≈" in output
+    assert "tools_tokens≈" in output
+    assert "first_changed_section=" in output
 
 
 def test_delete_session_removes_related_records(tmp_path):
@@ -1053,7 +1070,7 @@ def test_summary_stage_keeps_recent_context(tmp_path):
     )
 
     assert compressed[0]["role"] == "system"
-    assert "ENGINEERING STATE" in compressed[1]["content"]
+    assert "ENGINEERING STATE" not in "\n".join(str(message.get("content", "")) for message in compressed)
     assert compressed[-1] == messages[-1]
 
 

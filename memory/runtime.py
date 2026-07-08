@@ -535,12 +535,8 @@ class MemoryRuntime:
             historical_turns=historical_turns,
             current_messages=current_messages,
             current_summaries=self._current_turn_summaries,
-            summary_text=summary_text,
         )
         snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
-        if snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio:
-            rendered = insert_budget_notice(rendered, format_budget_notice(snapshot))
-            snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
         if CONFIG.memory.output_context_compression and snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio:
             print(format_virtualization_report(snapshot), flush=True)
         if not persist_snapshot:
@@ -947,12 +943,9 @@ def render_virtualized_messages(
     historical_turns: list[HistoricalTurn],
     current_messages: list[dict[str, Any]],
     current_summaries: dict[str, dict[str, Any]],
-    summary_text: str = "",
 ) -> list[dict[str, Any]]:
     rendered: list[dict[str, Any]] = []
     rendered.extend(system_messages[:1])
-    if summary_text:
-        rendered.append({"role": "system", "content": "CURRENT TASK STATE SNAPSHOT:\n" + summary_text})
     rendered.extend(render_historical_topology(session_id, historical_messages, historical_turns))
     rendered.extend(apply_current_summaries(current_messages, current_summaries))
     return rendered

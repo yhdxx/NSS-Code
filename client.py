@@ -4,7 +4,7 @@ import asyncio  # 提供异步事件循环、异步子进程等待等能力，�
 import hashlib  # 为 PromptDebug 生成稳定短哈希，避免打印原始 prompt 内容。
 import json  # 负责解析模型生成的工具参数 JSON，以及把参数格式化成终端可读文本。
 import os  # 读取环境变量、清理代理环境变量，保证 API 客户端和本地工具按预期运行。
-from dataclasses import dataclass  # 用轻量数据类保存流式返回过程中尚未拼完整的工具调用。
+from dataclasses import dataclass, replace  # 用轻量数据类保存流式返回过程中尚未拼完整的工具调用。
 
 for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:  # 遍历常见代理变量名，避免外部代理影响 DeepSeek/OpenAI 兼容接口连接。
     os.environ.pop(env_key, None)  # 从当前进程环境中删除代理变量；不存在时返回 None，不抛异常。
@@ -18,6 +18,13 @@ from config import CONFIG  # 统一读取 API、模型和客户端展示相关�
 from memory import MemoryRuntime, TokenUsageRecord, TokenUsageSummary
 from memory.budget import estimate_tokens
 from memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
+from runtime_context import (
+    ContextBudgetState,
+    PromptRenderer,
+    RenderedPrompt,
+    RuntimeContextBuilder,
+    render_current_turn_for_model,
+)
 from tools import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
 
 DEEPSEEK_API_KEY = CONFIG.api.deepseek_api_key  # DeepSeek API Key；优先从 DEEPSEEK_API_KEY 环境变量读取。
@@ -27,7 +34,7 @@ MAX_TOOL_ROUNDS = CONFIG.client.max_tool_rounds  # 单次用户请求最多允�
 MAX_DISPLAY_STRING_CHARS = CONFIG.client.max_display_string_chars  # 终端展示超长字符串参数时的最大字符数，避免 WriteFile 内容刷屏。
 MAX_TOOL_OUTPUT_CHARS = CONFIG.client.max_tool_output_chars
 MULTILINE_ARGUMENT_FIELDS = CONFIG.client.multiline_argument_fields  # 这些字段通常包含代码、命令或长文本，打印工具调用时优先按多行展示。
-PROMPT_CACHE_DEBUG = CONFIG.client.prompt_cache_debug
+DEBUG = CONFIG.client.debug
 
 
 @dataclass  # 自动生成 `__init__` 等方法，让该类只承担“保存状态”的职责。
@@ -44,15 +51,21 @@ class PromptDebugSnapshot:
     temporary_system_hash: str
     historical_messages_hash: str
     current_turn_hash: str
+    runtime_context_hash: str
+    rendered_prompt_hash: str
     tools_hash: str
     request_tokens: int
     fixed_system_tokens: int
     temporary_system_tokens: int
     historical_messages_tokens: int
     current_turn_tokens: int
+    runtime_context_tokens: int
+    rendered_prompt_tokens: int
+    stored_user_prompt_tokens: int
     tools_tokens: int
     message_count: int
     tool_count: int
+    rendered_prompt_format_version: str
 
 
 _LAST_PROMPT_DEBUG_SNAPSHOT: PromptDebugSnapshot | None = None
@@ -111,16 +124,18 @@ def split_prompt_debug_sections(
     model_messages: list[dict[str, Any]],
     temporary_system_messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
+    current_turn_start: int | None = None,
 ) -> dict[str, Any]:
     fixed_system = model_messages[:1] if model_messages and model_messages[0].get("role") == "system" else []
     temporary_count = len(temporary_system_messages)
     historical_start = len(fixed_system) + temporary_count
-    historical_end = len(model_messages)
-    current_turn_start = historical_end
-    for index in range(len(model_messages) - 1, historical_start - 1, -1):
-        if model_messages[index].get("role") == "user":
-            current_turn_start = index
-            break
+    if current_turn_start is None:
+        current_turn_start = len(model_messages)
+        for index in range(len(model_messages) - 1, historical_start - 1, -1):
+            if model_messages[index].get("role") == "user":
+                current_turn_start = index
+                break
+    current_turn_start = max(historical_start, min(current_turn_start, len(model_messages)))
     historical_messages = model_messages[historical_start:current_turn_start]
     current_turn = model_messages[current_turn_start:]
     return {
@@ -137,19 +152,29 @@ def build_prompt_debug_snapshot(
     model_messages: list[dict[str, Any]],
     temporary_system_messages: list[dict[str, Any]],
     tools: list[dict[str, Any]],
+    current_turn_start: int | None = None,
+    rendered_prompt: RenderedPrompt | None = None,
 ) -> PromptDebugSnapshot:
-    sections = split_prompt_debug_sections(model_messages, temporary_system_messages, tools)
+    sections = split_prompt_debug_sections(model_messages, temporary_system_messages, tools, current_turn_start)
     fixed_system_tokens = estimated_json_tokens(sections["fixed_system"])
     temporary_system_tokens = estimated_json_tokens(sections["temporary_system"])
     historical_messages_tokens = estimated_json_tokens(sections["historical_messages"])
     current_turn_tokens = estimated_json_tokens(sections["current_turn"])
+    runtime_context_tokens = rendered_prompt.runtime_context_tokens if rendered_prompt is not None else 0
+    rendered_prompt_tokens = rendered_prompt.total_tokens if rendered_prompt is not None else 0
+    stored_user_prompt_tokens = rendered_prompt.user_prompt_tokens if rendered_prompt is not None else 0
     tools_tokens = estimated_json_tokens(sections["tools"])
+    runtime_context_hash = rendered_prompt.runtime_context_hash if rendered_prompt is not None else stable_json_hash(None)
+    rendered_prompt_hash = stable_json_hash(rendered_prompt.content if rendered_prompt is not None else "")
+    rendered_prompt_format_version = rendered_prompt.format_version if rendered_prompt is not None else ""
     return PromptDebugSnapshot(
         request_hash=stable_json_hash(model_messages),
         fixed_system_hash=stable_json_hash(sections["fixed_system"]),
         temporary_system_hash=stable_json_hash(sections["temporary_system"]),
         historical_messages_hash=stable_json_hash(sections["historical_messages"]),
         current_turn_hash=stable_json_hash(sections["current_turn"]),
+        runtime_context_hash=runtime_context_hash,
+        rendered_prompt_hash=rendered_prompt_hash,
         tools_hash=stable_json_hash(sections["tools"]),
         request_tokens=(
             fixed_system_tokens
@@ -162,9 +187,13 @@ def build_prompt_debug_snapshot(
         temporary_system_tokens=temporary_system_tokens,
         historical_messages_tokens=historical_messages_tokens,
         current_turn_tokens=current_turn_tokens,
+        runtime_context_tokens=runtime_context_tokens,
+        rendered_prompt_tokens=rendered_prompt_tokens,
+        stored_user_prompt_tokens=stored_user_prompt_tokens,
         tools_tokens=tools_tokens,
         message_count=len(model_messages),
         tool_count=len(tools),
+        rendered_prompt_format_version=rendered_prompt_format_version,
     )
 
 
@@ -178,6 +207,7 @@ def first_changed_prompt_debug_section(
         ("fixed_system", previous.fixed_system_hash, current.fixed_system_hash),
         ("temporary_system", previous.temporary_system_hash, current.temporary_system_hash),
         ("historical_messages", previous.historical_messages_hash, current.historical_messages_hash),
+        ("runtime_context", previous.runtime_context_hash, current.runtime_context_hash),
         ("current_turn", previous.current_turn_hash, current.current_turn_hash),
         ("tools", previous.tools_hash, current.tools_hash),
     ]
@@ -192,7 +222,7 @@ def print_prompt_debug(
     snapshot: PromptDebugSnapshot,
     first_changed_section: str,
 ) -> None:
-    if not PROMPT_CACHE_DEBUG:
+    if not DEBUG:
         return
     print_token_block(
         "[PromptDebug] "
@@ -200,6 +230,10 @@ def print_prompt_debug(
         f"fixed_system_tokens≈{snapshot.fixed_system_tokens} hash={snapshot.fixed_system_hash} | "
         f"temporary_system_tokens≈{snapshot.temporary_system_tokens} hash={snapshot.temporary_system_hash} | "
         f"historical_messages_tokens≈{snapshot.historical_messages_tokens} hash={snapshot.historical_messages_hash} | "
+        f"runtime_context_tokens≈{snapshot.runtime_context_tokens} hash={snapshot.runtime_context_hash} | "
+        f"rendered_prompt_tokens≈{snapshot.rendered_prompt_tokens} hash={snapshot.rendered_prompt_hash} "
+        f"format={snapshot.rendered_prompt_format_version or 'none'} | "
+        f"stored_user_prompt_tokens≈{snapshot.stored_user_prompt_tokens} | "
         f"current_turn_tokens≈{snapshot.current_turn_tokens} hash={snapshot.current_turn_hash} | "
         f"tools_tokens≈{snapshot.tools_tokens} tools={snapshot.tool_count} hash={snapshot.tools_hash} | "
         f"messages={snapshot.message_count} first_changed_section={first_changed_section}",
@@ -218,6 +252,15 @@ def print_token_block(*lines: str) -> None:
     for line in lines:
         print(line, flush=True)
     print("=================", flush=True)
+
+
+def context_budget_state_from_snapshot(snapshot: Any) -> ContextBudgetState:
+    return ContextBudgetState(
+        usage_ratio=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0),
+        stage=str(getattr(getattr(snapshot, "stage", ""), "value", getattr(snapshot, "stage", ""))),
+        budget_is_tight=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0) >= CONFIG.memory.budget_working_ratio,
+        emergency=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0) >= CONFIG.memory.budget_emergency_ratio,
+    )
 
 
 def format_openai_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:  # 把本地工具 schema 转成 OpenAI Chat Completions 需要的 tools 格式。
@@ -547,6 +590,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     Before producing the final answer, evaluate whether the current Working Context is sufficient to answer correctly.
                     Only recover additional context when unavailable historical information may influence correctness. Do not perform recovery as a formality for simple questions, general reasoning, translation, summarization, or answers that are already fully supported by the visible context.
                     Evidence First Rule: never infer facts that could be verified by available historical context. If historical tool outputs, previously read file contents, command outputs, test results, prior decisions, constraints, or virtualized context may affect the answer, recover the relevant evidence before answering.
+                    Historical tool outputs may have been virtualized. Recover additional context only if required for correctness.
                     Use the most appropriate recovery tool according to the current task:
                     -Use RecoverContext when a relevant context_id is already visible or known.
                     -Use SearchRecoverableContext when you need to locate historical tool outputs or virtualized context by topic, file, command, error, keyword, or decision.
@@ -554,6 +598,13 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -Use GetRecentConversationTurns when you need to understand the recent conversation structure before deciding what evidence matters.
                     Do not follow a fixed recovery sequence. Choose only the recovery tool that best matches the missing evidence.
                     After each recovery, re-evaluate whether the current Working Context is now sufficient. If it is still insufficient and more relevant evidence is available, continue recovering. Only produce the final answer when sufficient evidence has been collected, or when the needed evidence is unavailable and that limitation is explicitly stated.
+
+                    ***Runtime Context Input Protocol***
+                    A current user message may contain a structured wrapper with <RUNTIME_CONTEXT> and <USER_REQUEST>.
+                    Treat <RUNTIME_CONTEXT> as current-turn environment state only. It is not a user request; do not answer, summarize, or repeat it directly.
+                    Use <RUNTIME_CONTEXT> only when it affects the correctness of the <USER_REQUEST>.
+                    Treat <USER_REQUEST> as the user's actual request.
+                    Runtime Context is temporary for the current inference turn. When the turn becomes historical, rely on the original user request and recover historical evidence with tools when needed.
 
                     ***Git安全协议***
                     Git 安全协议：
@@ -622,18 +673,24 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     # 追加当前用户问题  # 每次调用 `ask_deepseek` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
-    temporary_system_messages = build_turn_temporary_system_messages(workspace_tracker)
+    temporary_system_messages: list[dict[str, Any]] = []
+    base_runtime_context = RuntimeContextBuilder(workspace_tracker=workspace_tracker).build()
+    rendered_prompt = PromptRenderer.render_current_user_message(base_runtime_context, prompt)
     round_messages = list(messages)
     current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)  # 本用户轮内保持 tools schema 稳定。
     seen_tool_failures: set[tuple[str, str]] = set()
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
-        model_messages = with_turn_temporary_system_messages(round_messages, temporary_system_messages)
+        model_messages = render_current_turn_for_model(
+            round_messages,
+            current_turn_start=turn_start,
+            rendered_prompt=rendered_prompt,
+        )
         if memory_runtime is not None and session_id:
             summary_text = ""
             if should_generate_summary(memory_runtime, model_messages, current_tools, prompt):
                 summary_text = await summarize_engineering_state(client, MODEL, model_messages)
-            model_messages = memory_runtime.prepare_messages_for_model(
+            prepared_messages = memory_runtime.prepare_messages_for_model(
                 session_id=session_id,
                 messages=round_messages,
                 tools=current_tools,
@@ -642,12 +699,34 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 persist_snapshot=True,
                 current_turn_start=turn_start,
             )
-            if temporary_system_messages:
-                model_messages = with_turn_temporary_system_messages(model_messages, temporary_system_messages)
+            runtime_context = replace(base_runtime_context, task_snapshot=summary_text or None)
+            rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
+            model_messages = render_current_turn_for_model(
+                prepared_messages,
+                current_turn_start=turn_start,
+                rendered_prompt=rendered_prompt,
+            )
+            budget_snapshot = memory_runtime.prompt_budget_snapshot(
+                model_messages,
+                tools=current_tools,
+                current_prompt=prompt,
+            )
+            if budget_snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio:
+                runtime_context = replace(
+                    runtime_context,
+                    context_budget=context_budget_state_from_snapshot(budget_snapshot),
+                )
+                rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
+                model_messages = render_current_turn_for_model(
+                    prepared_messages,
+                    current_turn_start=turn_start,
+                    rendered_prompt=rendered_prompt,
+                )
         prompt_debug_snapshot = build_prompt_debug_snapshot(
             model_messages=model_messages,
             temporary_system_messages=temporary_system_messages,
             tools=current_tools,
+            rendered_prompt=rendered_prompt,
         )
         print_prompt_debug_with_previous(prompt_debug_snapshot)
         assistant_text, tool_calls, usage = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
@@ -668,6 +747,12 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                         "temporary_system_tokens": prompt_debug_snapshot.temporary_system_tokens,
                         "historical_messages_tokens": prompt_debug_snapshot.historical_messages_tokens,
                         "current_turn_tokens": prompt_debug_snapshot.current_turn_tokens,
+                        "runtime_context_tokens": prompt_debug_snapshot.runtime_context_tokens,
+                        "rendered_prompt_tokens": prompt_debug_snapshot.rendered_prompt_tokens,
+                        "stored_user_prompt_tokens": prompt_debug_snapshot.stored_user_prompt_tokens,
+                        "runtime_context_hash": prompt_debug_snapshot.runtime_context_hash,
+                        "rendered_prompt_hash": prompt_debug_snapshot.rendered_prompt_hash,
+                        "rendered_prompt_format_version": prompt_debug_snapshot.rendered_prompt_format_version,
                         "tools_tokens": prompt_debug_snapshot.tools_tokens,
                     },
                     **usage_values,
@@ -843,23 +928,11 @@ def truncate_tool_output(output: str) -> str:
 
 
 def build_turn_temporary_system_messages(workspace_tracker: Any | None) -> list[dict[str, Any]]:
-    messages = [
-        {
-            "role": "system",
-            "content": (
-                "Historical tool outputs may have been virtualized. "
-                "Recover additional context only if required for correctness."
-            ),
-        }
-    ]
-    notice = workspace_change_notice_content(workspace_tracker)
-    if notice:
-        messages.append({"role": "system", "content": notice})
-    return messages
+    return []
 
 
 def with_workspace_change_notice(messages: list[dict[str, Any]], workspace_tracker: Any | None) -> list[dict[str, Any]]:
-    return with_turn_temporary_system_messages(messages, build_turn_temporary_system_messages(workspace_tracker))
+    return list(messages)
 
 
 def with_turn_temporary_system_messages(
@@ -873,22 +946,7 @@ def with_turn_temporary_system_messages(
 
 
 def workspace_change_notice_content(workspace_tracker: Any | None) -> str:
-    if workspace_tracker is None:
-        return ""
-    changed_paths, omitted = workspace_tracker.consume_external_changes()
-    if not changed_paths:
-        return ""
-
-    lines = [
-        "环境通知：以下文件是你之前通过 ReadFile 读取过的文件，之后被用户或外部进程修改。",
-        "这不是用户请求，不要回答、总结或复述本通知；它只用于判断是否需要重新读取文件。",
-        "无论是否重新读取，最终回答必须针对最后一条用户消息本身。",
-        "若这些文件可能影响当前工作，请先重新读取；若无关，可以忽略。",
-    ]
-    lines.extend(f"- {path}" for path in changed_paths)
-    if omitted:
-        lines.append(f"- ... 另有 {omitted} 个文件未列出")
-    return "\n".join(lines)
+    return ""
 
 
 async def build_round_tools(

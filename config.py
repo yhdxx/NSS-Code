@@ -127,7 +127,7 @@ class ClientConfig:
     )
     max_tool_output_chars: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MAX_TOOL_OUTPUT_CHARS", 12000))
     multiline_argument_fields: frozenset[str] = frozenset({"command", "content", "old_string", "new_string"})
-    prompt_cache_debug: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_PROMPT_CACHE_DEBUG", True))
+    debug: bool = field(default_factory=lambda: _env_bool("DEBUG", _env_bool("MYCODINGAGENT_DEBUG", False)))
 
 
 @dataclass(frozen=True)
@@ -252,7 +252,7 @@ class SkillConfig:
         default_factory=lambda: _env_float("MYCODINGAGENT_SKILL_WATCH_POLL_INTERVAL", 2.0)
     )
     user_id: str = field(default_factory=_default_user_id)
-    router_top_n: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_SKILL_ROUTER_TOP_N", 20))
+    router_top_n: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_SKILL_ROUTER_TOP_N", 10))
     router_retrieval_top_k: int = field(
         default_factory=lambda: _env_int("MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_TOP_K", 40)
     )
