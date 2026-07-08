@@ -39,6 +39,41 @@ class CompressionResult:
 
 
 @dataclass
+class TokenUsageRecord:
+    usage_id: str
+    session_id: str
+    request_index: int
+    prompt_tokens: int = 0
+    prompt_cache_hit_tokens: int = 0
+    prompt_cache_miss_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+    model: str = ""
+    prompt_hash: str = ""
+    tools_hash: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
+    created_at: float = field(default_factory=time)
+
+
+@dataclass
+class TokenUsageSummary:
+    request_count: int = 0
+    prompt_tokens: int = 0
+    prompt_cache_hit_tokens: int = 0
+    prompt_cache_miss_tokens: int = 0
+    completion_tokens: int = 0
+    total_tokens: int = 0
+
+    def add(self, record: TokenUsageRecord) -> None:
+        self.request_count += 1
+        self.prompt_tokens += record.prompt_tokens
+        self.prompt_cache_hit_tokens += record.prompt_cache_hit_tokens
+        self.prompt_cache_miss_tokens += record.prompt_cache_miss_tokens
+        self.completion_tokens += record.completion_tokens
+        self.total_tokens += record.total_tokens
+
+
+@dataclass
 class ToolOutputRecord:
     output_id: str
     session_id: str
@@ -155,6 +190,7 @@ class SessionState:
     workspace_root: str = ""
     workspace_label: str = ""
     workspace_fingerprint: str = ""
+    token_usage: TokenUsageSummary = field(default_factory=TokenUsageSummary)
 
 
 @dataclass

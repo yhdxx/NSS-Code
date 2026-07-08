@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import types
+from types import SimpleNamespace
 from time import time
 
 PROJECT_ROOT = Path(__file__).resolve().parents[1]
@@ -289,6 +290,99 @@ def test_session_id_is_stable_and_messages_restore(tmp_path):
     assert restored.messages == messages
 
 
+def test_token_usage_persists_and_loads_with_session(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+
+    first = runtime.record_token_usage(
+        session_id=session_id,
+        prompt_tokens=100,
+        prompt_cache_hit_tokens=40,
+        prompt_cache_miss_tokens=60,
+        completion_tokens=7,
+        total_tokens=107,
+        model="test",
+        prompt_hash="prompt-a",
+        tools_hash="tools-a",
+    )
+    second = runtime.record_token_usage(
+        session_id=session_id,
+        prompt_tokens=20,
+        prompt_cache_hit_tokens=5,
+        prompt_cache_miss_tokens=15,
+        completion_tokens=3,
+        total_tokens=23,
+        model="test",
+        prompt_hash="prompt-b",
+        tools_hash="tools-a",
+    )
+    restored = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3")).load_session(session_id)
+
+    assert first.request_count == 1
+    assert second.request_count == 2
+    assert restored is not None
+    assert restored.token_usage.request_count == 2
+    assert restored.token_usage.prompt_tokens == 120
+    assert restored.token_usage.prompt_cache_hit_tokens == 45
+    assert restored.token_usage.prompt_cache_miss_tokens == 75
+    assert restored.token_usage.completion_tokens == 10
+    assert restored.token_usage.total_tokens == 130
+
+
+def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_path, capsys):
+    async def scenario():
+        runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+
+        async def fake_stream_one_round(_client, _model, messages, tools):
+            return (
+                "done",
+                [],
+                SimpleNamespace(
+                    prompt_tokens=100,
+                    prompt_cache_hit_tokens=70,
+                    prompt_cache_miss_tokens=30,
+                    completion_tokens=8,
+                    total_tokens=108,
+                ),
+            )
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+
+        text, _updated = await agent_client.ask_deepseek(
+            client=object(),
+            prompt="hello",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+            memory_runtime=runtime,
+        )
+        session_id = runtime.get_current_session_id()
+        assert session_id is not None
+        restored = runtime.load_session(session_id)
+        await runtime.close()
+        return text, restored
+
+    text, restored = asyncio.run(scenario())
+    output = capsys.readouterr().out
+
+    assert text == "done"
+    assert "[PromptDebug]" in output
+    assert "fixed_system_tokens≈" in output
+    assert "temporary_system_tokens≈" in output
+    assert "historical_messages_tokens≈" in output
+    assert "current_turn_tokens≈" in output
+    assert "tools_tokens≈" in output
+    assert "first_changed_section=" in output
+    assert "=================" in output
+    assert "[Token] 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
+    assert "[Token][本轮] 请求 1 | 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
+    assert "[Token][会话] 请求 1 | 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
+    assert restored is not None
+    assert restored.token_usage.request_count == 1
+    assert restored.token_usage.prompt_cache_hit_tokens == 70
+    assert restored.token_usage.prompt_cache_miss_tokens == 30
+
+
 def test_delete_session_removes_related_records(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")
@@ -475,6 +569,37 @@ def test_fork_session_uses_override_messages_and_copies_snapshots(tmp_path):
     assert fork_state.messages == override_messages
     assert fork_state.latest_lrfu == {"skills": {"python": {"uses": 2}}}
     assert fork_state.latest_file_state == {"files": [{"path": "a.py", "content": "old", "mtime_ns": 1}]}
+
+
+def test_clear_flow_saves_current_session_and_starts_new_empty_session(tmp_path):
+    async def scenario():
+        runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+        current_session_id = runtime.start_session("test")
+        messages = [{"role": "user", "content": "current work"}, {"role": "assistant", "content": "done"}]
+        await runtime.drain()
+
+        saved_id = save_current_session_if_needed(
+            memory_runtime=runtime,
+            messages=messages,
+            skill_runtime=None,
+        )
+        await runtime.drain()
+        runtime.clear_current_session_id()
+        new_session_id = runtime.start_session("test")
+        await runtime.drain()
+
+        saved_state = runtime.store.load_session(current_session_id)
+        new_state = runtime.store.load_session(new_session_id)
+        await runtime.close()
+
+        assert saved_id == current_session_id
+        assert new_session_id != current_session_id
+        assert saved_state is not None
+        assert saved_state.messages == messages
+        assert new_state is not None
+        assert new_state.messages == []
+
+    asyncio.run(scenario())
 
 
 def test_save_current_session_before_switch_uses_existing_session_id(tmp_path):

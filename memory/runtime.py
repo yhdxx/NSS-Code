@@ -27,6 +27,8 @@ from memory.models import (
     MemoryScope,
     SessionListItem,
     SessionState,
+    TokenUsageRecord,
+    TokenUsageSummary,
     ToolInvocationMetadata,
     ToolOutputRecord,
 )
@@ -215,6 +217,49 @@ class MemoryRuntime:
             self.store.touch_session(session_id)
             self.current_session_id = session_id
         return state
+
+    def record_token_usage(
+        self,
+        *,
+        session_id: str,
+        prompt_tokens: int,
+        prompt_cache_hit_tokens: int,
+        prompt_cache_miss_tokens: int,
+        completion_tokens: int,
+        total_tokens: int,
+        model: str = "",
+        prompt_hash: str = "",
+        tools_hash: str = "",
+        metadata: dict[str, Any] | None = None,
+    ) -> TokenUsageSummary:
+        model_name = model or self.model
+        self.store.ensure_session(
+            session_id=session_id,
+            model=model_name,
+            workspace_root=self.workspace_root,
+            workspace_label=self.workspace_label,
+            workspace_fingerprint=self.workspace_fingerprint,
+        )
+        record = TokenUsageRecord(
+            usage_id=uuid4().hex,
+            session_id=session_id,
+            request_index=self.store.next_token_usage_request_index(session_id),
+            prompt_tokens=prompt_tokens,
+            prompt_cache_hit_tokens=prompt_cache_hit_tokens,
+            prompt_cache_miss_tokens=prompt_cache_miss_tokens,
+            completion_tokens=completion_tokens,
+            total_tokens=total_tokens,
+            model=model_name,
+            prompt_hash=prompt_hash,
+            tools_hash=tools_hash,
+            metadata=metadata or {},
+            created_at=time(),
+        )
+        self.store.save_token_usage(record)
+        return self.store.load_token_usage_summary(session_id)
+
+    def load_token_usage_summary(self, session_id: str) -> TokenUsageSummary:
+        return self.store.load_token_usage_summary(session_id)
 
     def fork_session(
         self,

@@ -16,6 +16,8 @@ from memory.models import (
     SessionListItem,
     SessionState,
     SnapshotDelta,
+    TokenUsageRecord,
+    TokenUsageSummary,
     ToolInvocationMetadata,
     ToolOutputRecord,
 )
@@ -45,6 +47,8 @@ __all__ = [
     "SessionState",
     "SnapshotDelta",
     "StructuredSnapshotGenerator",
+    "TokenUsageRecord",
+    "TokenUsageSummary",
     "ToolInvocationMetadata",
     "ToolOutputRecord",
     "TurnState",

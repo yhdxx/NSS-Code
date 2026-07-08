@@ -127,6 +127,7 @@ class ClientConfig:
     )
     max_tool_output_chars: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MAX_TOOL_OUTPUT_CHARS", 12000))
     multiline_argument_fields: frozenset[str] = frozenset({"command", "content", "old_string", "new_string"})
+    prompt_cache_debug: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_PROMPT_CACHE_DEBUG", True))
 
 
 @dataclass(frozen=True)

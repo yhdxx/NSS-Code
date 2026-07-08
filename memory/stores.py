@@ -15,6 +15,8 @@ from memory.models import (
     SessionListItem,
     SessionState,
     SnapshotDelta,
+    TokenUsageRecord,
+    TokenUsageSummary,
     ToolInvocationMetadata,
     ToolOutputRecord,
 )
@@ -214,6 +216,25 @@ class SQLiteMemoryStore:
                 )
                 """
             )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_token_usage (
+                    usage_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    request_index INTEGER NOT NULL,
+                    prompt_tokens INTEGER NOT NULL DEFAULT 0,
+                    prompt_cache_hit_tokens INTEGER NOT NULL DEFAULT 0,
+                    prompt_cache_miss_tokens INTEGER NOT NULL DEFAULT 0,
+                    completion_tokens INTEGER NOT NULL DEFAULT 0,
+                    total_tokens INTEGER NOT NULL DEFAULT 0,
+                    model TEXT NOT NULL DEFAULT '',
+                    prompt_hash TEXT NOT NULL DEFAULT '',
+                    tools_hash TEXT NOT NULL DEFAULT '',
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
+                    created_at REAL NOT NULL
+                )
+                """
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON session_messages(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_outputs_session ON session_tool_outputs(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_historical_turns_session ON historical_turns(session_id, turn_index)")
@@ -225,6 +246,7 @@ class SQLiteMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_snapshots_session ON conversation_snapshots(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_deltas_session ON snapshot_deltas(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoint_records_session ON checkpoint_records(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_session ON session_token_usage(session_id, request_index)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_root ON sessions(workspace_root)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_fingerprint ON sessions(workspace_fingerprint)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed_at ON sessions(last_accessed_at)")
@@ -388,6 +410,77 @@ class SQLiteMemoryStore:
                 "UPDATE sessions SET updated_at = ?, last_accessed_at = ? WHERE session_id = ?",
                 (now, now, session_id),
             )
+
+    def save_token_usage(self, record: TokenUsageRecord) -> None:
+        now = time()
+        with self._connect() as conn:
+            if self._session_status(conn, record.session_id) == "historical":
+                return
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO session_token_usage(
+                    usage_id, session_id, request_index, prompt_tokens,
+                    prompt_cache_hit_tokens, prompt_cache_miss_tokens,
+                    completion_tokens, total_tokens, model, prompt_hash,
+                    tools_hash, metadata_json, created_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.usage_id,
+                    record.session_id,
+                    record.request_index,
+                    record.prompt_tokens,
+                    record.prompt_cache_hit_tokens,
+                    record.prompt_cache_miss_tokens,
+                    record.completion_tokens,
+                    record.total_tokens,
+                    record.model,
+                    record.prompt_hash,
+                    record.tools_hash,
+                    json.dumps(record.metadata, ensure_ascii=False),
+                    record.created_at,
+                ),
+            )
+            conn.execute(
+                "UPDATE sessions SET updated_at = ?, last_accessed_at = ? WHERE session_id = ?",
+                (now, now, record.session_id),
+            )
+
+    def next_token_usage_request_index(self, session_id: str) -> int:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT COALESCE(MAX(request_index), 0) AS max_index FROM session_token_usage WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+        return int(row["max_index"] or 0) + 1
+
+    def load_token_usage_summary(self, session_id: str) -> TokenUsageSummary:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT
+                    COUNT(*) AS request_count,
+                    COALESCE(SUM(prompt_tokens), 0) AS prompt_tokens,
+                    COALESCE(SUM(prompt_cache_hit_tokens), 0) AS prompt_cache_hit_tokens,
+                    COALESCE(SUM(prompt_cache_miss_tokens), 0) AS prompt_cache_miss_tokens,
+                    COALESCE(SUM(completion_tokens), 0) AS completion_tokens,
+                    COALESCE(SUM(total_tokens), 0) AS total_tokens
+                FROM session_token_usage
+                WHERE session_id = ?
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return TokenUsageSummary()
+        return TokenUsageSummary(
+            request_count=int(row["request_count"] or 0),
+            prompt_tokens=int(row["prompt_tokens"] or 0),
+            prompt_cache_hit_tokens=int(row["prompt_cache_hit_tokens"] or 0),
+            prompt_cache_miss_tokens=int(row["prompt_cache_miss_tokens"] or 0),
+            completion_tokens=int(row["completion_tokens"] or 0),
+            total_tokens=int(row["total_tokens"] or 0),
+        )
 
     def load_historical_turns(self, session_id: str, *, limit: int | None = None) -> list[HistoricalTurn]:
         query = """
@@ -748,6 +841,7 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM snapshot_deltas WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM checkpoint_records WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
             return cursor.rowcount > 0
 
     def delete_expired_sessions(self, *, max_age_seconds: float) -> int:
@@ -770,6 +864,7 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM snapshot_deltas WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM checkpoint_records WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
             return len(session_ids)
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -802,6 +897,7 @@ class SQLiteMemoryStore:
             workspace_root=row["workspace_root"],
             workspace_label=row["workspace_label"],
             workspace_fingerprint=row["workspace_fingerprint"],
+            token_usage=self.load_token_usage_summary(session_id),
         )
 
     def save_conversation_snapshot(self, snapshot: ConversationSnapshot) -> None:

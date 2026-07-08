@@ -1,6 +1,7 @@
 from __future__ import annotations  # 允许在类型注解中使用尚未定义的类型，并启用较新的注解解析行为。
 
 import asyncio  # 提供异步事件循环、异步子进程等待等能力，本文件用它运行 async 主流程。
+import hashlib  # 为 PromptDebug 生成稳定短哈希，避免打印原始 prompt 内容。
 import json  # 负责解析模型生成的工具参数 JSON，以及把参数格式化成终端可读文本。
 import os  # 读取环境变量、清理代理环境变量，保证 API 客户端和本地工具按预期运行。
 from dataclasses import dataclass  # 用轻量数据类保存流式返回过程中尚未拼完整的工具调用。
@@ -14,8 +15,8 @@ from openai import AsyncOpenAI  # OpenAI Python SDK 的异步客户端；这里�
 from openai import APIConnectionError, APIError, APITimeoutError
 
 from config import CONFIG  # 统一读取 API、模型和客户端展示相关配置。
-from memory import MemoryRuntime
-from memory.compressor import estimate_size
+from memory import MemoryRuntime, TokenUsageRecord, TokenUsageSummary
+from memory.budget import estimate_tokens
 from memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
 from tools import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
 
@@ -26,6 +27,7 @@ MAX_TOOL_ROUNDS = CONFIG.client.max_tool_rounds  # 单次用户请求最多允�
 MAX_DISPLAY_STRING_CHARS = CONFIG.client.max_display_string_chars  # 终端展示超长字符串参数时的最大字符数，避免 WriteFile 内容刷屏。
 MAX_TOOL_OUTPUT_CHARS = CONFIG.client.max_tool_output_chars
 MULTILINE_ARGUMENT_FIELDS = CONFIG.client.multiline_argument_fields  # 这些字段通常包含代码、命令或长文本，打印工具调用时优先按多行展示。
+PROMPT_CACHE_DEBUG = CONFIG.client.prompt_cache_debug
 
 
 @dataclass  # 自动生成 `__init__` 等方法，让该类只承担“保存状态”的职责。
@@ -33,6 +35,189 @@ class PendingToolCall:  # 保存一个流式工具调用在拼接完成前的中
     tool_id: str = ""  # OpenAI 返回的工具调用 ID；后续 tool 消息必须用它和 assistant tool_call 对齐。
     tool_name: str = ""  # 工具函数名，例如 `ReadFile`、`WriteFile`、`Bash`。
     arguments: str = ""  # 工具参数的 JSON 字符串；流式返回时会被分片追加到这里。
+
+
+@dataclass
+class PromptDebugSnapshot:
+    request_hash: str
+    fixed_system_hash: str
+    temporary_system_hash: str
+    historical_messages_hash: str
+    current_turn_hash: str
+    tools_hash: str
+    request_tokens: int
+    fixed_system_tokens: int
+    temporary_system_tokens: int
+    historical_messages_tokens: int
+    current_turn_tokens: int
+    tools_tokens: int
+    message_count: int
+    tool_count: int
+
+
+_LAST_PROMPT_DEBUG_SNAPSHOT: PromptDebugSnapshot | None = None
+
+
+def stable_json_hash(value: Any) -> str:
+    payload = json.dumps(value, ensure_ascii=False, sort_keys=True, default=str)
+    return hashlib.sha256(payload.encode("utf-8")).hexdigest()[:12]
+
+
+def estimated_json_tokens(value: Any) -> int:
+    return estimate_tokens(json.dumps(value, ensure_ascii=False, sort_keys=True, default=str))
+
+
+def api_usage_to_dict(usage: Any) -> dict[str, int]:
+    prompt_tokens = int(getattr(usage, "prompt_tokens", 0) or 0)
+    completion_tokens = int(getattr(usage, "completion_tokens", 0) or 0)
+    cache_hit = int(getattr(usage, "prompt_cache_hit_tokens", 0) or 0)
+    cache_miss = int(getattr(usage, "prompt_cache_miss_tokens", 0) or 0)
+    total_tokens = int(getattr(usage, "total_tokens", prompt_tokens + completion_tokens) or 0)
+    if prompt_tokens and cache_hit == 0 and cache_miss == 0:
+        cache_miss = prompt_tokens
+    return {
+        "prompt_tokens": prompt_tokens,
+        "prompt_cache_hit_tokens": cache_hit,
+        "prompt_cache_miss_tokens": cache_miss,
+        "completion_tokens": completion_tokens,
+        "total_tokens": total_tokens,
+    }
+
+
+def add_usage_to_summary(summary: TokenUsageSummary, values: dict[str, int]) -> None:
+    summary.add(
+        TokenUsageRecord(
+            usage_id="",
+            session_id="",
+            request_index=0,
+            prompt_tokens=values["prompt_tokens"],
+            prompt_cache_hit_tokens=values["prompt_cache_hit_tokens"],
+            prompt_cache_miss_tokens=values["prompt_cache_miss_tokens"],
+            completion_tokens=values["completion_tokens"],
+            total_tokens=values["total_tokens"],
+        )
+    )
+
+
+def format_token_summary(label: str, summary: TokenUsageSummary) -> str:
+    return (
+        f"[Token][{label}] 请求 {summary.request_count} | 输入 {summary.prompt_tokens} "
+        f"(缓存命中 {summary.prompt_cache_hit_tokens}, 未命中 {summary.prompt_cache_miss_tokens}) "
+        f"| 输出 {summary.completion_tokens} | 总计 {summary.total_tokens}"
+    )
+
+
+def split_prompt_debug_sections(
+    model_messages: list[dict[str, Any]],
+    temporary_system_messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> dict[str, Any]:
+    fixed_system = model_messages[:1] if model_messages and model_messages[0].get("role") == "system" else []
+    temporary_count = len(temporary_system_messages)
+    historical_start = len(fixed_system) + temporary_count
+    historical_end = len(model_messages)
+    current_turn_start = historical_end
+    for index in range(len(model_messages) - 1, historical_start - 1, -1):
+        if model_messages[index].get("role") == "user":
+            current_turn_start = index
+            break
+    historical_messages = model_messages[historical_start:current_turn_start]
+    current_turn = model_messages[current_turn_start:]
+    return {
+        "fixed_system": fixed_system,
+        "temporary_system": temporary_system_messages,
+        "historical_messages": historical_messages,
+        "current_turn": current_turn,
+        "tools": tools,
+    }
+
+
+def build_prompt_debug_snapshot(
+    *,
+    model_messages: list[dict[str, Any]],
+    temporary_system_messages: list[dict[str, Any]],
+    tools: list[dict[str, Any]],
+) -> PromptDebugSnapshot:
+    sections = split_prompt_debug_sections(model_messages, temporary_system_messages, tools)
+    fixed_system_tokens = estimated_json_tokens(sections["fixed_system"])
+    temporary_system_tokens = estimated_json_tokens(sections["temporary_system"])
+    historical_messages_tokens = estimated_json_tokens(sections["historical_messages"])
+    current_turn_tokens = estimated_json_tokens(sections["current_turn"])
+    tools_tokens = estimated_json_tokens(sections["tools"])
+    return PromptDebugSnapshot(
+        request_hash=stable_json_hash(model_messages),
+        fixed_system_hash=stable_json_hash(sections["fixed_system"]),
+        temporary_system_hash=stable_json_hash(sections["temporary_system"]),
+        historical_messages_hash=stable_json_hash(sections["historical_messages"]),
+        current_turn_hash=stable_json_hash(sections["current_turn"]),
+        tools_hash=stable_json_hash(sections["tools"]),
+        request_tokens=(
+            fixed_system_tokens
+            + temporary_system_tokens
+            + historical_messages_tokens
+            + current_turn_tokens
+            + tools_tokens
+        ),
+        fixed_system_tokens=fixed_system_tokens,
+        temporary_system_tokens=temporary_system_tokens,
+        historical_messages_tokens=historical_messages_tokens,
+        current_turn_tokens=current_turn_tokens,
+        tools_tokens=tools_tokens,
+        message_count=len(model_messages),
+        tool_count=len(tools),
+    )
+
+
+def first_changed_prompt_debug_section(
+    previous: PromptDebugSnapshot | None,
+    current: PromptDebugSnapshot,
+) -> str:
+    if previous is None:
+        return "none(first_request)"
+    checks = [
+        ("fixed_system", previous.fixed_system_hash, current.fixed_system_hash),
+        ("temporary_system", previous.temporary_system_hash, current.temporary_system_hash),
+        ("historical_messages", previous.historical_messages_hash, current.historical_messages_hash),
+        ("current_turn", previous.current_turn_hash, current.current_turn_hash),
+        ("tools", previous.tools_hash, current.tools_hash),
+    ]
+    for section, previous_hash, current_hash in checks:
+        if previous_hash != current_hash:
+            return f"{section}({previous_hash}->{current_hash})"
+    return "none"
+
+
+def print_prompt_debug(
+    *,
+    snapshot: PromptDebugSnapshot,
+    first_changed_section: str,
+) -> None:
+    if not PROMPT_CACHE_DEBUG:
+        return
+    print_token_block(
+        "[PromptDebug] "
+        f"request≈{snapshot.request_tokens} hash={snapshot.request_hash} | "
+        f"fixed_system_tokens≈{snapshot.fixed_system_tokens} hash={snapshot.fixed_system_hash} | "
+        f"temporary_system_tokens≈{snapshot.temporary_system_tokens} hash={snapshot.temporary_system_hash} | "
+        f"historical_messages_tokens≈{snapshot.historical_messages_tokens} hash={snapshot.historical_messages_hash} | "
+        f"current_turn_tokens≈{snapshot.current_turn_tokens} hash={snapshot.current_turn_hash} | "
+        f"tools_tokens≈{snapshot.tools_tokens} tools={snapshot.tool_count} hash={snapshot.tools_hash} | "
+        f"messages={snapshot.message_count} first_changed_section={first_changed_section}",
+    )
+
+
+def print_prompt_debug_with_previous(snapshot: PromptDebugSnapshot) -> None:
+    global _LAST_PROMPT_DEBUG_SNAPSHOT
+    first_changed_section = first_changed_prompt_debug_section(_LAST_PROMPT_DEBUG_SNAPSHOT, snapshot)
+    print_prompt_debug(snapshot=snapshot, first_changed_section=first_changed_section)
+    _LAST_PROMPT_DEBUG_SNAPSHOT = snapshot
+
+
+def print_token_block(*lines: str) -> None:
+    print("=================", flush=True)
+    for line in lines:
+        print(line, flush=True)
+    print("=================", flush=True)
 
 
 def format_openai_tools(raw_tools: list[dict[str, Any]]) -> list[dict[str, Any]]:  # 把本地工具 schema 转成 OpenAI Chat Completions 需要的 tools 格式。
@@ -222,11 +407,11 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
     except (APIConnectionError, APITimeoutError) as exc:
         error = f"Error: API connection failed: {exc}"
         print(f"模型：{error}", flush=True)
-        return error, []
+        return error, [], None
     except APIError as exc:
         error = f"Error: API request failed: {exc}"
         print(f"模型：{error}", flush=True)
-        return error, []
+        return error, [], None
 
     content_parts: list[str] = []  # 收集模型普通文本 delta，最终拼成完整 assistant 文本。
     pending_tool_calls: dict[int, PendingToolCall] = {}  # 按 tool_call.index 聚合流式工具调用分片。
@@ -420,6 +605,20 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         if callable(end_turn):
             end_turn()
 
+    turn_token_usage = TokenUsageSummary()
+    session_token_usage: TokenUsageSummary | None = None
+
+    def print_turn_token_summary() -> None:
+        nonlocal session_token_usage
+        if turn_token_usage.request_count == 0:
+            return
+        if session_token_usage is None and memory_runtime is not None and session_id:
+            session_token_usage = memory_runtime.load_token_usage_summary(session_id)
+        lines = [format_token_summary("本轮", turn_token_usage)]
+        if session_token_usage is not None:
+            lines.append(format_token_summary("会话", session_token_usage))
+        print_token_block(*lines)
+
     # 追加当前用户问题  # 每次调用 `ask_deepseek` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
@@ -445,21 +644,46 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             )
             if temporary_system_messages:
                 model_messages = with_turn_temporary_system_messages(model_messages, temporary_system_messages)
+        prompt_debug_snapshot = build_prompt_debug_snapshot(
+            model_messages=model_messages,
+            temporary_system_messages=temporary_system_messages,
+            tools=current_tools,
+        )
+        print_prompt_debug_with_previous(prompt_debug_snapshot)
         assistant_text, tool_calls, usage = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
         if usage:
-            prompt_tokens = getattr(usage, "prompt_tokens", 0)
-            completion_tokens = getattr(usage, "completion_tokens", 0)
-            cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0)
-            cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0)
-            total_tokens = getattr(usage, "total_tokens", prompt_tokens + completion_tokens)
-            parts = [f"输入 {prompt_tokens}"]
-            if cache_hit or cache_miss:
-                parts.append(f"(缓存命中 {cache_hit}, 未命中 {cache_miss})")
-            parts.append(f"| 输出 {completion_tokens} | 总计 {total_tokens}")
-            print(f"[Token] {' '.join(parts)}", flush=True)
+            usage_values = api_usage_to_dict(usage)
+            add_usage_to_summary(turn_token_usage, usage_values)
+            if memory_runtime is not None and session_id:
+                session_token_usage = memory_runtime.record_token_usage(
+                    session_id=session_id,
+                    model=MODEL,
+                    prompt_hash=prompt_debug_snapshot.request_hash,
+                    tools_hash=prompt_debug_snapshot.tools_hash,
+                    metadata={
+                        "message_count": prompt_debug_snapshot.message_count,
+                        "tool_count": prompt_debug_snapshot.tool_count,
+                        "estimated_request_tokens": prompt_debug_snapshot.request_tokens,
+                        "fixed_system_tokens": prompt_debug_snapshot.fixed_system_tokens,
+                        "temporary_system_tokens": prompt_debug_snapshot.temporary_system_tokens,
+                        "historical_messages_tokens": prompt_debug_snapshot.historical_messages_tokens,
+                        "current_turn_tokens": prompt_debug_snapshot.current_turn_tokens,
+                        "tools_tokens": prompt_debug_snapshot.tools_tokens,
+                    },
+                    **usage_values,
+                )
+            parts = [f"输入 {usage_values['prompt_tokens']}"]
+            if usage_values["prompt_cache_hit_tokens"] or usage_values["prompt_cache_miss_tokens"]:
+                parts.append(
+                    f"(缓存命中 {usage_values['prompt_cache_hit_tokens']}, "
+                    f"未命中 {usage_values['prompt_cache_miss_tokens']})"
+                )
+            parts.append(f"| 输出 {usage_values['completion_tokens']} | 总计 {usage_values['total_tokens']}")
+            print_token_block(f"[Token] {' '.join(parts)}")
         if assistant_text.startswith("Error: API ") and not tool_calls:
             del messages[turn_start:]
             save_session_state(sync=True)
+            print_turn_token_summary()
             end_skill_turn()
             return assistant_text, messages
 
@@ -490,6 +714,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             save_session_state(sync=not tool_calls)
 
         if not tool_calls:  # 如果模型没有请求工具，说明本轮任务已经完成。
+            print_turn_token_summary()
             end_skill_turn()
             return assistant_text, messages  # 返回最终文本和完整消息历史给调用方。
 
@@ -553,6 +778,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             round_messages.append(tool_message)
             save_session_state()
 
+    print_turn_token_summary()
     end_skill_turn()
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。
 

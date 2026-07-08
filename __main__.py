@@ -213,6 +213,23 @@ def build_command_registry() -> CommandRegistry:
     )
     registry.register(
         CommandSpec(
+            name="/clear",
+            aliases=("clear", "清空会话"),
+            description="保存当前会话，清空上下文，并启动新的空会话",
+            usage="[--help]",
+            usages=(
+                ("", "保存当前会话后清空当前上下文，并立即启动新的空会话"),
+                (" --help", "显示 /clear 的完整参数说明"),
+            ),
+            examples=(
+                "/clear",
+                "/clear --help",
+            ),
+            handler=handle_clear_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/delete",
             aliases=("delete", "删除会话"),
             description="删除本地历史会话；默认通过 ↑/↓ 选择删除",
@@ -354,6 +371,41 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         flush=True,
     )
     return CommandResult(messages=fork_messages)
+
+
+async def handle_clear_command(context: CommandContext, arguments: str) -> CommandResult:
+    argument = arguments.strip()
+    clear_spec = build_command_registry().match("/clear")[0]
+    if argument in {"--help", "-h", "help"}:
+        print(clear_spec.help_text(), flush=True)
+        return CommandResult()
+    if argument:
+        print(clear_spec.help_text(), flush=True)
+        return CommandResult()
+
+    memory_runtime = context.memory_runtime
+    if memory_runtime is None:
+        print("记忆模块未启用，已清空当前对话。", flush=True)
+        return CommandResult(messages=[])
+
+    await memory_runtime.drain()
+    saved_session_id = save_current_session_if_needed(
+        memory_runtime=memory_runtime,
+        messages=context.messages,
+        skill_runtime=context.skill_runtime,
+        file_state_cache=context.file_state_cache,
+    )
+    await memory_runtime.drain()
+    memory_runtime.clear_current_session_id()
+    new_session_id = memory_runtime.start_session(client.MODEL)
+    await memory_runtime.drain()
+
+    if saved_session_id:
+        print(f"已保存当前会话：{saved_session_id}", flush=True)
+    else:
+        print("当前会话为空，无需保存。", flush=True)
+    print(f"已清空上下文并启动新会话：{new_session_id}", flush=True)
+    return CommandResult(messages=[])
 
 
 async def handle_delete_command(context: CommandContext, arguments: str) -> CommandResult:
@@ -556,6 +608,7 @@ def command_for_session_action(action: str) -> str:
     return {
         "恢复": "/resume",
         "分叉": "/fork",
+        "清空": "/clear",
         "删除": "/delete",
     }.get(action, "/resume")
 
