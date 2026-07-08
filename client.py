@@ -407,11 +407,13 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     # 追加当前用户问题  # 每次调用 `ask_deepseek` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
-    round_messages = with_workspace_change_notice(messages, workspace_tracker)
+    temporary_system_messages = build_turn_temporary_system_messages(workspace_tracker)
+    round_messages = [*messages, *temporary_system_messages]
+    persist_context_snapshot = not temporary_system_messages
+    current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)  # 本用户轮内保持 tools schema 稳定。
     seen_tool_failures: set[tuple[str, str]] = set()
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
-        current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)  # 根据 SKILL 检索结果构造本轮 tools schema。
         model_messages = round_messages
         if memory_runtime is not None and session_id:
             summary_text = ""
@@ -423,7 +425,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 tools=current_tools,
                 current_prompt=prompt,
                 summary_text=summary_text,
-                persist_snapshot=round_messages == messages,
+                persist_snapshot=persist_context_snapshot,
                 current_turn_start=turn_start,
             )
         assistant_text, tool_calls = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
@@ -586,12 +588,23 @@ def truncate_tool_output(output: str) -> str:
     return output[:MAX_TOOL_OUTPUT_CHARS] + f"\n... <tool output truncated {remaining} chars>"
 
 
+def build_turn_temporary_system_messages(workspace_tracker: Any | None) -> list[dict[str, Any]]:
+    notice = workspace_change_notice_content(workspace_tracker)
+    if not notice:
+        return []
+    return [{"role": "system", "content": notice}]
+
+
 def with_workspace_change_notice(messages: list[dict[str, Any]], workspace_tracker: Any | None) -> list[dict[str, Any]]:
+    return [*messages, *build_turn_temporary_system_messages(workspace_tracker)]
+
+
+def workspace_change_notice_content(workspace_tracker: Any | None) -> str:
     if workspace_tracker is None:
-        return list(messages)
+        return ""
     changed_paths, omitted = workspace_tracker.consume_external_changes()
     if not changed_paths:
-        return list(messages)
+        return ""
 
     lines = [
         "环境通知：以下文件是你之前通过 ReadFile 读取过的文件，之后被用户或外部进程修改。",
@@ -602,7 +615,7 @@ def with_workspace_change_notice(messages: list[dict[str, Any]], workspace_track
     lines.extend(f"- {path}" for path in changed_paths)
     if omitted:
         lines.append(f"- ... 另有 {omitted} 个文件未列出")
-    return [*messages, {"role": "system", "content": "\n".join(lines)}]
+    return "\n".join(lines)
 
 
 async def build_round_tools(

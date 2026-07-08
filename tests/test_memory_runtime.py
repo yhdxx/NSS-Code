@@ -1,10 +1,26 @@
 from __future__ import annotations
 
 import asyncio
+import copy
 import json
+from pathlib import Path
 import sqlite3
+import sys
+import types
 from time import time
 
+PROJECT_ROOT = Path(__file__).resolve().parents[1]
+if str(PROJECT_ROOT) not in sys.path:
+    sys.path.insert(0, str(PROJECT_ROOT))
+
+openai_stub = types.ModuleType("openai")
+openai_stub.AsyncOpenAI = object
+openai_stub.APIConnectionError = Exception
+openai_stub.APIError = Exception
+openai_stub.APITimeoutError = Exception
+sys.modules.setdefault("openai", openai_stub)
+
+import client as agent_client
 from config import CONFIG
 from memory import ConversationSnapshot, MemoryRuntime, SQLiteMemoryStore, SnapshotDelta
 from memory.budget import BudgetStage, PromptBudgetSnapshot
@@ -53,6 +69,84 @@ class FileStateCacheStub:
             item["path"]: (item["content"], item["mtime_ns"])
             for item in data.get("files", [])
         }
+
+
+class WorkspaceTrackerStub:
+    def __init__(self, changed_paths: list[str], omitted: int = 0):
+        self.changed_paths = changed_paths
+        self.omitted = omitted
+        self.consume_calls = 0
+
+    def consume_external_changes(self) -> tuple[list[str], int]:
+        self.consume_calls += 1
+        if self.consume_calls == 1:
+            return self.changed_paths, self.omitted
+        return [], 0
+
+
+def test_workspace_notice_is_temporary_system_message():
+    messages = [{"role": "system", "content": "fixed"}, {"role": "user", "content": "work"}]
+    tracker = WorkspaceTrackerStub(["app.py"], omitted=2)
+
+    rendered = agent_client.with_workspace_change_notice(messages, tracker)
+
+    assert rendered[:-1] == messages
+    assert rendered[-1]["role"] == "system"
+    assert "环境通知" in rendered[-1]["content"]
+    assert "app.py" in rendered[-1]["content"]
+    assert "另有 2 个文件未列出" in rendered[-1]["content"]
+    assert messages == [{"role": "system", "content": "fixed"}, {"role": "user", "content": "work"}]
+
+
+def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch):
+    async def scenario():
+        tools_seen = []
+        messages_seen = []
+        build_calls = 0
+
+        async def fake_build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas):
+            nonlocal build_calls
+            build_calls += 1
+            return [{"type": "function", "function": {"name": "FakeTool", "parameters": {"type": "object"}}}]
+
+        async def fake_stream_one_round(_client, _model, messages, tools):
+            messages_seen.append(copy.deepcopy(messages))
+            tools_seen.append(tools)
+            if len(messages_seen) == 1:
+                return "", [agent_client.PendingToolCall("call_1", "FakeTool", "{}")]
+            return "done", []
+
+        async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
+            return "tool ok"
+
+        monkeypatch.setattr(agent_client, "build_round_tools", fake_build_round_tools)
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+        monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute_local_tool)
+
+        history = [{"role": "system", "content": "fixed system"}]
+        tracker = WorkspaceTrackerStub(["changed.py"])
+        _text, updated = await agent_client.ask_deepseek(
+            client=object(),
+            prompt="do work",
+            registry=object(),
+            tools=[],
+            messages=history,
+            workspace_tracker=tracker,
+        )
+
+        assert build_calls == 1
+        assert len(tools_seen) == 2
+        assert tools_seen[0] is tools_seen[1]
+        assert messages_seen[0][-1]["role"] == "system"
+        assert "changed.py" in messages_seen[0][-1]["content"]
+        assert messages_seen[1][-1]["role"] == "tool"
+        assert not any(
+            message.get("role") == "system" and "环境通知" in message.get("content", "")
+            for message in updated
+        )
+        assert updated == history
+
+    asyncio.run(scenario())
 
 
 def test_session_id_is_stable_and_messages_restore(tmp_path):
