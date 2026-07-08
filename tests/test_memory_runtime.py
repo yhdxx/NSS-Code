@@ -139,8 +139,8 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
             messages_seen.append(copy.deepcopy(messages))
             tools_seen.append(tools)
             if len(messages_seen) == 1:
-                return "", [agent_client.PendingToolCall("call_1", "FakeTool", "{}")]
-            return "done", []
+                return "", [agent_client.PendingToolCall("call_1", "FakeTool", "{}")], None
+            return "done", [], None
 
         async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
             return "tool ok"
@@ -191,7 +191,7 @@ def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypa
 
         async def fake_stream_one_round(_client, _model, messages, tools):
             seen_messages.append(copy.deepcopy(messages))
-            return "done", []
+            return "done", [], None
 
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
 
@@ -241,14 +241,14 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
 
         async def fake_stream_one_round(_client, _model, messages, tools):
             if len(tool_calls_seen) == 0:
-                return "", [agent_client.PendingToolCall("call_1", "SearchRecoverableContext", '{"query":"build failure"}')]
+                return "", [agent_client.PendingToolCall("call_1", "SearchRecoverableContext", '{"query":"build failure"}')], None
             if len(tool_calls_seen) == 1:
                 assert messages[-1]["role"] == "tool"
                 assert "ctx_1" in messages[-1]["content"]
-                return "", [agent_client.PendingToolCall("call_2", "RecoverContext", '{"context_id":"ctx_1"}')]
+                return "", [agent_client.PendingToolCall("call_2", "RecoverContext", '{"context_id":"ctx_1"}')], None
             assert messages[-1]["role"] == "tool"
             assert "exact recovered evidence" in messages[-1]["content"]
-            return "final answer from evidence", []
+            return "final answer from evidence", [], None
 
         async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
             tool_calls_seen.append(tool_name)

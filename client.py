@@ -208,7 +208,7 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
     model: str,  # 本轮请求使用的模型名，例如 `deepseek-v4-flash`。
     messages: list[dict[str, Any]],  # 当前完整对话历史；包含 system/user/assistant/tool 消息。
     tools: list[dict[str, Any]],  # OpenAI function tools schema；用于告诉模型可调用哪些本地工具。
-) -> tuple[str, list[PendingToolCall]]:  # 返回 `(assistant_text, tool_calls)`，分别是模型文本和拼完整的工具调用列表。
+) -> tuple[str, list[PendingToolCall], Any]:  # 返回 `(assistant_text, tool_calls, usage)`，usage 是流末 chunk 的 token 统计对象。
     # `messages` 典型结构：  # 说明传给模型的上下文消息数组。
     # [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]  # 初始请求只包含系统提示和用户问题。
     # 工具调用后会追加 assistant tool_calls 消息和 role=tool 的工具结果消息。  # 后续循环依赖这些消息继续推理。
@@ -230,6 +230,7 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
 
     content_parts: list[str] = []  # 收集模型普通文本 delta，最终拼成完整 assistant 文本。
     pending_tool_calls: dict[int, PendingToolCall] = {}  # 按 tool_call.index 聚合流式工具调用分片。
+    last_usage = None  # 流式最后一个 chunk 携带 usage 统计（prompt_tokens / completion_tokens / cache 命中/未命中）。
 
     print("模型：", end="", flush=True)  # 在终端打印模型输出前缀，`end=""` 让后续流式文本接在同一行。
     async for chunk in stream:  # 异步迭代服务端不断返回的增量 chunk。
@@ -256,6 +257,9 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
             if function_delta.arguments:  # 参数 JSON 会经常被拆成多个字符串片段流式返回。
                 state.arguments += function_delta.arguments  # 追加参数片段，直到最终形成完整 JSON 字符串。
 
+        if hasattr(chunk, "usage") and chunk.usage:  # 流式最后一个 chunk 通常携带 usage 统计信息。
+            last_usage = chunk.usage  # 保留最后一帧的 usage，函数结束时返回。
+
     if content_parts:  # 如果本轮模型输出过普通文本，需要补一个换行结束终端显示。
         print()  # 打印换行，避免后面的“工具调用”标题接在模型正文后。
 
@@ -269,7 +273,7 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
             else:  # 单行参数可以和工具名放在同一行。
                 print(f"- {call.tool_name} {formatted_args}", flush=True)  # 打印紧凑形式的工具调用。
 
-    return "".join(content_parts), [pending_tool_calls[index] for index in sorted(pending_tool_calls)]  # 返回完整文本和按 index 排序的工具调用列表。
+    return "".join(content_parts), [pending_tool_calls[index] for index in sorted(pending_tool_calls)], last_usage  # 返回完整文本、按 index 排序的工具调用列表、以及流末 usage 统计。
 
 
 async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
@@ -441,7 +445,18 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             )
             if temporary_system_messages:
                 model_messages = with_turn_temporary_system_messages(model_messages, temporary_system_messages)
-        assistant_text, tool_calls = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
+        assistant_text, tool_calls, usage = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
+        if usage:
+            prompt_tokens = getattr(usage, "prompt_tokens", 0)
+            completion_tokens = getattr(usage, "completion_tokens", 0)
+            cache_hit = getattr(usage, "prompt_cache_hit_tokens", 0)
+            cache_miss = getattr(usage, "prompt_cache_miss_tokens", 0)
+            total_tokens = getattr(usage, "total_tokens", prompt_tokens + completion_tokens)
+            parts = [f"输入 {prompt_tokens}"]
+            if cache_hit or cache_miss:
+                parts.append(f"(缓存命中 {cache_hit}, 未命中 {cache_miss})")
+            parts.append(f"| 输出 {completion_tokens} | 总计 {total_tokens}")
+            print(f"[Token] {' '.join(parts)}", flush=True)
         if assistant_text.startswith("Error: API ") and not tool_calls:
             del messages[turn_start:]
             save_session_state(sync=True)
