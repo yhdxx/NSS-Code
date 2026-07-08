@@ -509,11 +509,19 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             }
             if output_id:
                 tool_message["metadata"] = {"output_id": output_id, "tool_name": tool_call.tool_name}
-            if not skill_related_tool:
+            if skill_related_tool:
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": tool_call_id,
+                        "content": "[Skill output omitted after current turn]",
+                        "metadata": {"tool_name": tool_call.tool_name, "skill_omitted": True},
+                    }
+                )
+            else:
                 messages.append(tool_message)  # 把工具执行结果追加为 role=tool 消息，供模型下一轮读取。
             round_messages.append(tool_message)
-            if not skill_related_tool:
-                save_session_state()
+            save_session_state()
 
     end_skill_turn()
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。

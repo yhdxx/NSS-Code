@@ -225,6 +225,13 @@ class MemoryRuntime:
             self.current_session_id = None
         return deleted
 
+    def delete_sessions(self, session_ids: list[str]) -> int:
+        deleted_count = 0
+        for session_id in session_ids:
+            if self.delete_session(session_id):
+                deleted_count += 1
+        return deleted_count
+
     def cleanup_expired_sessions(self) -> int:
         ttl_days = max(0, CONFIG.memory.session_ttl_days)
         if ttl_days == 0:
@@ -438,6 +445,8 @@ class MemoryRuntime:
         )
         rendered = render_virtualized_messages(
             system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
+            historical_messages=historical_messages,
+            session_id=session_id,
             historical_turns=historical_turns,
             current_messages=current_messages,
             current_summaries=self._current_turn_summaries,
@@ -848,6 +857,8 @@ def format_budget_notice(snapshot: PromptBudgetSnapshot) -> str:
 def render_virtualized_messages(
     *,
     system_messages: list[dict[str, Any]],
+    historical_messages: list[dict[str, Any]],
+    session_id: str,
     historical_turns: list[HistoricalTurn],
     current_messages: list[dict[str, Any]],
     current_summaries: dict[str, dict[str, Any]],
@@ -857,27 +868,85 @@ def render_virtualized_messages(
     rendered.extend(system_messages[:1])
     if summary_text:
         rendered.append({"role": "system", "content": "CURRENT TASK STATE SNAPSHOT:\n" + summary_text})
-    if historical_turns:
-        rendered.append({"role": "system", "content": render_historical_tool_index(historical_turns)})
-        for turn in historical_turns:
-            rendered.append({"role": "user", "content": turn.user_content})
-            rendered.append({"role": "assistant", "content": turn.assistant_content})
+    rendered.extend(render_historical_topology(session_id, historical_messages, historical_turns))
     rendered.extend(apply_current_summaries(current_messages, current_summaries))
     return rendered
 
 
-def render_historical_tool_index(turns: list[HistoricalTurn]) -> str:
-    lines = [
-        "HISTORICAL TOOL INDEX",
-        "Historical user queries and final answers are shown as normal messages. Tool outputs are virtualized below.",
-        "Use RecoverContext(context_id, offset, limit) to read non-skill tool outputs in chunks.",
-    ]
-    for turn in turns:
-        if not turn.tool_metadata:
-            continue
+def render_historical_topology(
+    session_id: str,
+    messages: list[dict[str, Any]],
+    turns: list[HistoricalTurn],
+) -> list[dict[str, Any]]:
+    if not messages:
+        return []
+    system_offset = 1 if messages and messages[0].get("role") == "system" else 0
+    metadata_by_call_id: dict[str, ToolInvocationMetadata] = {}
+    for turn in turns or build_historical_turns(session_id, messages):
         for metadata in turn.tool_metadata:
-            lines.append(json.dumps(tool_metadata_prompt_dict(metadata), ensure_ascii=False, sort_keys=True))
-    return "\n".join(lines)
+            metadata_by_call_id[metadata.tool_call_id] = metadata
+    rendered: list[dict[str, Any]] = []
+    for message in messages[system_offset:]:
+        role = message.get("role")
+        if role == "tool":
+            tool_call_id = str(message.get("tool_call_id") or "")
+            metadata = metadata_by_call_id.get(tool_call_id)
+            rendered.append(render_historical_tool_message(message, metadata))
+            continue
+        if role == "assistant" and message.get("tool_calls"):
+            rendered.append(render_historical_assistant_message(message))
+            continue
+        if role in {"user", "assistant"}:
+            rendered.append(dict(message))
+    return rendered
+
+
+def render_historical_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+    rendered: dict[str, Any] = {"role": "assistant"}
+    if message.get("content"):
+        rendered["content"] = message["content"]
+    if message.get("tool_calls"):
+        rendered["tool_calls"] = copy.deepcopy(message["tool_calls"])
+    return rendered
+
+
+def render_historical_tool_message(
+    message: dict[str, Any],
+    metadata: ToolInvocationMetadata | None,
+) -> dict[str, Any]:
+    tool_call_id = str(message.get("tool_call_id") or "")
+    rendered = {
+        "role": "tool",
+        "tool_call_id": tool_call_id,
+        "content": historical_tool_content(metadata, message),
+    }
+    return rendered
+
+
+def historical_tool_content(metadata: ToolInvocationMetadata | None, message: dict[str, Any]) -> str:
+    if metadata is None:
+        return (
+            "[Historical tool output virtualized]\n"
+            f"tool_call_id: {message.get('tool_call_id', '')}\n"
+            "metadata_unavailable: true"
+        )
+    if metadata.kind == "skill":
+        payload = {
+            "tool_name": metadata.tool_name,
+            "kind": metadata.kind,
+            "invocation_kind": metadata.invocation_kind,
+            "tool_call_id": metadata.tool_call_id,
+            "args_preview": metadata.args_preview,
+            "args_hash": metadata.args_hash,
+            "reference_paths": metadata.reference_paths[:8],
+            "short_summary": metadata.short_summary,
+            "notice": "Skill output is omitted after the current turn.",
+        }
+        return "[Historical skill output omitted]\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+    return (
+        "[Historical tool output virtualized]\n"
+        + json.dumps(tool_metadata_prompt_dict(metadata), ensure_ascii=False, sort_keys=True)
+    )
 
 
 def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any]:

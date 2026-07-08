@@ -6,6 +6,7 @@ import os
 from cli_input import (
     InteractivePrompt,
     clamp_selection,
+    format_command_argument_usage_panel,
     format_command_suggestion,
     format_command_usage_panel,
     hard_wrap_ansi,
@@ -93,20 +94,87 @@ def test_exact_command_shows_usage_panel_instead_of_simple_suggestion():
     assert any("显示当前工作目录下的历史会话" in line for line in hints)
 
 
-def test_command_arguments_do_not_keep_showing_full_usage_panel():
+def test_command_space_argument_shows_available_usage_options():
     registry = CommandRegistry()
     registry.register(
         CommandSpec(
             name="/resume",
             description="恢复历史会话",
-            usages=(("", "显示当前工作目录下的历史会话"),),
+            usages=(
+                ("", "显示当前工作目录下的历史会话"),
+                (" --all", "显示所有工作目录下的历史会话"),
+                (" <session_id>", "直接恢复指定会话 id"),
+            ),
             handler=noop_handler,
         )
     )
     prompt = InteractivePrompt(prompt="User: ", command_registry=registry)
     prompt.buffer = "/resume "
 
-    assert prompt._hint_lines(prompt._suggestions()) == []
+    hints = "\n".join(prompt._hint_lines(prompt._suggestions()))
+
+    assert "可用参数：" in hints
+    assert "/resume --all" in hints
+    assert "/resume <session_id>" in hints
+    assert "/resume                   显示当前工作目录下的历史会话" not in hints
+
+
+def test_command_argument_hides_usage_when_prefix_matches_nothing():
+    spec = CommandSpec(
+        name="/delete",
+        description="删除历史会话",
+        usages=(
+            (" --all", "显示所有工作目录下的历史会话"),
+            (" --workspace-all", "删除当前工作目录下的全部会话"),
+            (" <session_id>", "直接删除指定会话 id"),
+        ),
+        handler=noop_handler,
+    )
+
+    assert format_command_argument_usage_panel(spec, "/delete nope") == []
+
+
+def test_command_dash_argument_shows_matching_usage_options():
+    spec = CommandSpec(
+        name="/delete",
+        description="删除历史会话",
+        usages=(
+            ("", "显示当前工作目录下的历史会话"),
+            (" --all", "显示所有工作目录下的历史会话"),
+            (" --workspace-all", "删除当前工作目录下的全部会话"),
+            (" --all-workspaces", "删除全部工作目录下的全部会话"),
+            (" <session_id>", "直接删除指定会话 id"),
+            (" --expired", "立即清理超过有效期未访问的会话"),
+        ),
+        handler=noop_handler,
+    )
+
+    panel = "\n".join(format_command_argument_usage_panel(spec, "/delete -"))
+
+    assert "/delete --all             显示所有工作目录下的历史会话" in panel
+    assert "/delete --workspace-all   删除当前工作目录下的全部会话" in panel
+    assert "/delete --all-workspaces  删除全部工作目录下的全部会话" in panel
+    assert "/delete <session_id>" not in panel
+
+
+def test_command_partial_dash_argument_filters_matching_usage_options():
+    spec = CommandSpec(
+        name="/delete",
+        description="删除历史会话",
+        usages=(
+            (" --all", "显示所有工作目录下的历史会话"),
+            (" --workspace-all", "删除当前工作目录下的全部会话"),
+            (" --all-workspaces", "删除全部工作目录下的全部会话"),
+            (" --expired", "立即清理超过有效期未访问的会话"),
+        ),
+        handler=noop_handler,
+    )
+
+    panel = "\n".join(format_command_argument_usage_panel(spec, "/delete --all-w"))
+
+    assert "/delete --all-workspaces" in panel
+    assert "/delete --all             " not in panel
+    assert "/delete --workspace-all" not in panel
 
 
 def test_selection_clamps_to_available_suggestions():

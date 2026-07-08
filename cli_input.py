@@ -112,6 +112,8 @@ class InteractivePrompt:
         exact = self.command_registry.exact_command(self.buffer)
         if exact is not None and self.buffer == exact.name:
             return format_command_usage_panel(exact)
+        if exact is not None:
+            return format_command_argument_usage_panel(exact, self.buffer)
         return [
             format_command_suggestion(spec, selected=index == self.selected_suggestion_index)
             for index, spec in enumerate(suggestions)
@@ -229,6 +231,37 @@ def format_command_usage_panel(spec: CommandSpec) -> list[str]:
     if spec.examples:
         lines.append("  示例：" + "；".join(spec.examples))
     return lines
+
+
+def format_command_argument_usage_panel(spec: CommandSpec, buffer: str) -> list[str]:
+    if not spec.usages:
+        return []
+    prefix = command_argument_prefix(spec, buffer)
+    matches = [
+        (usage, description)
+        for usage, description in spec.usages
+        if command_usage_matches_prefix(usage, prefix)
+    ]
+    if not matches:
+        return []
+    lines = ["  可用参数："]
+    lines.extend(f"    {spec.name}{usage:<18} {description}" for usage, description in matches)
+    return lines
+
+
+def command_argument_prefix(spec: CommandSpec, buffer: str) -> str:
+    if buffer == spec.name:
+        return ""
+    if not buffer.startswith(spec.name + " "):
+        return ""
+    return buffer[len(spec.name) + 1 :].strip()
+
+
+def command_usage_matches_prefix(usage: str, prefix: str) -> bool:
+    usage_text = usage.strip()
+    if not prefix:
+        return bool(usage_text)
+    return usage_text.startswith(prefix)
 
 
 def clamp_selection(index: int, suggestion_count: int) -> int:

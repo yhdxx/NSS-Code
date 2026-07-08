@@ -195,10 +195,12 @@ def build_command_registry() -> CommandRegistry:
             name="/delete",
             aliases=("delete", "删除会话"),
             description="删除本地历史会话；默认通过 ↑/↓ 选择删除",
-            usage="[session_id|--all|--expired|--help]",
+            usage="[session_id|--all|--workspace-all|--all-workspaces|--expired|--help]",
             usages=(
                 ("", "显示当前工作目录下的历史会话，并通过 ↑/↓ 选择删除"),
                 (" --all", "显示所有工作目录下的历史会话；跨目录删除前会要求确认"),
+                (" --workspace-all", "删除当前工作目录下的全部会话"),
+                (" --all-workspaces", "删除全部工作目录下的全部会话"),
                 (" <session_id>", "直接删除指定会话 id；可用于非交互终端"),
                 (" --expired", "立即清理超过有效期未访问的会话"),
                 (" --help", "显示 /delete 的完整参数说明"),
@@ -206,6 +208,8 @@ def build_command_registry() -> CommandRegistry:
             examples=(
                 "/delete",
                 "/delete --all",
+                "/delete --workspace-all",
+                "/delete --all-workspaces",
                 "/delete <session_id>",
                 "/delete --expired",
                 "/delete --help",
@@ -291,6 +295,24 @@ async def handle_delete_command(context: CommandContext, arguments: str) -> Comm
         file_state_cache=context.file_state_cache,
     )
     await memory_runtime.drain()
+
+    if argument in {"--workspace-all", "--all-workspaces"}:
+        include_all = argument == "--all-workspaces"
+        sessions = memory_runtime.list_sessions(limit=10_000, include_all=include_all)
+        if not sessions:
+            scope = "全部工作目录" if include_all else "当前工作目录"
+            print(f"{scope}下没有可删除会话。", flush=True)
+            return CommandResult()
+        if not confirm_delete_sessions(sessions, include_all=include_all):
+            print("已取消批量删除。", flush=True)
+            return CommandResult()
+        session_ids = [session.session_id for session in sessions]
+        deleted = memory_runtime.delete_sessions(session_ids)
+        scope = "全部工作目录" if include_all else "当前工作目录"
+        print(f"已删除{scope}下 {deleted} 个会话。", flush=True)
+        if current_session_id and current_session_id in session_ids:
+            return CommandResult(messages=[])
+        return CommandResult()
 
     include_all = argument == "--all"
     delete_session_id = "" if include_all else argument
@@ -452,6 +474,16 @@ def format_session_option(session: SessionListItem, *, selected: bool, include_w
 
 def confirm_cross_workspace_restore(source_workspace: str, current_workspace: str) -> bool:
     return confirm_cross_workspace_action("恢复", source_workspace, current_workspace)
+
+
+def confirm_delete_sessions(sessions: list[SessionListItem], *, include_all: bool) -> bool:
+    scope = "全部工作目录" if include_all else "当前工作目录"
+    print(f"将删除{scope}下 {len(sessions)} 个会话：", flush=True)
+    print_session_options(sessions[:10], include_workspace=include_all)
+    if len(sessions) > 10:
+        print(f"  ... 另有 {len(sessions) - 10} 个会话未列出", flush=True)
+    answer = input(f"确认删除{scope}下全部会话？输入 y 确认，其它任意键取消：").strip().lower()
+    return answer in {"y", "yes"}
 
 
 def confirm_cross_workspace_action(action: str, source_workspace: str, current_workspace: str) -> bool:

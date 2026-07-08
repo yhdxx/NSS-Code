@@ -557,7 +557,7 @@ def test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_pat
     assert restored.messages == [{"role": "user", "content": "persisted"}]
 
 
-def test_skill_related_messages_are_filtered_from_persistent_history():
+def test_skill_related_calls_are_retained_for_historical_placeholders():
     assistant_message = {
         "role": "assistant",
         "tool_calls": [
@@ -579,16 +579,70 @@ def test_skill_related_messages_are_filtered_from_persistent_history():
     assert is_skill_related_tool("skill_review")
     assert is_skill_related_tool("search_tool")
     assert not is_skill_related_tool("ReadFile")
-    assert persistent == {
-        "role": "assistant",
-        "tool_calls": [
-            {
-                "id": "core_call",
-                "type": "function",
-                "function": {"name": "ReadFile", "arguments": "{}"},
-            }
-        ],
-    }
+    assert persistent == assistant_message
+
+
+def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"app.py"}',
+        output="print('large output')" * 100,
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "inspect app"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {"id": "skill_call", "type": "function", "function": {"name": "skill_review", "arguments": "{}"}},
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"app.py"}'},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "skill_call",
+            "content": "[Skill output omitted after current turn]",
+            "metadata": {"tool_name": "skill_review", "skill_omitted": True},
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "print('large output')" * 100,
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+    runtime.save_messages_now(session_id, messages)
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=[*messages, {"role": "user", "content": "next"}],
+        tools=[],
+        current_prompt="next",
+        current_turn_start=len(messages),
+    )
+
+    roles = [(message["role"], message.get("tool_call_id", "")) for message in rendered]
+    assert roles[:6] == [
+        ("system", ""),
+        ("user", ""),
+        ("assistant", ""),
+        ("tool", "skill_call"),
+        ("tool", "read_call"),
+        ("assistant", ""),
+    ]
+    assert "HISTORICAL TOOL INDEX" not in "\n".join(str(message.get("content", "")) for message in rendered)
+    assert "Skill output is omitted after the current turn" in rendered[3]["content"]
+    assert "Historical tool output virtualized" in rendered[4]["content"]
+    assert output_id in rendered[4]["content"]
 
 
 def test_summary_stage_keeps_recent_context(tmp_path):

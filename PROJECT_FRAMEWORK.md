@@ -1,0 +1,3111 @@
+# myCodingAgent 函数级项目框架图
+
+> 本文档用于在修改代码时同步维护项目结构认知。未来每次代码变更后，应同时更新本文件中对应的模块、类、函数和职责说明。
+
+## 1. 项目总览
+
+- 项目：`myCodingAgent`
+- 定位：基于 LLM 的命令行编码智能体，在 Docker 沙箱中执行文件读写、搜索、Shell 命令，并通过 Skill 系统扩展领域工作流。
+- 核心链路：`__main__.py` 启动 CLI -> `client.py` 调用模型 -> `tools/` 执行工具 -> `memory/` 管理长上下文 -> `skills/` 动态检索并暴露专业能力。
+- 当前索引范围：Python/TypeScript/JavaScript 代码文件；Markdown、JSON、CSS、模板等资源在 Skill 资产章节按目录归纳。
+- 生成依据：README 项目说明、核心源码定向阅读、AST/正则提取的类与函数索引。
+
+## 2. 顶层架构图
+
+```text
+myCodingAgent
+├── 入口层：__main__.py
+│   ├── main()：初始化 Docker、工具、Skill、Memory、命令系统并进入交互循环
+│   ├── build_command_registry()：注册 /resume 与 /delete
+│   └── handle_*_command()：会话恢复、删除、选择与确认
+├── 模型交互层：client.py
+│   ├── ask_deepseek()：单轮用户请求的模型-工具循环
+│   ├── stream_chat_completion()：流式读取模型响应
+│   ├── execute_tool_call()：解析并执行工具调用
+│   └── format/pretty/helper 函数：工具 schema、参数、输出展示
+├── 配置与状态层：config.py / cache.py / workspace_identity.py / session_switch.py
+├── 命令系统：commands/
+├── 工具系统：tools/
+├── 记忆系统：memory/
+├── Skill 系统：skills/
+├── 测试：tests/
+└── 资源与文档：README.md、Dockerfile.sandbox、requirements*.txt、各 Skill 的 SKILL.md/references/assets/scripts
+```
+
+## 3. 核心代码框架（项目 -> 模块 -> 类 -> 函数）
+
+### 3.1 顶层模块
+
+#### `__main__.py` (502 行)
+- 职责：CLI 启动与主交互循环：准备 Docker 沙箱、工具注册表、Skill 运行时、记忆运行时和会话命令。
+- 模块函数：
+  - `async main()` L45
+  - `build_command_registry()` L170
+  - `async handle_resume_command(context, arguments)` L223
+  - `async handle_delete_command(context, arguments)` L272
+  - `select_session_interactively(memory_runtime, *limit, *include_all, *action)` L343
+  - `render_session_selector(sessions, selected, *previous_row_count, *include_workspace, *action)` L424
+  - `clear_session_selector(rendered_row_count)` L449
+  - `print_session_options(sessions, *include_workspace)` L463
+  - `format_session_option(session, *selected, *include_workspace)` L468
+  - `confirm_cross_workspace_restore(source_workspace, current_workspace)` L475
+  - `confirm_delete_sessions(sessions, *include_all)` L479
+  - `confirm_cross_workspace_action(action, source_workspace, current_workspace)` L489
+
+#### `cache.py` (36 行)
+- 职责：轻量缓存：提供线程安全的内存缓存结构。
+- 类：
+  - `class FileCache` L8
+    - `__init__(self)` L9
+    - `get(self, path)` L13
+    - `put(self, path, content)` L18
+    - `invalidate(self, path)` L23
+    - `clear(self)` L28
+    - `__len__(self)` L33
+
+#### `cli_input.py` (387 行)
+- 职责：终端输入层：处理 ANSI 渲染、逐字符输入、方向键选择、命令补全与安全列宽计算。
+- 类：
+  - `class InteractivePrompt` L34
+    - `__init__(self, *prompt, *command_registry)` L35
+    - `read(self)` L47
+    - `_finish(self)` L82
+    - `_suggestions(self)` L89
+    - `_render(self)` L94
+    - `_hint_lines(self, suggestions)` L109
+    - `_clear_render(self)` L122
+    - `_move_cursor_to_input_end(self)` L141
+    - `_handle_escape_sequence(self)` L152
+    - `_read_escape_sequence(self)` L164
+    - `_read_pending_char(self, *timeout)` L173
+    - `_read_char(self)` L180
+    - `_drain_escape_sequence(self)` L185
+    - `move_selection(self, delta)` L193
+    - `accept_selected_suggestion(self)` L200
+  - `class RenderedScreen` L328
+    - `__init__(self, *lines, *cursor_row, *cursor_column)` L329
+- 模块函数：
+  - `read_user_prompt(prompt, command_registry)` L27
+  - `format_command_suggestion(spec, *selected)` L216
+  - `format_command_usage_panel(spec)` L222
+  - `format_command_argument_usage_panel(spec, buffer)` L236
+  - `command_argument_prefix(spec, buffer)` L252
+  - `command_usage_matches_prefix(usage, prefix)` L260
+  - `clamp_selection(index, suggestion_count)` L267
+  - `strip_readline_markers(text)` L277
+  - `visible_width(text)` L281
+  - `terminal_width()` L292
+  - `read_char_from_fd(input_fd, decoder)` L296
+  - `read_escape_sequence_from_fd(input_fd, decoder, *timeout)` L306
+  - `safe_render_columns()` L324
+  - `render_screen(lines, columns)` L335
+  - `hard_wrap_ansi(text, columns)` L348
+  - `character_width(char)` L376
+
+#### `client.py` (640 行)
+- 职责：模型交互层：封装 OpenAI 兼容 Chat Completions、流式响应、工具调用循环、工具结果回填与上下文压缩接入。
+- 类：
+  - `class PendingToolCall` L32
+- 模块函数：
+  - `format_openai_tools(raw_tools)` L38
+  - `pretty_arguments(raw_args)` L60
+  - `format_argument_mapping(arguments)` L73
+  - `should_render_multiline(key, value)` L89
+  - `truncate_display_string(value)` L100
+  - `indent_multiline_text(value, prefix)` L107
+  - `skill_tool_notice(tool_name, args, skill_runtime)` L116
+  - `get_skill_record_for_notice(skill_runtime, tool_name)` L153
+  - `compact_notice_value(value, limit)` L165
+  - `async execute_local_tool(registry, tool_name, raw_args, skill_runtime)` L177
+  - `async stream_one_round(client, model, messages, tools)` L206
+  - `async ask_deepseek(client, prompt, registry, tools, messages, skill_runtime, core_tool...)` L275
+  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L530
+  - `async summarize_engineering_state(client, model, messages)` L546
+  - `truncate_tool_output(output)` L582
+  - `with_workspace_change_notice(messages, workspace_tracker)` L589
+  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L608
+  - `async main()` L620
+
+#### `config.py` (370 行)
+- 职责：配置层：集中定义 API、客户端、沙箱、Docker、Skill、记忆、Milvus、Embedding 等环境变量配置。
+- 类：
+  - `class ApiConfig` L114
+  - `class ClientConfig` L123
+  - `class MemoryConfig` L133
+    - `context_window_for(self, model)` L181
+  - `class SandboxConfig` L189
+  - `class DockerConfig` L211
+  - `class SkillConfig` L232
+    - `root(self)` L296
+    - `roots(self)` L300
+  - `class EmbeddingConfig` L305
+  - `class MilvusConfig` L323
+    - `uri(self)` L353
+  - `class AppConfig` L358
+- 模块函数：
+  - `_env_int(name, default)` L9
+  - `_env_float(name, default)` L19
+  - `_env_bool(name, default)` L29
+  - `_env_path(name, default)` L36
+  - `_env_paths(name)` L43
+  - `_env_list(name, default)` L50
+  - `_default_user_id()` L57
+  - `_env_json_dict(name, default)` L66
+  - `_default_builtin_skills_root()` L77
+  - `_default_workspace_skills_root()` L81
+  - `_default_memory_db_path()` L91
+  - `_dedupe_paths(paths)` L101
+
+#### `conversation_history.py` (54 行)
+- 职责：历史展示：将会话消息渲染为终端可读文本。
+- 模块函数：
+  - `render_conversation_history(messages, *max_chars_per_message)` L6
+  - `format_history_message(message, *max_chars_per_message)` L20
+  - `message_content_to_text(content)` L44
+  - `truncate_history_text(text, max_chars)` L50
+
+#### `session_switch.py` (30 行)
+- 职责：会话切换辅助：判断当前会话是否需要保存并执行保存。
+- 模块函数：
+  - `has_conversation_content(messages)` L8
+  - `save_current_session_if_needed(*memory_runtime, *messages, *skill_runtime, *file_state_cache)` L16
+
+#### `workspace_identity.py` (55 行)
+- 职责：工作区身份：为当前项目目录生成稳定指纹，用于会话归属与跨目录恢复判断。
+- 模块函数：
+  - `workspace_root_text(root)` L8
+  - `workspace_label(root)` L12
+  - `workspace_fingerprint(root)` L17
+  - `_git_fingerprint(path)` L34
+
+### 3.2 `commands/` - 斜杠命令注册与执行。
+
+#### `commands/__init__.py` (11 行)
+- 结构：无顶层类或函数，主要为包导出、常量或脚本入口配置。
+
+#### `commands/registry.py` (92 行)
+- 职责：命令系统：定义斜杠命令规格、上下文、执行结果和注册/分发逻辑。
+- 类：
+  - `class CommandContext` L8
+  - `class CommandResult` L17
+  - `class CommandSpec` L27
+    - `names(self)` L36
+    - `help_text(self)` L39
+  - `class CommandRegistry` L54
+    - `__init__(self)` L55
+    - `register(self, spec)` L58
+    - `suggestions(self, buffer)` L61
+    - `exact_command(self, buffer)` L69
+    - `match(self, text)` L76
+    - `async execute(self, text, context)` L86
+
+### 3.3 `tools/` - 基础工具注册表与具体工具实现。
+
+#### `tools/__init__.py` (126 行)
+- 类：
+  - `class ToolRegistry` L12
+    - `__init__(self)` L13
+    - `register(self, tool)` L17
+    - `get(self, name)` L20
+    - `is_enabled(self, name)` L24
+    - `enable(self, name)` L27
+    - `disable(self, name)` L31
+    - `enable_all(self)` L35
+    - `list_tools(self)` L39
+    - `get_all_schemas(self, protocol)` L43
+- 模块函数：
+  - `create_default_registry(file_cache, file_history, file_state_cache, workspace_tracker, memo...)` L61
+
+#### `tools/base.py` (86 行)
+- 类：
+  - `class ToolResult` L57
+  - `class Tool extends ABC` L62
+    - `is_read_only(self)` L71
+    - `get_schema(self)` L75
+    - `async execute(self, params)` L85
+- 模块函数：
+  - `get_sandbox_root()` L21
+  - `is_path_in_sandbox(path, sandbox_root)` L25
+  - `resolve_sandbox_path(raw_path, sandbox_root)` L33
+
+#### `tools/bash.py` (384 行)
+- 类：
+  - `class Params extends BaseModel` L45
+  - `class Bash extends Tool` L53
+    - `__init__(self, sandbox_root)` L62
+    - `async execute(self, params)` L66
+    - `async ensure_image(self, image)` L143
+    - `_is_local_sandbox_image(self, image)` L185
+    - `_find_sandbox_dockerfile(self)` L188
+    - `async _build_image_from_dockerfile(self, image, dockerfile)` L198
+    - `async _check_docker_daemon(self)` L239
+    - `async _check_image_available(self, image)` L271
+    - `async _check_image_supports_bash(self, image)` L300
+    - `async _pull_image(self, image)` L334
+    - `_decode_output(self, stdout, stderr)` L358
+    - `async _force_remove_container(self, container_name)` L366
+- 模块函数：
+  - `get_docker_image()` L29
+  - `get_docker_pull_timeout()` L33
+  - `docker_subprocess_env()` L37
+  - `async ensure_docker_image(image)` L382
+
+#### `tools/edit_file.py` (89 行)
+- 类：
+  - `class Params extends BaseModel` L15
+  - `class EditFile extends Tool` L21
+    - `__init__(self, file_cache, file_history, file_state_cache, workspace_tracker...)` L32
+    - `async execute(self, params)` L47
+
+#### `tools/file_state_cache.py` (105 行)
+- 类：
+  - `class FileStateCache` L7
+    - `__init__(self)` L12
+    - `record(self, path, content, mtime_ns)` L16
+    - `has_read(self, path)` L21
+    - `get_state(self, path)` L25
+    - `to_dict(self)` L29
+    - `load_dict(self, data)` L37
+    - `is_stale(self, path)` L52
+    - `check(self, path)` L64
+    - `update(self, path)` L84
+- 模块函数：
+  - `file_state_paths(snapshot)` L98
+
+#### `tools/glob.py` (95 行)
+- 类：
+  - `class Params extends BaseModel` L14
+  - `class Glob extends Tool` L19
+    - `__init__(self, sandbox_root)` L29
+    - `async execute(self, params)` L33
+- 模块函数：
+  - `_iter_matching_files(base, pattern, sandbox_root)` L58
+  - `_matches(file_path, base, pattern, sandbox_root)` L75
+
+#### `tools/grep.py` (98 行)
+- 类：
+  - `class Params extends BaseModel` L15
+  - `class Grep extends Tool` L21
+    - `__init__(self, sandbox_root)` L31
+    - `async execute(self, params)` L35
+- 模块函数：
+  - `_iter_search_files(base, include_pattern, sandbox_root)` L68
+  - `_include_matches(relative_path, include_pattern)` L90
+
+#### `tools/memory_lookup.py` (378 行)
+- 类：
+  - `class GetStoredToolOutputParams extends BaseModel` L15
+  - `class GetStoredToolOutput extends Tool` L21
+    - `__init__(self, memory_runtime)` L31
+    - `async execute(self, params)` L34
+  - `class RecoverContextParams extends BaseModel` L44
+  - `class RecoverContext extends Tool` L50
+    - `__init__(self, memory_runtime)` L60
+    - `async execute(self, params)` L63
+  - `class SearchRecoverableContextParams extends BaseModel` L73
+  - `class SearchRecoverableContext extends Tool` L78
+    - `__init__(self, memory_runtime)` L88
+    - `async execute(self, params)` L91
+  - `class SearchSessionHistoryParams extends BaseModel` L106
+  - `class SearchSessionHistory extends Tool` L112
+    - `__init__(self, memory_runtime, *preview_chars)` L122
+    - `async execute(self, params)` L126
+  - `class GetRecentConversationTurnsParams extends BaseModel` L190
+  - `class GetRecentConversationTurns extends Tool` L194
+    - `__init__(self, memory_runtime)` L204
+    - `async execute(self, params)` L207
+  - `class SummarizeCurrentTurnMessageParams extends BaseModel` L230
+  - `class SummarizeCurrentTurnMessage extends Tool` L238
+    - `__init__(self, memory_runtime)` L249
+    - `async execute(self, params)` L252
+  - `class RestoreSessionParams extends BaseModel` L271
+  - `class RestoreSession extends Tool` L275
+    - `__init__(self, memory_runtime)` L285
+    - `async execute(self, params)` L288
+- 模块函数：
+  - `message_to_search_text(message)` L304
+  - `recover_context_output(memory_runtime, *context_id, *offset, *limit)` L316
+  - `truncate_one_line(text, *max_chars)` L373
+
+#### `tools/read_file.py` (74 行)
+- 类：
+  - `class Params extends BaseModel` L15
+  - `class ReadFile extends Tool` L21
+    - `__init__(self, file_cache, file_state_cache, sandbox_root)` L29
+    - `async execute(self, params)` L40
+
+#### `tools/workspace_change_tracker.py` (270 行)
+- 类：
+  - `class WorkspaceChangeTracker` L41
+    - `__init__(self, root, file_state_cache, *max_changes)` L42
+    - `start(self)` L53
+    - `close(self)` L64
+    - `mark_agent_write(self, path)` L71
+    - `mark_paths_for_recheck(self, paths)` L80
+    - `consume_external_changes(self)` L87
+    - `_run(self)` L105
+    - `_record_change(self, path, is_delete)` L111
+    - `_is_agent_write(self, path)` L122
+    - `_normalize_path(self, path)` L134
+  - `class _WorkspaceBackend` L138
+    - `poll(self, stop_event)` L139
+    - `close(self)` L142
+  - `class _InotifyWorkspaceBackend extends _WorkspaceBackend` L146
+    - `__init__(self, root, on_change)` L147
+    - `poll(self, stop_event)` L157
+    - `close(self)` L171
+    - `_consume_events(self, data)` L177
+    - `_add_tree(self, root)` L200
+    - `_add_watch(self, directory)` L204
+  - `class _PollingWorkspaceBackend extends _WorkspaceBackend` L212
+    - `__init__(self, root, on_change)` L213
+    - `poll(self, stop_event)` L218
+- 模块函数：
+  - `_iter_directories(root)` L230
+  - `_should_skip(path)` L240
+  - `_snapshot(root)` L244
+  - `_fingerprint(path)` L257
+  - `_display_path(root, path)` L265
+
+#### `tools/write_file.py` (71 行)
+- 类：
+  - `class Params extends BaseModel` L15
+  - `class WriteFile extends Tool` L20
+    - `__init__(self, file_cache, file_history, file_state_cache, workspace_tracker...)` L31
+    - `async execute(self, params)` L46
+
+### 3.4 `memory/` - 长上下文虚拟化、会话持久化和恢复。
+
+#### `memory/__init__.py` (52 行)
+- 结构：无顶层类或函数，主要为包导出、常量或脚本入口配置。
+
+#### `memory/budget.py` (106 行)
+- 类：
+  - `class BudgetStage extends str, Enum` L9
+  - `class PromptBudgetSnapshot` L17
+    - `to_prompt_text(self)` L28
+  - `class PromptBudgetManager` L43
+    - `__init__(self, *context_window, *soft_ratio, *working_ratio, *emergency_rati...)` L44
+    - `snapshot(self, messages, *tools, *current_prompt, *extra_tokens)` L63
+    - `stage_for_usage(self, usage_ratio)` L93
+- 模块函数：
+  - `estimate_tokens(value)` L103
+
+#### `memory/checkpoint.py` (416 行)
+- 类：
+  - `class TurnState` L31
+  - `class CheckpointDecision` L40
+  - `class RolloverResult` L47
+  - `class SnapshotGenerator extends Protocol` L54
+    - `generate_delta(self, *session_id, *previous_snapshot, *new_messages, *runtime_stat...)` L55
+    - `merge_snapshot(self, *session_id, *previous_snapshot, *delta, *runtime_state)` L67
+  - `class StructuredSnapshotGenerator` L78
+    - `generate_delta(self, *session_id, *previous_snapshot, *new_messages, *runtime_stat...)` L79
+    - `merge_snapshot(self, *session_id, *previous_snapshot, *delta, *runtime_state)` L132
+  - `class CheckpointManager` L185
+    - `__init__(self, *memory_runtime, *prompt_budget_manager, *snapshot_generator)` L186
+    - `should_checkpoint(self, turn_state, budget_snapshot)` L199
+    - `create_session_delta(self, session_id, messages, previous_checkpoint_index, runtime_state)` L219
+    - `create_incremental_snapshot(self, previous_snapshot, delta, runtime_state)` L240
+    - `checkpoint_session(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L253
+    - `rollover_session(self, *session_id, *snapshot, *system_prompt_source)` L281
+    - `restore_session_snapshot(self, session_id)` L316
+    - `_latest_runtime_snapshot(self, session_id)` L323
+- 模块函数：
+  - `format_snapshot_prompt(snapshot)` L332
+  - `copy_system_message(system_prompt_source)` L340
+  - `message_text(message)` L346
+  - `extracted_action_lines(text)` L353
+  - `looks_like_decision(line)` L362
+  - `extract_context_refs(text)` L367
+  - `infer_project_status(delta, previous_snapshot)` L375
+  - `build_summary(user_intentions, conclusions, project_status)` L385
+  - `merge_lists(existing, incoming, *limit)` L395
+  - `dedupe(items)` L399
+  - `truncate(text, limit)` L411
+
+#### `memory/compressor.py` (194 行)
+- 类：
+  - `class ToolOutputRef` L23
+  - `class ContextCompressor` L31
+    - `__init__(self, *context_window, *tool_preview_chars, *recent_rounds_for_aver...)` L32
+    - `compress_messages(self, messages, *tools, *current_prompt, *tool_output_refs, *summar...)` L45
+    - `should_compress(self, messages)` L101
+    - `predict_next_context_size(self, messages, *tools, *current_prompt)` L104
+    - `average_recent_output_size(self, messages)` L118
+    - `_preview_tool_outputs(self, messages, refs, *reproducible_only)` L128
+    - `_summarized_context(self, messages, summary_text)` L156
+- 模块函数：
+  - `estimate_size(value)` L166
+  - `sanitize_message_for_model(message)` L170
+  - `is_reproducible_tool(tool_name, output)` L175
+  - `tool_output_reference_text(ref)` L183
+
+#### `memory/context_objects.py` (162 行)
+- 类：
+  - `class ContextContentType extends str, Enum` L12
+  - `class ContextLifecycleState extends str, Enum` L19
+  - `class RecoverableContextObject` L27
+    - `to_dict(self)` L48
+    - `from_dict(cls, payload)` L55
+- 模块函数：
+  - `build_recoverable_context(*session_id, *tool_call_id, *tool_name, *arguments_json, *content, ...)` L64
+  - `infer_content_type(content)` L96
+  - `short_summary_for_tool_output(tool_name, arguments_json, content)` L109
+  - `extract_related_files(arguments_json, content)` L124
+  - `extract_keywords(tool_name, arguments_json, content)` L139
+  - `extract_entities(content)` L147
+  - `dedupe_keep_order(values)` L152
+
+#### `memory/context_store.py` (26 行)
+- 类：
+  - `class ExternalContextStore extends Protocol` L8
+    - `save_context(self, context, content)` L9
+    - `load_context(self, context_id)` L12
+    - `load_partial_context(self, context_id, *offset, *limit)` L15
+    - `delete_context(self, context_id)` L18
+    - `query_metadata(self, context_id)` L21
+    - `search_metadata(self, session_id, query, *limit)` L24
+
+#### `memory/message_filters.py` (27 行)
+- 模块函数：
+  - `is_skill_related_tool(tool_name)` L15
+  - `persistent_assistant_tool_message(assistant_message)` L19
+
+#### `memory/models.py` (170 行)
+- 类：
+  - `class MemoryScope extends str, Enum` L10
+  - `class MemoryEntry` L17
+  - `class MemoryQuery` L27
+  - `class CompressionResult` L35
+  - `class ToolOutputRecord` L42
+  - `class ToolInvocationMetadata` L55
+  - `class HistoricalTurn` L81
+  - `class ConversationSnapshot` L92
+  - `class SnapshotDelta` L110
+  - `class CheckpointRecord` L125
+  - `class HistoricalSessionRef` L136
+  - `class SessionState` L147
+  - `class SessionListItem` L161
+
+#### `memory/runtime.py` (1276 行)
+- 类：
+  - `class MemoryWriteTask` L39
+  - `class MemoryRuntime` L44
+    - `__init__(self, *store, *compressor, *model, *workspace_root)` L45
+    - `start_async_writer(self)` L89
+    - `async _run_writer(self)` L99
+    - `async drain(self)` L112
+    - `async close(self)` L116
+    - `_enqueue_write(self, description, callback)` L129
+    - `_record_writer_error(self, description, exc)` L139
+    - `start_session(self, model)` L143
+    - `get_current_session_id(self)` L162
+    - `clear_current_session_id(self)` L165
+    - `save_messages(self, session_id, messages)` L170
+    - `save_messages_now(self, session_id, messages)` L179
+    - `_next_message_version(self, session_id)` L194
+    - `_save_messages_if_current(self, session_id, messages, historical_turns, version)` L199
+    - `load_session(self, session_id)` L212
+    - `touch_session(self, session_id)` L219
+    - `delete_session(self, session_id)` L222
+    - `delete_sessions(self, session_ids)` L228
+    - `cleanup_expired_sessions(self)` L235
+    - `list_sessions(self, *limit, *include_all)` L241
+    - `list_migrated_workspace_sessions(self, *limit)` L246
+    - `save_tool_output(self, *session_id, *tool_call_id, *tool_name, *arguments, *output)` L250
+    - `get_tool_output(self, output_id)` L298
+    - `get_context_metadata(self, context_id)` L301
+    - `load_context(self, context_id)` L304
+    - `load_partial_context(self, context_id, *offset, *limit)` L307
+    - `search_context_metadata(self, session_id, query, *limit)` L310
+    - `prompt_budget_snapshot(self, messages, *tools, *current_prompt, *extra_tokens)` L335
+    - `tool_output_prompt_content(self, *output_id, *output, *messages, *tools, *current_prompt)` L350
+    - `context_reference_text(self, context_id, *preview, *snapshot)` L369
+    - `prepare_messages_for_model(self, *session_id, *messages, *tools, *current_prompt, *summary_tex...)` L409
+    - `render_messages_for_model(self, *session_id, *messages, *tools, *current_prompt, *current_tur...)` L430
+    - `summarize_current_turn_message(self, *message_id, *summary, *reason, *focus, *context_id)` L477
+    - `save_lrfu_snapshot(self, session_id, skill_runtime)` L535
+    - `save_file_state_snapshot(self, session_id, file_state_cache)` L547
+    - `async on_turn_completed(self, *messages, *skill_runtime, *file_state_cache, *workspace_trac...)` L559
+    - `async _perform_rollover(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L628
+    - `create_checkpoint(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L663
+    - `rollover_to_new_session(self, *session_id, *snapshot, *system_prompt_source)` L680
+    - `restore_historical_session_snapshot(self, session_id)` L693
+    - `async await_pending_rollover(self)` L696
+    - `_checkpoint_runtime_state(self, *skill_runtime, *file_state_cache, *workspace_tracker)` L706
+    - `load_lrfu_snapshot(self, session_id, skill_runtime)` L731
+    - `load_file_state_snapshot(self, session_id, file_state_cache, workspace_tracker)` L742
+    - `save_short_term(self, content, metadata)` L761
+    - `save_long_term(self, content, metadata)` L774
+    - `recall_short_term(self, query)` L777
+    - `recall_long_term(self, query)` L780
+    - `compress_context(self, messages)` L783
+    - `should_compress_context(self, messages)` L786
+- 模块函数：
+  - `format_compression_report(result)` L790
+  - `format_virtualization_report(snapshot)` L807
+  - `split_historical_and_current(messages, current_turn_start)` L818
+  - `insert_budget_notice(messages, notice)` L830
+  - `format_budget_notice(snapshot)` L837
+  - `render_virtualized_messages(*system_messages, *historical_messages, *session_id, *historical_tu...)` L857
+  - `render_historical_topology(session_id, messages, turns)` L876
+  - `render_historical_assistant_message(message)` L904
+  - `render_historical_tool_message(message, metadata)` L913
+  - `historical_tool_content(metadata, message)` L926
+  - `tool_metadata_prompt_dict(metadata)` L952
+  - `apply_current_summaries(messages, summaries)` L981
+  - `sanitize_messages_for_model(messages)` L1015
+  - `build_historical_turns(session_id, messages)` L1023
+  - `build_tool_invocation_metadata(*session_id, *turn_id, *turn_index, *call_index, *tool_call_id, *to...)` L1105
+  - `message_content_text(message)` L1148
+  - `stable_hash(text)` L1155
+  - `stable_id()` L1159
+  - `truncate_one_line(text, max_chars)` L1163
+  - `extract_keywords_from_text(text)` L1170
+  - `extract_related_files_from_text(text)` L1176
+  - `extract_reference_paths(arguments, content)` L1182
+  - `dedupe_keep_order(values)` L1187
+  - `tool_short_summary(tool_name, arguments, content, context_id)` L1199
+  - `skill_invocation_kind(tool_name)` L1222
+  - `infer_prompt_content_type(content)` L1234
+  - `is_error_text(text)` L1247
+  - `file_state_paths(snapshot)` L1251
+  - `has_pending_tool_call(messages)` L1260
+  - `snapshot_dict(value)` L1267
+
+#### `memory/stores.py` (1081 行)
+- 类：
+  - `class SQLiteMemoryStore` L23
+    - `__init__(self, db_path)` L24
+    - `_connect(self)` L29
+    - `_init_db(self)` L34
+    - `_ensure_column(self, conn, table, column, definition)` L232
+    - `ensure_session(self, *session_id, *model, *status, *workspace_root, *workspace_lab...)` L237
+    - `save_messages(self, *session_id, *messages)` L281
+    - `_session_status(self, conn, session_id)` L308
+    - `load_messages(self, session_id)` L312
+    - `save_historical_turns(self, *session_id, *turns)` L324
+    - `load_historical_turns(self, session_id, *limit)` L392
+    - `search_historical_turns(self, session_id, query, *limit)` L429
+    - `list_sessions(self, *limit, *workspace_root, *workspace_fingerprint)` L453
+    - `save_tool_output(self, record)` L499
+    - `save_context(self, context, content)` L522
+    - `load_context(self, context_id)` L560
+    - `load_partial_context(self, context_id, *offset, *limit)` L571
+    - `delete_context(self, context_id)` L585
+    - `query_metadata(self, context_id)` L590
+    - `search_metadata(self, session_id, query, *limit)` L598
+    - `_touch_context(self, conn, context_id)` L630
+    - `get_tool_output(self, output_id)` L640
+    - `save_context_snapshot(self, *snapshot_id, *session_id, *compressed_messages, *summary_tex...)` L660
+    - `save_lrfu_snapshot(self, *session_id, *lrfu)` L691
+    - `save_file_state_snapshot(self, *session_id, *file_state)` L703
+    - `touch_session(self, session_id)` L715
+    - `delete_session(self, session_id)` L738
+    - `delete_expired_sessions(self, *max_age_seconds)` L753
+    - `load_session(self, session_id)` L775
+    - `save_conversation_snapshot(self, snapshot)` L807
+    - `get_conversation_snapshot(self, snapshot_id)` L827
+    - `get_latest_snapshot_for_session(self, session_id)` L837
+    - `save_snapshot_delta(self, delta)` L852
+    - `save_checkpoint_record(self, record)` L873
+    - `mark_session_historical(self, session_id, snapshot_id, summary, context_refs)` L894
+    - `get_historical_session(self, session_id)` L935
+    - `list_historical_sessions(self, limit)` L943
+    - `touch_historical_session(self, session_id)` L955
+- 模块函数：
+  - `session_preview(messages, *max_chars)` L973
+  - `message_content_to_text(content)` L988
+  - `truncate_one_line(text, *max_chars)` L994
+  - `context_from_row(row)` L1001
+  - `tool_metadata_from_row(row)` L1025
+  - `conversation_snapshot_from_dict(data)` L1052
+  - `historical_session_from_row(row)` L1071
+
+#### `memory/working_context.py` (35 行)
+- 类：
+  - `class WorkingContext` L9
+    - `add(self, context)` L12
+    - `evict(self, context_id)` L16
+    - `archive(self, context_id)` L22
+    - `metadata(self)` L28
+    - `clear(self)` L31
+
+### 3.5 `skills/` - 技能发现、索引、路由、向量检索与技能资产。
+
+#### `skills/__init__.py` (12 行)
+- 模块函数：
+  - `__getattr__(name)` L6
+
+#### `skills/discovery.py` (236 行)
+- 模块函数：
+  - `discover_skill_records(skills_root)` L33
+  - `discover_reference_records(records)` L44
+  - `_discover_single_root(skills_root)` L57
+  - `_discover_record_references(record)` L69
+  - `_iter_skill_files(skills_root)` L104
+  - `_should_skip(path)` L116
+  - `_is_reference_text_file(path)` L120
+  - `_load_skill_file(path)` L126
+  - `_load_json_skill(path, content)` L137
+  - `_load_markdown_skill(path, content)` L151
+  - `_make_record(path, name, description, content, metadata)` L158
+  - `normalize_tool_name(name)` L172
+  - `_first_markdown_heading(content)` L185
+  - `_frontmatter(content)` L193
+  - `_first_paragraph(content)` L210
+  - `_first_nonempty_line(content)` L230
+
+#### `skills/embeddings.py` (442 行)
+- 类：
+  - `class EmbeddingService extends Protocol` L19
+    - `dim(self)` L21
+    - `embed(self, text)` L24
+    - `embed_many(self, texts)` L27
+    - `embed_query(self, text)` L30
+    - `embed_documents(self, texts)` L33
+    - `signature(self)` L36
+  - `class HashEmbeddingService` L40 - Deterministic fallback used when local BGE dependencies are unavailable.
+    - `__init__(self, dim)` L43
+    - `dim(self)` L47
+    - `embed(self, text)` L50
+    - `embed_many(self, texts)` L53
+    - `embed_query(self, text)` L56
+    - `embed_documents(self, texts)` L59
+    - `signature(self)` L62
+  - `class BgeEmbeddingService` L66
+    - `__init__(self, *model_name, *device, *batch_size, *fallback_to_hash)` L67
+    - `dim(self)` L87
+    - `embed(self, text)` L90
+    - `embed_many(self, texts)` L93
+    - `embed_query(self, text)` L101
+    - `embed_documents(self, texts)` L108
+    - `signature(self)` L111
+    - `_load_model(self)` L119
+    - `_encode_with_model(self, model, texts)` L146
+  - `class BgeHttpEmbeddingService` L157
+    - `__init__(self, *endpoint, *model_name, *api_key, *timeout, *dim)` L158
+    - `dim(self)` L176
+    - `embed(self, text)` L179
+    - `embed_many(self, texts)` L182
+    - `embed_query(self, text)` L185
+    - `embed_documents(self, texts)` L189
+    - `signature(self)` L192
+    - `_request_embeddings(self, texts)` L201
+    - `_request_ollama(self, texts)` L248
+    - `_openai_payload(self, texts)` L283
+    - `_headers(self)` L289
+  - `class EmbeddingCache` L312
+    - `__init__(self, db_path)` L313
+    - `_connect(self)` L318
+    - `_init_db(self)` L321
+    - `get(self, *tool_name, *text_hash, *embedding_signature)` L335
+    - `put(self, *tool_name, *text_hash, *embedding_signature, *vector, *updat...)` L352
+    - `delete_missing(self, existing_tool_names)` L375
+    - `delete(self, tool_names)` L386
+- 模块函数：
+  - `create_embedding_service()` L299
+  - `embedding_text_hash(text)` L397
+  - `_extract_embeddings(body)` L401
+  - `_hash_vector(text, dim)` L417
+  - `_tokens(text)` L427
+  - `_normalize(vector)` L431
+  - `_to_float_list(vector)` L438
+
+#### `skills/index.py` (237 行)
+- 类：
+  - `class SkillSqlStore` L9
+    - `__init__(self, db_path)` L10
+    - `_connect(self)` L15
+    - `_init_db(self)` L18
+    - `load_all(self)` L62
+    - `upsert(self, record)` L80
+    - `delete_missing_sources(self, existing_sources)` L106
+    - `delete_missing_tool_names(self, existing_tool_names)` L116
+    - `reject(self, source_path, reason, updated_at)` L126
+    - `load_references(self)` L139
+    - `upsert_reference(self, record)` L174
+    - `delete_missing_references(self, existing_ref_ids)` L206
+    - `delete_references_for_missing_skills(self, existing_tool_names)` L216
+    - `get_reference(self, *skill_tool_name, *reference_path)` L226
+    - `list_references_for_skill(self, skill_tool_name)` L230
+
+#### `skills/lrfu_cache.py` (121 行)
+- 类：
+  - `class LRFUEntry` L7
+  - `class LRFUCandidate` L14
+  - `class LRFUCache` L19 - In-memory time-decayed LRFU cache with lazy score updates.
+    - `__init__(self, *decay, *max_entries)` L22
+    - `touch(self, skill_name, *current_round, *reward)` L27
+    - `get_score(self, skill_name, *current_round)` L42
+    - `top_candidates(self, *limit, *current_round)` L55
+    - `to_dict(self)` L65
+    - `load_dict(self, data)` L79
+    - `decayed_score(score, *last_update_round, *current_round, *decay)` L97
+    - `_prune_if_needed(self, *current_round)` L109
+
+#### `skills/models.py` (86 行)
+- 类：
+  - `class ReviewResult` L9
+  - `class SkillRecord` L15
+  - `class SkillReferenceRecord` L27
+  - `class SearchResult` L40
+  - `class SkillSyncReport` L49
+    - `summary(self)` L61
+
+#### `skills/reviewers.py` (21 行)
+- 模块函数：
+  - `async review_skill_code(source_path, content)` L8 - Entry point for future malicious-code review. The real implementation should inspect files, scripts, and executable snippets referenced by a skill. For now it approves by default s
+  - `async review_skill_prompt(source_path, content)` L18 - Entry point for future prompt-injection and instruction-risk review.
+
+#### `skills/router.py` (176 行)
+- 类：
+  - `class SkillRouterConfig` L11
+  - `class _RouterCandidate` L21
+    - `from_retrieval(self)` L31
+  - `class SkillRouter` L35 - Fuse retrieval, session, and user Skill candidates into a bounded TopN.
+    - `__init__(self, config)` L38
+    - `select(self, *records, *retrieval_results, *user_candidates, *session_cand...)` L41
+    - `_merge_retrieval(self, candidates, *records, *retrieval_results)` L73
+    - `_merge_lrfu(self, candidates, *records, *source, *source_name)` L95
+    - `_score_candidates(self, candidates)` L115
+    - `_enforce_retrieval_floor(self, selected, candidates)` L125
+    - `_sort_key(self, candidate)` L168
+
+#### `skills/runtime.py` (884 行)
+- 类：
+  - `class SkillRuntime` L86
+    - `__init__(self, *skills_root, *skill_roots, *registry)` L87
+    - `async initialize(self)` L148
+    - `close(self)` L159
+    - `async ensure_synced(self)` L165
+    - `_ensure_vector_index_complete(self, report)` L170
+    - `_upsert_vector_batch_with_retry(self, batch, *batch_label)` L223
+    - `async sync(self)` L243
+    - `get_record(self, tool_name)` L311
+    - `list_references_for_skill(self, tool_name)` L314
+    - `build_tools_for_prompt(self, prompt, core_tool_schemas)` L330
+    - `async build_tools_for_prompt_async(self, prompt, core_tool_schemas)` L364
+    - `async search_skill_schemas(self, *query, *max_results, *tool_names)` L372
+    - `async list_skill_tools(self)` L399
+    - `async get_tool_schema_by_name(self, tool_name)` L416
+    - `async search_skill_references(self, *query, *skill_name, *max_results)` L446
+    - `async get_skill_reference(self, *skill_name, *reference_path)` L499
+    - `system_hint(self)` L529
+    - `default_skill_hint(self)` L532
+    - `_skill_management_schemas(self)` L553
+    - `_register_available_skill_tools(self)` L562
+    - `_activate_default_skill_tools(self)` L569
+    - `begin_turn(self)` L573
+    - `end_turn(self)` L576
+    - `_pin_skill(self, tool_name, *scope)` L579
+    - `record_skill_invocation(self, tool_name)` L589
+    - `_search_records(self, query, *top_k, *preferred_names)` L606
+    - `_source_kind(self, source_path)` L630
+    - `_sync_references(self, current_records)` L643
+    - `_resolve_skill_tool_name(self, name)` L666
+    - `async _review(self, record)` L686
+- 模块函数：
+  - `_dedupe_schemas(schemas)` L696
+  - `_format_recall_names(names)` L708
+  - `_progress_bar(done, total, *width)` L713
+  - `_merge_search_results(*primary, *fallback, *top_k)` L721
+  - `_local_keyword_search(query, *records, *top_k, *preferred_names)` L741
+  - `_local_keyword_score(query_tokens, record)` L775
+  - `_tokenize_for_local_search(query)` L793
+  - `_is_relative_to(path, root)` L801
+  - `_normalize_reference_path(reference_path)` L809
+  - `_rank_references(*query, *references, *skill_tool_name, *limit)` L823
+  - `_tokens(text)` L856
+  - `_overlap(left, right)` L860
+  - `_reference_snippet(content, query, limit)` L866
+
+#### `skills/session_skill_cache.py` (23 行)
+- 类：
+  - `class SessionSkillCache` L6 - Session-scoped LRFU cache used for immediate in-conversation routing.
+    - `__init__(self, *decay, *max_entries)` L9
+    - `touch(self, skill_name, *current_round, *reward)` L12
+    - `top_candidates(self, *limit, *current_round)` L15
+    - `to_dict(self)` L18
+    - `load_dict(self, data)` L21
+
+#### `skills/tools.py` (225 行)
+- 类：
+  - `class SearchSkillParams extends BaseModel` L14
+  - `class SearchSkillTool extends Tool` L25
+    - `__init__(self, runtime)` L40
+    - `async execute(self, params)` L43
+  - `class GetAllToolParams extends BaseModel` L52
+  - `class GetAllTool extends Tool` L56
+    - `__init__(self, runtime)` L71
+    - `async execute(self, params)` L74
+  - `class GetToolByNameParams extends BaseModel` L79
+  - `class GetToolByNameTool extends Tool` L83
+    - `__init__(self, runtime)` L95
+    - `async execute(self, params)` L98
+  - `class SearchSkillReferencesParams extends BaseModel` L103
+  - `class SearchSkillReferencesTool extends Tool` L109
+    - `__init__(self, runtime)` L121
+    - `async execute(self, params)` L124
+  - `class GetSkillReferenceParams extends BaseModel` L133
+  - `class GetSkillReferenceTool extends Tool` L138
+    - `__init__(self, runtime)` L149
+    - `async execute(self, params)` L152
+  - `class SkillInvocationParams extends BaseModel` L160
+  - `class SkillTool extends Tool` L165
+    - `__init__(self, runtime, tool_name)` L169
+    - `async execute(self, params)` L183
+- 模块函数：
+  - `skill_schema_from_record(record)` L217
+
+#### `skills/user_skill_cache.py` (409 行)
+- 类：
+  - `class UserSkillCache` L10 - Persistent user LRFU cache with deferred session commits. The main user table is updated only at graceful session end or during startup recovery. Individual skill invocations are p
+    - `__init__(self, db_path, *decay, *reward, *max_entries)` L18
+    - `start_session(self, *user_id, *session_id)` L33
+    - `get_user_skill_call_round(self, *user_id)` L49
+    - `record_skill_call(self, *user_id, *session_id, *skill_name, *session_skill_call_round)` L53
+    - `commit_session(self, *user_id, *session_id)` L144
+    - `recover_uncommitted(self, *user_id)` L148
+    - `top_candidates(self, *user_id, *limit)` L162
+    - `_commit_session(self, conn, *user_id, *session_id)` L214
+    - `_mark_session_committed(self, conn, *user_id, *session_id, *updated_at)` L291
+    - `_prune(self, conn, *user_id)` L316
+    - `_connect(self)` L334
+    - `_get_user_skill_call_round(self, conn, *user_id)` L337
+    - `_init_db(self)` L350
+
+#### `skills/vector_store.py` (524 行)
+- 类：
+  - `class SkillVectorStore` L22
+    - `upsert(self, records)` L26
+    - `delete_missing(self, existing_tool_names)` L29
+    - `stale_records(self, records)` L32
+    - `search(self, query, *records, *top_k, *preferred_names)` L35
+  - `class MilvusVectorStore extends SkillVectorStore` L46 - Milvus-backed hybrid retrieval for SKILL search. Dense semantic search uses HNSW. Keyword search uses Milvus BM25 over the indexed text field. Indexes are created with the collecti
+    - `__init__(self, embedding_service, embedding_cache)` L58
+    - `upsert(self, records)` L69
+    - `delete_missing(self, existing_tool_names)` L92
+    - `stale_records(self, records)` L101 - Return records missing from Milvus or whose stored hash is stale.
+    - `search(self, query, *records, *top_k, *preferred_names)` L127
+    - `_connect(self)` L143
+    - `_create_collection(self, DataType, Function, FunctionType)` L178
+    - `_schema_is_compatible(self)` L237
+    - `_hybrid_search(self, query, *records, *top_k)` L266
+    - `_detect_dim(self)` L330
+    - `_vectors_for_records(self, records)` L357
+    - `_ensure_ready(self)` L401
+    - `_flush(self)` L408
+- 模块函数：
+  - `create_vector_store(embedding_service, embedding_cache)` L419
+  - `_record_from_entity(entity, tool_name)` L428
+  - `_hit_entity(hit)` L442
+  - `_hit_id(hit)` L474
+  - `_hit_score(hit)` L480
+  - `_rrf_ranker()` L486
+  - `_boost_preferred(results, preferred_names)` L495
+  - `_quoted_list(values)` L507
+  - `_semantic_document(record)` L511
+  - `_search_text(record)` L515
+  - `_truncate_text(text, max_bytes)` L519
+
+#### `skills/watcher.py` (250 行)
+- 类：
+  - `class SkillDirectoryWatcher` L44
+    - `__init__(self, root)` L45
+    - `start(self)` L53
+    - `stop(self)` L61
+    - `mark_dirty(self)` L68
+    - `consume_dirty(self)` L72
+    - `async wait_for_change(self, timeout)` L78
+    - `_run(self)` L91
+  - `class MultiSkillDirectoryWatcher` L100
+    - `__init__(self, roots)` L101
+    - `start(self)` L104
+    - `stop(self)` L108
+    - `consume_dirty(self)` L112
+    - `async wait_for_change(self, timeout)` L115
+  - `class _WatcherBackend` L129
+    - `poll(self, stop_event)` L130
+    - `close(self)` L133
+  - `class _InotifyBackend extends _WatcherBackend` L137
+    - `__init__(self, root)` L138
+    - `poll(self, stop_event)` L147
+    - `close(self)` L163
+    - `_consume_events(self, data)` L169
+    - `_add_tree(self, root)` L190
+    - `_add_watch(self, directory)` L194
+  - `class _PollingBackend extends _WatcherBackend` L202
+    - `__init__(self, root)` L203
+    - `poll(self, stop_event)` L207
+- 模块函数：
+  - `_create_backend(root)` L216
+  - `_iter_directories(root)` L223
+  - `_snapshot(root)` L233
+  - `_should_skip(path)` L248
+
+### 3.6 `tests/` - 自动化测试。
+
+#### `tests/test_cli_input.py` (366 行)
+- 模块函数：
+  - `async noop_handler(context, arguments)` L22
+  - `test_format_command_suggestion_marks_selected_item()` L26
+  - `test_format_command_usage_panel_lists_each_usage()` L39
+  - `test_delete_usage_panel_lists_expiry_cleanup()` L58
+  - `test_exact_command_shows_usage_panel_instead_of_simple_suggestion()` L78
+  - `test_command_space_argument_shows_available_usage_options()` L97
+  - `test_command_argument_hides_usage_when_prefix_matches_nothing()` L122
+  - `test_command_dash_argument_shows_matching_usage_options()` L137
+  - `test_command_partial_dash_argument_filters_matching_usage_options()` L160
+  - `test_selection_clamps_to_available_suggestions()` L180
+  - `test_accept_selected_suggestion_completes_buffer_once(monkeypatch)` L187
+  - `test_accept_selected_suggestion_does_not_intercept_exact_command(monkeypatch)` L199
+  - `test_move_selection_wraps_only_when_suggestions_exist(monkeypatch)` L210
+  - `test_path_like_input_has_no_selectable_suggestions()` L224
+  - `test_escape_sequences_move_selection_without_editing_buffer(monkeypatch)` L233
+  - `test_escape_sequence_reads_raw_fd_without_buffer_leak(monkeypatch)` L254
+  - `test_escape_sequence_helper_reads_arrow_suffix_from_fd()` L276
+  - `test_render_clears_relative_lines_and_returns_cursor_to_input(monkeypatch)` L288
+  - `test_prompt_strips_readline_markers_and_counts_visible_width()` L311
+  - `test_visible_width_uses_wcwidth_when_available(monkeypatch)` L322
+  - `test_hard_wrap_avoids_soft_wrap_and_last_column(monkeypatch)` L328
+  - `test_render_screen_tracks_input_cursor_after_hard_wrap(monkeypatch)` L335
+  - `test_render_uses_crlf_in_raw_mode(monkeypatch)` L345
+
+#### `tests/test_command_registry.py` (101 行)
+- 模块函数：
+  - `async noop_handler(context, arguments)` L9
+  - `test_command_registry_matches_command_and_alias()` L13
+  - `test_command_spec_help_text_includes_usage_examples_and_aliases()` L42
+  - `test_command_suggestions_do_not_block_path_like_input()` L64
+  - `test_command_registry_executes_handler()` L77
+  - `test_history_message_formatting_skips_system_and_folds_tool_output()` L87
+  - `test_history_message_formatting_truncates_long_content()` L97
+
+#### `tests/test_memory_runtime.py` (1124 行)
+- 类：
+  - `class FileStateCacheStub` L33
+    - `__init__(self)` L34
+    - `record(self, path, content, mtime_ns)` L37
+    - `get_state(self, path)` L40
+    - `to_dict(self)` L43
+    - `load_dict(self, data)` L51
+- 模块函数：
+  - `test_session_id_is_stable_and_messages_restore(tmp_path)` L58
+  - `test_delete_session_removes_related_records(tmp_path)` L72
+  - `test_expired_sessions_are_deleted_by_last_access_time(tmp_path)` L97
+  - `test_load_session_refreshes_expiry_clock(tmp_path)` L117
+  - `test_legacy_database_backfills_last_accessed_at(tmp_path)` L132
+  - `test_async_writer_persists_after_drain(tmp_path)` L171
+  - `test_save_messages_now_persists_without_drain(tmp_path)` L188
+  - `test_save_messages_now_is_not_overwritten_by_stale_async_save(tmp_path)` L200
+  - `test_save_current_session_before_switch_uses_existing_session_id(tmp_path)` L219
+  - `test_file_state_snapshot_round_trip_and_recheck(tmp_path)` L242
+  - `test_empty_current_session_is_not_saved_before_switch(tmp_path)` L272
+  - `test_session_list_uses_last_non_exit_user_message(tmp_path)` L280
+  - `test_session_list_defaults_to_current_workspace(tmp_path)` L302
+  - `test_migrated_workspace_sessions_match_fingerprint(tmp_path)` L318
+  - `test_session_preview_falls_back_when_no_user_message()` L337
+  - `test_current_turn_small_tool_output_stays_inline(tmp_path)` L342
+  - `test_get_stored_tool_output_returns_current_session_chunk(tmp_path)` L380
+  - `test_recover_context_returns_partial_context_metadata(tmp_path)` L400
+  - `test_search_recoverable_context_finds_metadata(tmp_path)` L421
+  - `test_get_stored_tool_output_recovers_other_session_with_owner_metadata(tmp_path)` L440
+  - `test_search_session_history_finds_virtualized_turns(tmp_path)` L461
+  - `test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)` L483
+  - `test_large_tool_output_becomes_recoverable_preview(tmp_path)` L503
+  - `test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_path)` L533
+  - `test_skill_related_calls_are_retained_for_historical_placeholders()` L560
+  - `test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_path)` L585
+  - `test_summary_stage_keeps_recent_context(tmp_path)` L648
+  - `test_compression_report_contains_required_metrics(tmp_path)` L674
+  - `test_reproducible_tool_classification()` L710
+  - `test_lrfu_snapshot_round_trip(tmp_path)` L718
+  - `budget_snapshot(usage_ratio)` L741
+  - `test_checkpoint_decision_requires_completed_turn(tmp_path)` L755
+  - `test_checkpoint_decision_uses_soft_and_hard_thresholds(tmp_path)` L766
+  - `test_snapshot_has_version(tmp_path)` L784
+  - `test_incremental_snapshot_merges_previous_snapshot_and_delta(tmp_path)` L803
+  - `test_snapshot_delta_only_uses_messages_since_last_checkpoint(tmp_path)` L833
+  - `test_rollover_marks_old_session_historical(tmp_path)` L855
+  - `test_rollover_new_session_contains_only_system_and_snapshot(tmp_path)` L884
+  - `test_recover_context_works_after_session_rollover(tmp_path)` L908
+  - `test_restore_session_returns_snapshot_not_messages(tmp_path)` L939
+  - `test_restore_session_does_not_persist_merge(tmp_path)` L966
+  - `test_prefix_cache_prompt_shape_stable_after_rollover()` L992
+  - `test_snapshot_continuity_across_multiple_rollovers(tmp_path)` L1016
+  - `test_recover_context_survives_multiple_rollovers(tmp_path)` L1054
+  - `test_recover_context_reports_missing_after_owner_session_delete(tmp_path)` L1105
+
+#### `tests/test_skill_router_lrfu.py` (127 行)
+- 类：
+  - `class LRFUCacheTests extends unittest.TestCase` L25
+    - `test_touch_applies_lazy_decay_and_reward(self)` L26
+  - `class UserSkillCacheTests extends unittest.TestCase` L35
+    - `test_user_table_updates_only_after_commit(self)` L36
+    - `test_recover_uncommitted_session_on_next_start(self)` L55
+    - `test_multiple_calls_preserve_frequency_in_session_score(self)` L73
+  - `class SkillRouterTests extends unittest.TestCase` L97
+    - `test_router_enforces_top_n_and_retrieval_floor(self)` L98
+- 模块函数：
+  - `_record(name)` L13
+
+## 4. Skill 资产与脚本框架
+
+`skills/` 同时包含核心 Skill 运行时代码和大量可插拔技能包。核心运行时代码已在 3.5 展开；本节按“技能包 -> scripts 代码文件 -> 类/函数”归纳资产目录。
+
+### 4.x `skills/agentkit-multimedia-shopping/`
+- 文档/提示词资源：`skills/agentkit-multimedia-shopping/SKILL.md`, `skills/agentkit-multimedia-shopping/assets/examples/sample-output.md`, `skills/agentkit-multimedia-shopping/assets/templates/avatar-description.md`, `skills/agentkit-multimedia-shopping/assets/templates/product-recommendation-script.md`, `skills/agentkit-multimedia-shopping/references/character-profile.md`, `skills/agentkit-multimedia-shopping/references/scene-templates.md`, `skills/agentkit-multimedia-shopping/references/script-templates.md`, `skills/agentkit-multimedia-shopping/references/tool-usage-guide.md`，另有 1 个 Markdown 资源
+- 脚本代码：
+  - `skills/agentkit-multimedia-shopping/scripts/generate_audio.py` (347 行)
+    - `class AudioGenerator` L12
+      - `__init__(self, api_key, api_url)` L15
+      - `generate_speech(self, text, voice, speed, tone)` L26
+      - `generate_music(self, style, duration)` L79
+    - `generate_speech(api_key, text, voice, speed, tone, output_path)` L127
+    - `generate_music(api_key, style, duration, output_path)` L188
+    - `mix_audio(speech_path, music_path, speech_volume, music_volume, output_path)` L243
+    - `main()` L298
+  - `skills/agentkit-multimedia-shopping/scripts/generate_character.py` (107 行)
+    - `generate_character(prompt, aspect_ratio, resolution)` L11
+    - `main()` L61
+  - `skills/agentkit-multimedia-shopping/scripts/generate_image.py` (238 行)
+    - `class ImageGenerator` L12
+      - `__init__(self, api_key, api_url)` L15
+      - `generate(self, prompt, style, resolution, num_images)` L26
+    - `generate_avatar(api_key, description, style, output_path, resolution)` L80
+    - `generate_background(api_key, description, style, output_path, resolution)` L146
+    - `main()` L204
+  - `skills/agentkit-multimedia-shopping/scripts/generate_music.py` (115 行)
+    - `generate_music(style, emotion, duration, format)` L11
+    - `main()` L67
+  - `skills/agentkit-multimedia-shopping/scripts/generate_scene.py` (107 行)
+    - `generate_scene(prompt, aspect_ratio, resolution)` L11
+    - `main()` L61
+  - `skills/agentkit-multimedia-shopping/scripts/generate_video.py` (139 行)
+    - `generate_video(character_image, scene_image, voice_file, music_file, prompt, durat...)` L11
+    - `main()` L85
+  - `skills/agentkit-multimedia-shopping/scripts/generate_voice.py` (115 行)
+    - `generate_voice(text, voice_type, emotion, format)` L11
+    - `main()` L67
+
+### 4.x `skills/backend-interview/`
+- 文档/提示词资源：`skills/backend-interview/SKILL.md`
+- JSON/配置资源：`skills/backend-interview/tool.json`
+- 脚本代码：
+  - `skills/backend-interview/__init__.py` (7 行)
+  - `skills/backend-interview/references/parse_resume.py` (139 行)
+    - `_extract_sections(text)` L33
+    - `_extract_tech_keywords(text)` L61
+    - `async execute(file_path)` L82
+
+### 4.x `skills/baoyu-format-markdown/`
+- 文档/提示词资源：`skills/baoyu-format-markdown/SKILL.md`
+- JSON/配置资源：`skills/baoyu-format-markdown/scripts/package-lock.json`, `skills/baoyu-format-markdown/scripts/package.json`
+- 脚本代码：
+  - `skills/baoyu-format-markdown/scripts/autocorrect.ts` (11 行)
+    - `applyAutocorrect(filePath)` L3
+  - `skills/baoyu-format-markdown/scripts/main.ts` (177 行)
+    - `decodeHtmlEntities(text)` L34
+    - `formatFrontmatter(value)` L40
+    - `formatMarkdownContent(content, options)` L49
+    - `formatMarkdown(filePath, options?)` L87
+    - `parseArgs(args)` L124
+  - `skills/baoyu-format-markdown/scripts/quotes.ts` (6 行)
+    - `replaceQuotes(content)` L1
+
+### 4.x `skills/baoyu-post-to-wechat/`
+- 文档/提示词资源：`skills/baoyu-post-to-wechat/SKILL.md`, `skills/baoyu-post-to-wechat/references/article-posting.md`, `skills/baoyu-post-to-wechat/references/config/first-time-setup.md`, `skills/baoyu-post-to-wechat/references/image-text-posting.md`
+- 脚本代码：
+  - `skills/baoyu-post-to-wechat/scripts/cdp.ts` (306 行)
+    - `class CdpConnection` L92
+      - `constructor(ws)` L97
+      - `async connect(url, timeoutMs)` L130
+      - `close()` L162
+    - `sleep(ms)` L9
+    - `async getFreePort()` L13
+    - `findChromeExecutable()` L33
+    - `getDefaultProfileDir()` L63
+    - `async waitForChromeDebugPort(port, timeoutMs)` L74
+    - `async tryConnectExisting(port)` L174
+    - `async findExistingChromeDebugPort()` L185
+    - `async launchChrome(url, profileDir?)` L205
+    - `async getPageSession(cdp, urlPattern)` L231
+    - `async waitForNewTab(cdp, initialIds, urlPattern, timeoutMs = 30_000)` L246
+    - `async clickElement(session, selector)` L257
+    - `async typeText(session, text)` L279
+    - `async pasteFromClipboard(session)` L293
+  - `skills/baoyu-post-to-wechat/scripts/copy-to-clipboard.ts` (381 行)
+    - `printUsage(exitCode = 0)` L10
+    - `resolvePath(filePath)` L30
+    - `inferImageMimeType(imagePath)` L34
+    - `async runCommand(command, args, options?)` L53
+    - `async commandExists(command)` L85
+    - `async runCommandWithFileStdin(command, args, filePath)` L94
+    - `getMacSwiftClipboardSource()` L128
+    - `async copyImageMac(imagePath)` L189
+    - `async copyHtmlMac(htmlFilePath)` L197
+    - `async copyImageLinux(imagePath)` L205
+    - `async copyHtmlLinux(htmlFilePath)` L218
+    - `async copyImageWindows(imagePath)` L230
+    - `async copyHtmlWindows(htmlFilePath)` L242
+    - `async copyImageToClipboard(imagePathInput)` L252
+    - `async copyHtmlFileToClipboard(htmlFilePathInput)` L277
+    - `async readStdinText()` L296
+    - `async copyHtmlToClipboard(args)` L306
+    - `async main()` L353
+  - `skills/baoyu-post-to-wechat/scripts/md-to-wechat.ts` (292 行)
+    - `downloadFile(url, destPath)` L26
+    - `getImageExtension(urlOrPath)` L69
+    - `async resolveImagePath(imagePath, baseDir, tempDir)` L74
+    - `parseFrontmatter(content)` L94
+    - `async convertMarkdown(markdownPath, options?)` L115
+    - `printUsage()` L222
+    - `async main()` L253
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/alert.ts` (285 行)
+    - `ucfirst(str)` L16
+    - `markedAlert(options)` L25
+    - `resolveVariants(variants)` L264
+    - `createSyntaxPattern(type)` L282
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/footnotes.ts` (90 行)
+    - `markedFootnotes()` L17
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/index.ts` (11 行)
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/infographic.ts` (120 行)
+    - `async renderInfographic(containerId, code, options?)` L7
+    - `markedInfographic(options?)` L82
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/katex.ts` (163 行)
+    - `createRenderer(display, withStyle)` L16
+    - `inlineKatex(options, renderer)` L46
+    - `blockKatex(_options, renderer)` L88
+    - `inlineLatexKatex(_options, renderer)` L107
+    - `blockLatexKatex(_options, renderer)` L130
+    - `MDKatex(options, withStyle)` L153
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/markup.ts` (88 行)
+    - `markedMarkup()` L9
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/plantuml.ts` (290 行)
+    - `encode6bit(b)` L37
+    - `append3bytes(b1, b2, b3)` L63
+    - `encode64(data)` L80
+    - `performDeflate(input)` L100
+    - `encodePlantUML(plantumlCode)` L122
+    - `generatePlantUMLUrl(code, options)` L142
+    - `renderPlantUMLDiagram(token, options)` L151
+    - `async fetchSvgContent(svgUrl)` L191
+    - `createPlantUMLHTML(imageUrl, options, svgContent?)` L216
+    - `markedPlantUML(options)` L239
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/ruby.ts` (126 行)
+    - `markedRuby()` L18
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/slider.ts` (74 行)
+    - `markedSlider()` L7
+  - `skills/baoyu-post-to-wechat/scripts/md/extensions/toc.ts` (75 行)
+    - `markedToc()` L6
+  - `skills/baoyu-post-to-wechat/scripts/md/render.ts` (795 行)
+    - `stripOutputScope(cssContent)` L54
+    - `discoverThemesFromDir(dir)` L62
+    - `readThemeNamesFromConfig(configPath)` L73
+    - `resolveThemeNames()` L87
+    - `escapeHtml(text)` L140
+    - `buildAddition()` L150
+    - `buildFootnoteArray(footnotes, string, string][])` L169
+    - `transform(legend, text, title)` L179
+    - `parseFrontMatterAndContent(markdownText)` L200
+    - `initRenderer(opts)` L223
+    - `printUsage()` L485
+    - `parseArgs(argv)` L497
+    - `renderMarkdown(raw, renderer)` L547
+    - `postProcessHtml(baseHtml, reading, renderer)` L559
+    - `formatTimestamp(date = new Date()` L585
+    - `ensureMarkdownPath(inputPath)` L592
+    - `loadThemeCss(theme)` L598
+    - `buildCss(baseCss, themeCss)` L635
+    - `normalizeThemeCss(css)` L660
+    - `buildHtmlDocument(title, css, html)` L664
+    - `async inlineCss(html)` L683
+    - `normalizeCssText(cssText)` L699
+    - `normalizeInlineCss(html)` L713
+    - `modifyHtmlStructure(htmlString)` L731
+    - `async main()` L741
+  - `skills/baoyu-post-to-wechat/scripts/md/utils/languages.ts` (239 行)
+    - `grammarUrlFor(language)` L88
+    - `async loadAndRegisterLanguage(language, hljs)` L97
+    - `formatHighlightedCode(html, preserveNewlines = false)` L131
+    - `highlightAndFormatCode(text, language, hljs, showLineNumber)` L159
+    - `highlightCodeBlock(codeBlock, language, hljs)` L191
+    - `highlightPendingBlocks(hljs, container)` L214
+  - `skills/baoyu-post-to-wechat/scripts/paste-from-clipboard.ts` (195 行)
+    - `printUsage(exitCode = 0)` L4
+    - `sleepSync(ms)` L31
+    - `activateApp(appName)` L35
+    - `pasteMac(retries, delayMs, targetApp?)` L58
+    - `pasteLinux(retries, delayMs)` L95
+    - `pasteWindows(retries, delayMs)` L123
+    - `paste(retries, delayMs, targetApp?)` L142
+    - `async main()` L156
+  - `skills/baoyu-post-to-wechat/scripts/wechat-agent-browser.ts` (336 行)
+    - `sleep(ms)` L9
+    - `ab(cmd, json = false)` L13
+    - `abRaw(args)` L26
+    - `parseSnapshot(output)` L43
+    - `findElementByText(snapshot, text)` L64
+    - `findElementBySelector(snapshot, selector)` L77
+    - `async postToWeChat(options)` L89
+    - `printUsage()` L270
+    - `async main()` L291
+  - `skills/baoyu-post-to-wechat/scripts/wechat-api.ts` (605 行)
+    - `loadEnvFile(envPath)` L47
+    - `loadConfig()` L69
+    - `async fetchAccessToken(appId, appSecret)` L89
+    - `async uploadImage(imagePath, accessToken, baseDir?)` L105
+    - `async uploadImagesInHtml(html, accessToken, baseDir)` L187
+    - `async publishToDraft(options, accessToken)` L236
+    - `parseFrontmatter(content)` L288
+    - `renderMarkdownToHtml(markdownPath, theme)` L310
+    - `extractHtmlContent(htmlPath)` L335
+    - `printUsage()` L345
+    - `parseArgs(argv)` L405
+    - `extractHtmlTitle(html)` L454
+    - `async main()` L462
+  - `skills/baoyu-post-to-wechat/scripts/wechat-article.ts` (741 行)
+    - `async waitForLogin(session, timeoutMs = 120_000)` L31
+    - `async waitForElement(session, selector, timeoutMs = 10_000)` L41
+    - `async clickMenuByText(session, text)` L51
+    - `async copyImageToClipboard(imagePath)` L79
+    - `async pasteInEditor(session)` L87
+    - `async sendCopy(cdp?, sessionId?)` L94
+    - `async sendPaste(cdp?, sessionId?)` L106
+    - `async copyHtmlFromBrowser(cdp, htmlFilePath, contentImages)` L118
+    - `async pasteFromClipboardInEditor(session)` L178
+    - `async parseMarkdownWithPlaceholders(markdownPath, theme?)` L184
+    - `parseHtmlMeta(htmlPath)` L201
+    - `async selectAndReplacePlaceholder(session, placeholder)` L269
+    - `async pressDeleteKey(session)` L312
+    - `async removeExtraEmptyLineAfterImage(session)` L318
+    - `async postArticle(options)` L383
+    - `printUsage()` L665
+    - `async main()` L698
+  - `skills/baoyu-post-to-wechat/scripts/wechat-browser.ts` (718 行)
+    - `class CdpConnection` L201
+      - `constructor(ws)` L206
+      - `async connect(url, timeoutMs)` L239
+      - `close()` L271
+    - `parseMarkdownFile(filePath)` L17
+    - `compressTitle(title, maxLen = 20)` L55
+    - `compressContent(content, maxLen = 1000)` L78
+    - `async loadImagesFromDir(dir)` L98
+    - `sleep(ms)` L107
+    - `async getFreePort()` L111
+    - `findChromeExecutable()` L131
+    - `getDefaultProfileDir()` L172
+    - `async waitForChromeDebugPort(port, timeoutMs)` L183
+    - `async postToWeChat(options)` L289
+    - `printUsage()` L643
+    - `async main()` L667
+
+### 4.x `skills/baoyu-post-to-x/`
+- 文档/提示词资源：`skills/baoyu-post-to-x/SKILL.md`, `skills/baoyu-post-to-x/references/articles.md`, `skills/baoyu-post-to-x/references/regular-posts.md`
+- 脚本代码：
+  - `skills/baoyu-post-to-x/scripts/copy-to-clipboard.ts` (381 行)
+    - `printUsage(exitCode = 0)` L10
+    - `resolvePath(filePath)` L30
+    - `inferImageMimeType(imagePath)` L34
+    - `async runCommand(command, args, options?)` L53
+    - `async commandExists(command)` L85
+    - `async runCommandWithFileStdin(command, args, filePath)` L94
+    - `getMacSwiftClipboardSource()` L128
+    - `async copyImageMac(imagePath)` L189
+    - `async copyHtmlMac(htmlFilePath)` L197
+    - `async copyImageLinux(imagePath)` L205
+    - `async copyHtmlLinux(htmlFilePath)` L218
+    - `async copyImageWindows(imagePath)` L230
+    - `async copyHtmlWindows(htmlFilePath)` L242
+    - `async copyImageToClipboard(imagePathInput)` L252
+    - `async copyHtmlFileToClipboard(htmlFilePathInput)` L277
+    - `async readStdinText()` L296
+    - `async copyHtmlToClipboard(args)` L306
+    - `async main()` L353
+  - `skills/baoyu-post-to-x/scripts/md-to-html.ts` (439 行)
+    - `parseFrontmatter(content)` L25
+    - `downloadFile(url, destPath)` L46
+    - `getImageExtension(urlOrPath)` L89
+    - `async resolveImagePath(imagePath, baseDir, tempDir)` L94
+    - `escapeHtml(text)` L114
+    - `convertMarkdownToHtml(markdown, imageCallback, alt)` L122
+    - `async parseMarkdown(markdownPath, options?)` L257
+    - `printUsage()` L352
+    - `async main()` L379
+  - `skills/baoyu-post-to-x/scripts/paste-from-clipboard.ts` (195 行)
+    - `printUsage(exitCode = 0)` L4
+    - `sleepSync(ms)` L31
+    - `activateApp(appName)` L35
+    - `pasteMac(retries, delayMs, targetApp?)` L58
+    - `pasteLinux(retries, delayMs)` L95
+    - `pasteWindows(retries, delayMs)` L123
+    - `paste(retries, delayMs, targetApp?)` L142
+    - `async main()` L156
+  - `skills/baoyu-post-to-x/scripts/x-article.ts` (762 行)
+    - `async findExistingDebugPort(profileDir)` L64
+    - `async publishArticle(options)` L83
+    - `printUsage()` L691
+    - `async main()` L718
+  - `skills/baoyu-post-to-x/scripts/x-browser.ts` (238 行)
+    - `async postToX(options)` L28
+    - `printUsage()` L182
+    - `async main()` L202
+  - `skills/baoyu-post-to-x/scripts/x-quote.ts` (248 行)
+    - `extractTweetUrl(urlOrId)` L14
+    - `async quotePost(options)` L31
+    - `printUsage()` L190
+    - `async main()` L208
+  - `skills/baoyu-post-to-x/scripts/x-utils.ts` (243 行)
+    - `class CdpConnection` L137
+      - `constructor(ws, options?)` L143
+      - `async connect(url, timeoutMs, options?)` L178
+      - `close()` L212
+    - `getCandidatesForPlatform(candidates)` L55
+    - `findChromeExecutable(candidates)` L61
+    - `getDefaultProfileDir()` L71
+    - `sleep(ms)` L76
+    - `async getFreePort()` L80
+    - `async waitForChromeDebugPort(port, timeoutMs, options?)` L106
+    - `getScriptDir()` L218
+    - `runBunScript(scriptPath, args)` L222
+    - `copyImageToClipboard(imagePath)` L227
+    - `copyHtmlToClipboard(htmlPath)` L232
+    - `pasteFromClipboard(targetApp?, retries = 3, delayMs = 500)` L237
+  - `skills/baoyu-post-to-x/scripts/x-video.ts` (261 行)
+    - `async postVideoToX(options)` L27
+    - `printUsage()` L198
+    - `async main()` L225
+
+### 4.x `skills/baoyu-url-to-markdown/`
+- 文档/提示词资源：`skills/baoyu-url-to-markdown/SKILL.md`
+- 脚本代码：
+  - `skills/baoyu-url-to-markdown/scripts/cdp.ts` (291 行)
+    - `class CdpConnection` L28
+      - `constructor(ws)` L33
+      - `async connect(url, timeoutMs)` L64
+      - `close()` L101
+    - `sleep(ms)` L12
+    - `async fetchWithTimeout(url, init)` L16
+    - `async getFreePort()` L107
+    - `findChromeExecutable()` L124
+    - `async waitForChromeDebugPort(port, timeoutMs)` L165
+    - `async launchChrome(url, port, headless)` L179
+    - `async waitForNetworkIdle(cdp, sessionId, timeoutMs)` L198
+    - `async waitForPageLoad(cdp, sessionId, timeoutMs)` L222
+    - `async createTargetAndAttach(cdp, url)` L237
+    - `async navigateAndWait(cdp, sessionId, url, timeoutMs)` L245
+    - `async autoScroll(cdp, sessionId, steps, waitMs)` L271
+    - `killChrome(chrome)` L283
+  - `skills/baoyu-url-to-markdown/scripts/constants.ts` (14 行)
+  - `skills/baoyu-url-to-markdown/scripts/html-to-markdown.ts` (852 行)
+    - `pickString(...values)` L263
+    - `generateExcerpt(excerpt, textContent)` L273
+    - `extractPublishedTime(document)` L281
+    - `extractTitle(document)` L291
+    - `extractTextFromHtml(html)` L310
+    - `parseDocument(html)` L320
+    - `sanitizeHtml(html)` L327
+    - `flattenJsonLdItems(data)` L341
+    - `parseJsonLdScripts(document)` L353
+    - `isArticleType(item)` L369
+    - `extractAuthorFromJsonLd(authorData)` L374
+    - `parseJsonLdItem(item)` L389
+    - `tryJsonLdExtraction(document)` L417
+    - `getByPath(value, path)` L425
+    - `isContentBlockArray(value)` L434
+    - `extractTextFromContentBlocks(blocks)` L443
+    - `tryStringBodyExtraction(content, meta, document, method)` L496
+    - `tryNextDataExtraction(document)` L521
+    - `buildReadabilityCandidate(article, document, method)` L587
+    - `tryReadability(document)` L606
+    - `trySelectorExtraction(document)` L627
+    - `tryBodyExtraction(document)` L657
+    - `pickBestCandidate(candidates)` L683
+    - `extractFromHtml(html)` L724
+    - `normalizeMarkdown(markdown)` L782
+    - `convertHtmlToMarkdown(html)` L790
+    - `fallbackPlainText(html)` L801
+    - `htmlToMarkdown(html)` L812
+    - `escapeYamlValue(value)` L828
+    - `formatMetadataYaml(meta)` L832
+    - `createMarkdownDocument(result)` L844
+  - `skills/baoyu-url-to-markdown/scripts/main.ts` (177 行)
+    - `sleep(ms)` L11
+    - `async fileExists(filePath)` L15
+    - `parseArgs(argv)` L31
+    - `generateSlug(title, url)` L48
+    - `formatTimestamp()` L59
+    - `async generateOutputPath(url, title)` L65
+    - `async waitForUserSignal()` L79
+    - `async captureUrl(args)` L87
+    - `async main()` L144
+  - `skills/baoyu-url-to-markdown/scripts/paths.ts` (30 行)
+    - `resolveUserDataRoot()` L9
+    - `resolveUrlToMarkdownDataDir()` L19
+    - `resolveUrlToMarkdownChromeProfileDir()` L25
+
+### 4.x `skills/coding-standards/`
+- 文档/提示词资源：`skills/coding-standards/SKILL.md`
+- 脚本代码：
+  - `skills/coding-standards/__init__.py` (0 行)
+
+### 4.x `skills/content-creation-publisher/`
+- 文档/提示词资源：`skills/content-creation-publisher/SKILL.md`, `skills/content-creation-publisher/article-illustrator/SKILL.md`, `skills/content-creation-publisher/article-illustrator/references/style-guide.md`, `skills/content-creation-publisher/article-illustrator/references/terminology.md`, `skills/content-creation-publisher/baoyu-format-markdown/SKILL.md`, `skills/content-creation-publisher/baoyu-post-to-wechat/SKILL.md`, `skills/content-creation-publisher/baoyu-post-to-wechat/references/article-posting.md`, `skills/content-creation-publisher/baoyu-post-to-wechat/references/config/first-time-setup.md`，另有 6 个 Markdown 资源
+- JSON/配置资源：`skills/content-creation-publisher/baoyu-format-markdown/scripts/package-lock.json`, `skills/content-creation-publisher/baoyu-format-markdown/scripts/package.json`
+- 脚本代码：
+  - `skills/content-creation-publisher/baoyu-format-markdown/scripts/autocorrect.ts` (11 行)
+    - `applyAutocorrect(filePath)` L3
+  - `skills/content-creation-publisher/baoyu-format-markdown/scripts/main.ts` (177 行)
+    - `decodeHtmlEntities(text)` L34
+    - `formatFrontmatter(value)` L40
+    - `formatMarkdownContent(content, options)` L49
+    - `formatMarkdown(filePath, options?)` L87
+    - `parseArgs(args)` L124
+  - `skills/content-creation-publisher/baoyu-format-markdown/scripts/quotes.ts` (6 行)
+    - `replaceQuotes(content)` L1
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/cdp.ts` (306 行)
+    - `class CdpConnection` L92
+      - `constructor(ws)` L97
+      - `async connect(url, timeoutMs)` L130
+      - `close()` L162
+    - `sleep(ms)` L9
+    - `async getFreePort()` L13
+    - `findChromeExecutable()` L33
+    - `getDefaultProfileDir()` L63
+    - `async waitForChromeDebugPort(port, timeoutMs)` L74
+    - `async tryConnectExisting(port)` L174
+    - `async findExistingChromeDebugPort()` L185
+    - `async launchChrome(url, profileDir?)` L205
+    - `async getPageSession(cdp, urlPattern)` L231
+    - `async waitForNewTab(cdp, initialIds, urlPattern, timeoutMs = 30_000)` L246
+    - `async clickElement(session, selector)` L257
+    - `async typeText(session, text)` L279
+    - `async pasteFromClipboard(session)` L293
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/copy-to-clipboard.ts` (381 行)
+    - `printUsage(exitCode = 0)` L10
+    - `resolvePath(filePath)` L30
+    - `inferImageMimeType(imagePath)` L34
+    - `async runCommand(command, args, options?)` L53
+    - `async commandExists(command)` L85
+    - `async runCommandWithFileStdin(command, args, filePath)` L94
+    - `getMacSwiftClipboardSource()` L128
+    - `async copyImageMac(imagePath)` L189
+    - `async copyHtmlMac(htmlFilePath)` L197
+    - `async copyImageLinux(imagePath)` L205
+    - `async copyHtmlLinux(htmlFilePath)` L218
+    - `async copyImageWindows(imagePath)` L230
+    - `async copyHtmlWindows(htmlFilePath)` L242
+    - `async copyImageToClipboard(imagePathInput)` L252
+    - `async copyHtmlFileToClipboard(htmlFilePathInput)` L277
+    - `async readStdinText()` L296
+    - `async copyHtmlToClipboard(args)` L306
+    - `async main()` L353
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md-to-wechat.ts` (292 行)
+    - `downloadFile(url, destPath)` L26
+    - `getImageExtension(urlOrPath)` L69
+    - `async resolveImagePath(imagePath, baseDir, tempDir)` L74
+    - `parseFrontmatter(content)` L94
+    - `async convertMarkdown(markdownPath, options?)` L115
+    - `printUsage()` L222
+    - `async main()` L253
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/alert.ts` (285 行)
+    - `ucfirst(str)` L16
+    - `markedAlert(options)` L25
+    - `resolveVariants(variants)` L264
+    - `createSyntaxPattern(type)` L282
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/footnotes.ts` (90 行)
+    - `markedFootnotes()` L17
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/index.ts` (11 行)
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/infographic.ts` (120 行)
+    - `async renderInfographic(containerId, code, options?)` L7
+    - `markedInfographic(options?)` L82
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/katex.ts` (163 行)
+    - `createRenderer(display, withStyle)` L16
+    - `inlineKatex(options, renderer)` L46
+    - `blockKatex(_options, renderer)` L88
+    - `inlineLatexKatex(_options, renderer)` L107
+    - `blockLatexKatex(_options, renderer)` L130
+    - `MDKatex(options, withStyle)` L153
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/markup.ts` (88 行)
+    - `markedMarkup()` L9
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/plantuml.ts` (290 行)
+    - `encode6bit(b)` L37
+    - `append3bytes(b1, b2, b3)` L63
+    - `encode64(data)` L80
+    - `performDeflate(input)` L100
+    - `encodePlantUML(plantumlCode)` L122
+    - `generatePlantUMLUrl(code, options)` L142
+    - `renderPlantUMLDiagram(token, options)` L151
+    - `async fetchSvgContent(svgUrl)` L191
+    - `createPlantUMLHTML(imageUrl, options, svgContent?)` L216
+    - `markedPlantUML(options)` L239
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/ruby.ts` (126 行)
+    - `markedRuby()` L18
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/slider.ts` (74 行)
+    - `markedSlider()` L7
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/extensions/toc.ts` (75 行)
+    - `markedToc()` L6
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/render.ts` (795 行)
+    - `stripOutputScope(cssContent)` L54
+    - `discoverThemesFromDir(dir)` L62
+    - `readThemeNamesFromConfig(configPath)` L73
+    - `resolveThemeNames()` L87
+    - `escapeHtml(text)` L140
+    - `buildAddition()` L150
+    - `buildFootnoteArray(footnotes, string, string][])` L169
+    - `transform(legend, text, title)` L179
+    - `parseFrontMatterAndContent(markdownText)` L200
+    - `initRenderer(opts)` L223
+    - `printUsage()` L485
+    - `parseArgs(argv)` L497
+    - `renderMarkdown(raw, renderer)` L547
+    - `postProcessHtml(baseHtml, reading, renderer)` L559
+    - `formatTimestamp(date = new Date()` L585
+    - `ensureMarkdownPath(inputPath)` L592
+    - `loadThemeCss(theme)` L598
+    - `buildCss(baseCss, themeCss)` L635
+    - `normalizeThemeCss(css)` L660
+    - `buildHtmlDocument(title, css, html)` L664
+    - `async inlineCss(html)` L683
+    - `normalizeCssText(cssText)` L699
+    - `normalizeInlineCss(html)` L713
+    - `modifyHtmlStructure(htmlString)` L731
+    - `async main()` L741
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/md/utils/languages.ts` (239 行)
+    - `grammarUrlFor(language)` L88
+    - `async loadAndRegisterLanguage(language, hljs)` L97
+    - `formatHighlightedCode(html, preserveNewlines = false)` L131
+    - `highlightAndFormatCode(text, language, hljs, showLineNumber)` L159
+    - `highlightCodeBlock(codeBlock, language, hljs)` L191
+    - `highlightPendingBlocks(hljs, container)` L214
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/paste-from-clipboard.ts` (195 行)
+    - `printUsage(exitCode = 0)` L4
+    - `sleepSync(ms)` L31
+    - `activateApp(appName)` L35
+    - `pasteMac(retries, delayMs, targetApp?)` L58
+    - `pasteLinux(retries, delayMs)` L95
+    - `pasteWindows(retries, delayMs)` L123
+    - `paste(retries, delayMs, targetApp?)` L142
+    - `async main()` L156
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/wechat-agent-browser.ts` (336 行)
+    - `sleep(ms)` L9
+    - `ab(cmd, json = false)` L13
+    - `abRaw(args)` L26
+    - `parseSnapshot(output)` L43
+    - `findElementByText(snapshot, text)` L64
+    - `findElementBySelector(snapshot, selector)` L77
+    - `async postToWeChat(options)` L89
+    - `printUsage()` L270
+    - `async main()` L291
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/wechat-api.ts` (605 行)
+    - `loadEnvFile(envPath)` L47
+    - `loadConfig()` L69
+    - `async fetchAccessToken(appId, appSecret)` L89
+    - `async uploadImage(imagePath, accessToken, baseDir?)` L105
+    - `async uploadImagesInHtml(html, accessToken, baseDir)` L187
+    - `async publishToDraft(options, accessToken)` L236
+    - `parseFrontmatter(content)` L288
+    - `renderMarkdownToHtml(markdownPath, theme)` L310
+    - `extractHtmlContent(htmlPath)` L335
+    - `printUsage()` L345
+    - `parseArgs(argv)` L405
+    - `extractHtmlTitle(html)` L454
+    - `async main()` L462
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/wechat-article.ts` (741 行)
+    - `async waitForLogin(session, timeoutMs = 120_000)` L31
+    - `async waitForElement(session, selector, timeoutMs = 10_000)` L41
+    - `async clickMenuByText(session, text)` L51
+    - `async copyImageToClipboard(imagePath)` L79
+    - `async pasteInEditor(session)` L87
+    - `async sendCopy(cdp?, sessionId?)` L94
+    - `async sendPaste(cdp?, sessionId?)` L106
+    - `async copyHtmlFromBrowser(cdp, htmlFilePath, contentImages)` L118
+    - `async pasteFromClipboardInEditor(session)` L178
+    - `async parseMarkdownWithPlaceholders(markdownPath, theme?)` L184
+    - `parseHtmlMeta(htmlPath)` L201
+    - `async selectAndReplacePlaceholder(session, placeholder)` L269
+    - `async pressDeleteKey(session)` L312
+    - `async removeExtraEmptyLineAfterImage(session)` L318
+    - `async postArticle(options)` L383
+    - `printUsage()` L665
+    - `async main()` L698
+  - `skills/content-creation-publisher/baoyu-post-to-wechat/scripts/wechat-browser.ts` (718 行)
+    - `class CdpConnection` L201
+      - `constructor(ws)` L206
+      - `async connect(url, timeoutMs)` L239
+      - `close()` L271
+    - `parseMarkdownFile(filePath)` L17
+    - `compressTitle(title, maxLen = 20)` L55
+    - `compressContent(content, maxLen = 1000)` L78
+    - `async loadImagesFromDir(dir)` L98
+    - `sleep(ms)` L107
+    - `async getFreePort()` L111
+    - `findChromeExecutable()` L131
+    - `getDefaultProfileDir()` L172
+    - `async waitForChromeDebugPort(port, timeoutMs)` L183
+    - `async postToWeChat(options)` L289
+    - `printUsage()` L643
+    - `async main()` L667
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/copy-to-clipboard.ts` (381 行)
+    - `printUsage(exitCode = 0)` L10
+    - `resolvePath(filePath)` L30
+    - `inferImageMimeType(imagePath)` L34
+    - `async runCommand(command, args, options?)` L53
+    - `async commandExists(command)` L85
+    - `async runCommandWithFileStdin(command, args, filePath)` L94
+    - `getMacSwiftClipboardSource()` L128
+    - `async copyImageMac(imagePath)` L189
+    - `async copyHtmlMac(htmlFilePath)` L197
+    - `async copyImageLinux(imagePath)` L205
+    - `async copyHtmlLinux(htmlFilePath)` L218
+    - `async copyImageWindows(imagePath)` L230
+    - `async copyHtmlWindows(htmlFilePath)` L242
+    - `async copyImageToClipboard(imagePathInput)` L252
+    - `async copyHtmlFileToClipboard(htmlFilePathInput)` L277
+    - `async readStdinText()` L296
+    - `async copyHtmlToClipboard(args)` L306
+    - `async main()` L353
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/md-to-html.ts` (439 行)
+    - `parseFrontmatter(content)` L25
+    - `downloadFile(url, destPath)` L46
+    - `getImageExtension(urlOrPath)` L89
+    - `async resolveImagePath(imagePath, baseDir, tempDir)` L94
+    - `escapeHtml(text)` L114
+    - `convertMarkdownToHtml(markdown, imageCallback, alt)` L122
+    - `async parseMarkdown(markdownPath, options?)` L257
+    - `printUsage()` L352
+    - `async main()` L379
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/paste-from-clipboard.ts` (195 行)
+    - `printUsage(exitCode = 0)` L4
+    - `sleepSync(ms)` L31
+    - `activateApp(appName)` L35
+    - `pasteMac(retries, delayMs, targetApp?)` L58
+    - `pasteLinux(retries, delayMs)` L95
+    - `pasteWindows(retries, delayMs)` L123
+    - `paste(retries, delayMs, targetApp?)` L142
+    - `async main()` L156
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/x-article.ts` (762 行)
+    - `async findExistingDebugPort(profileDir)` L64
+    - `async publishArticle(options)` L83
+    - `printUsage()` L691
+    - `async main()` L718
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/x-browser.ts` (238 行)
+    - `async postToX(options)` L28
+    - `printUsage()` L182
+    - `async main()` L202
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/x-quote.ts` (248 行)
+    - `extractTweetUrl(urlOrId)` L14
+    - `async quotePost(options)` L31
+    - `printUsage()` L190
+    - `async main()` L208
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/x-utils.ts` (243 行)
+    - `class CdpConnection` L137
+      - `constructor(ws, options?)` L143
+      - `async connect(url, timeoutMs, options?)` L178
+      - `close()` L212
+    - `getCandidatesForPlatform(candidates)` L55
+    - `findChromeExecutable(candidates)` L61
+    - `getDefaultProfileDir()` L71
+    - `sleep(ms)` L76
+    - `async getFreePort()` L80
+    - `async waitForChromeDebugPort(port, timeoutMs, options?)` L106
+    - `getScriptDir()` L218
+    - `runBunScript(scriptPath, args)` L222
+    - `copyImageToClipboard(imagePath)` L227
+    - `copyHtmlToClipboard(htmlPath)` L232
+    - `pasteFromClipboard(targetApp?, retries = 3, delayMs = 500)` L237
+  - `skills/content-creation-publisher/baoyu-post-to-x/scripts/x-video.ts` (261 行)
+    - `async postVideoToX(options)` L27
+    - `printUsage()` L198
+    - `async main()` L225
+  - `skills/content-creation-publisher/baoyu-url-to-markdown/scripts/cdp.ts` (291 行)
+    - `class CdpConnection` L28
+      - `constructor(ws)` L33
+      - `async connect(url, timeoutMs)` L64
+      - `close()` L101
+    - `sleep(ms)` L12
+    - `async fetchWithTimeout(url, init)` L16
+    - `async getFreePort()` L107
+    - `findChromeExecutable()` L124
+    - `async waitForChromeDebugPort(port, timeoutMs)` L165
+    - `async launchChrome(url, port, headless)` L179
+    - `async waitForNetworkIdle(cdp, sessionId, timeoutMs)` L198
+    - `async waitForPageLoad(cdp, sessionId, timeoutMs)` L222
+    - `async createTargetAndAttach(cdp, url)` L237
+    - `async navigateAndWait(cdp, sessionId, url, timeoutMs)` L245
+    - `async autoScroll(cdp, sessionId, steps, waitMs)` L271
+    - `killChrome(chrome)` L283
+  - `skills/content-creation-publisher/baoyu-url-to-markdown/scripts/constants.ts` (14 行)
+  - `skills/content-creation-publisher/baoyu-url-to-markdown/scripts/html-to-markdown.ts` (852 行)
+    - `pickString(...values)` L263
+    - `generateExcerpt(excerpt, textContent)` L273
+    - `extractPublishedTime(document)` L281
+    - `extractTitle(document)` L291
+    - `extractTextFromHtml(html)` L310
+    - `parseDocument(html)` L320
+    - `sanitizeHtml(html)` L327
+    - `flattenJsonLdItems(data)` L341
+    - `parseJsonLdScripts(document)` L353
+    - `isArticleType(item)` L369
+    - `extractAuthorFromJsonLd(authorData)` L374
+    - `parseJsonLdItem(item)` L389
+    - `tryJsonLdExtraction(document)` L417
+    - `getByPath(value, path)` L425
+    - `isContentBlockArray(value)` L434
+    - `extractTextFromContentBlocks(blocks)` L443
+    - `tryStringBodyExtraction(content, meta, document, method)` L496
+    - `tryNextDataExtraction(document)` L521
+    - `buildReadabilityCandidate(article, document, method)` L587
+    - `tryReadability(document)` L606
+    - `trySelectorExtraction(document)` L627
+    - `tryBodyExtraction(document)` L657
+    - `pickBestCandidate(candidates)` L683
+    - `extractFromHtml(html)` L724
+    - `normalizeMarkdown(markdown)` L782
+    - `convertHtmlToMarkdown(html)` L790
+    - `fallbackPlainText(html)` L801
+    - `htmlToMarkdown(html)` L812
+    - `escapeYamlValue(value)` L828
+    - `formatMetadataYaml(meta)` L832
+    - `createMarkdownDocument(result)` L844
+  - `skills/content-creation-publisher/baoyu-url-to-markdown/scripts/main.ts` (177 行)
+    - `sleep(ms)` L11
+    - `async fileExists(filePath)` L15
+    - `parseArgs(argv)` L31
+    - `generateSlug(title, url)` L48
+    - `formatTimestamp()` L59
+    - `async generateOutputPath(url, title)` L65
+    - `async waitForUserSignal()` L79
+    - `async captureUrl(args)` L87
+    - `async main()` L144
+  - `skills/content-creation-publisher/baoyu-url-to-markdown/scripts/paths.ts` (30 行)
+    - `resolveUserDataRoot()` L9
+    - `resolveUrlToMarkdownDataDir()` L19
+    - `resolveUrlToMarkdownChromeProfileDir()` L25
+
+### 4.x `skills/contract-review/`
+- 文档/提示词资源：`skills/contract-review/SKILL.md`, `skills/contract-review/references/checklist.md`, `skills/contract-review/references/examples.md`, `skills/contract-review/references/flowchart.md`, `skills/contract-review/references/language.md`, `skills/contract-review/references/opinion.md`, `skills/contract-review/references/summary.md`, `skills/contract-review/references/technical.md`
+- 脚本代码：
+  - `skills/contract-review/scripts/__init__.py` (2 行)
+  - `skills/contract-review/scripts/contract_analyzer.py` (279 行)
+    - `class ContractAnalyzer` L17
+      - `__init__(self, contract_path)` L20
+      - `extract_text(self)` L33
+      - `extract_paragraphs_with_line_numbers(self)` L60
+      - `identify_contract_type(self)` L80
+      - `find_clause_location(self, search_keywords)` L115
+      - `analyze_common_fields(self)` L136
+      - `generate_smart_search_keywords(self)` L196
+      - `get_contract_summary(self)` L222
+    - `demo()` L249
+  - `skills/contract-review/scripts/document.py` (310 行)
+    - `class Document` L24
+      - `__init__(self, unpacked_path, author, initials)` L27
+      - `__getitem__(self, xml_path)` L45
+      - `save(self, validate)` L51
+      - `get_paragraph_text(self, paragraph)` L56
+      - `find_paragraph_by_text(self, search_text, allow_fallback)` L64
+      - `add_comment(self, start, end, text, risk_level)` L82
+      - `verify_comments(self)` L102
+      - `_ensure_comments_part(self)` L128
+      - `_ensure_comments_xml(self)` L133
+      - `_ensure_comments_relationship(self)` L142
+      - `_ensure_comments_content_type(self)` L160
+      - `_get_next_comment_id(self)` L175
+      - `_insert_comment_range(self, paragraph, comment_id)` L189
+      - `_append_comment_reference(self, paragraph, comment_id)` L200
+      - `_append_comment_entry(self, comment_id, author, initials, timestamp, text)` L212
+      - `_get_reviewer_by_risk_level(self, risk_level)` L236
+      - `_get_paragraph_node(self, node)` L259
+    - `_needs_space_preserve(text)` L268
+    - `_first_element_child(node)` L276
+    - `_find_by_local_name(dom, local)` L285
+    - `_extract_first_text(node)` L293
+    - `_next_relationship_id(dom)` L300
+  - `skills/contract-review/scripts/error_handling.py` (521 行)
+    - `class ReviewError` L19
+    - `class CommentNotFoundError` L24
+    - `class DocumentValidationError` L29
+    - `class PythonVersionError` L34
+    - `class UnpackError` L39
+    - `class PackError` L44
+    - `class CommentBatchLogger` L125
+      - `__init__(self)` L147
+      - `log_success(self, comment_id, search_text, preview)` L154
+      - `log_failure(self, search_text, error)` L170
+      - `log_warning(self, message, details)` L186
+      - `generate_summary(self)` L200
+      - `save_to_file(self, filepath)` L237
+      - `get_statistics(self)` L271
+    - `class ReviewReportGenerator` L293
+      - `__init__(self)` L311
+      - `add_basic_info(self, contract, reviewer, date)` L322
+      - `add_issue(self, issue_type, level, location, reason, suggestion, original_text)` L337
+      - `add_statistics(self, total_comments, successful, failed)` L367
+      - `add_verification(self, total, found, missing)` L383
+      - `generate(self)` L398
+      - `save(self, filepath)` L487
+    - `check_python_version(min_version, recommended_version)` L51
+    - `format_error_summary(errors)` L86
+  - `skills/contract-review/scripts/mermaid_renderer.py` (232 行)
+    - `normalize_mermaid_code(code)` L19
+    - `write_mermaid_file(code, output_dir, filename)` L33
+    - `render_mermaid_file(mmd_path, image_path, theme, background_color, mmdc_path, scale, wi...)` L44
+    - `render_mermaid_code(code, output_dir, mmd_filename, image_filename, theme, background_c...)` L136
+    - `_find_chrome_executable()` L167
+    - `_write_puppeteer_config(executable_path)` L181
+    - `_sanitize_mermaid_code_for_render(code)` L205
+    - `_contains_cjk(text)` L216
+    - `_write_temp_mmd(code, source_path)` L223
+  - `skills/contract-review/scripts/ooxml/__init__.py` (7 行)
+  - `skills/contract-review/scripts/ooxml/pack.py` (107 行)
+    - `pack_document(input_dir, output_file, validate)` L21
+    - `validate_document(doc_path)` L56
+    - `main()` L84
+  - `skills/contract-review/scripts/ooxml/unpack.py` (38 行)
+    - `unpack_document(input_file, output_dir)` L10
+  - `skills/contract-review/scripts/ooxml/validate.py` (57 行)
+    - `_validators_for(ext)` L14
+    - `main(argv)` L22
+  - `skills/contract-review/scripts/ooxml/validation/__init__.py` (16 行)
+  - `skills/contract-review/scripts/ooxml/validation/base.py` (46 行)
+    - `class BaseValidator` L11
+      - `__init__(self, unpacked_dir, original_file, verbose)` L16
+      - `validate(self)` L21
+      - `_check_required_files(self, rel_paths)` L26
+      - `_parse_xml_files(self, rel_paths)` L34
+  - `skills/contract-review/scripts/ooxml/validation/docx.py` (14 行)
+    - `class DOCXSchemaValidator` L8
+  - `skills/contract-review/scripts/ooxml/validation/pptx.py` (13 行)
+    - `class PPTXSchemaValidator` L8
+  - `skills/contract-review/scripts/ooxml/validation/redlining.py` (12 行)
+    - `class RedliningValidator` L8
+  - `skills/contract-review/scripts/opinion_renderer.py` (141 行)
+    - `render_opinion_docx(opinion_text, output_path, font_name, base_font_size, line_spacing,...)` L24
+    - `_split_paragraphs(text)` L54
+    - `_split_numbered_items(text)` L64
+    - `_set_document_font(doc, font_name, base_font_size, line_spacing)` L86
+    - `_set_style_east_asia_font(style, font_name)` L98
+    - `_set_run_font(run, font_name, size, bold)` L109
+    - `_add_title(doc, text, font_name)` L126
+    - `_add_paragraph(doc, text, font_name, line_spacing)` L134
+  - `skills/contract-review/scripts/summary_renderer.py` (286 行)
+    - `render_summary_docx(summary_text, output_path, font_name, base_font_size, line_spacing,...)` L30
+    - `_set_document_font(doc, font_name, base_font_size, line_spacing)` L94
+    - `_set_style_east_asia_font(style, font_name)` L106
+    - `_set_run_font(run, font_name, size, bold)` L117
+    - `_add_heading(doc, text, level, font_name, line_spacing)` L134
+    - `_add_paragraph(doc, text, font_name, line_spacing)` L146
+    - `_add_label_paragraph(doc, text, font_name, line_spacing)` L154
+    - `_add_table(doc, rows, font_name, line_spacing, first_col_ratio, cell_margin_to...)` L162
+    - `_set_cell_text(cell, text, font_name, bold, line_spacing)` L185
+    - `_apply_line_spacing(para, line_spacing)` L193
+    - `_set_table_column_widths(doc, table, first_col_ratio)` L198
+    - `_set_cell_margins(cell, top, bottom, left, right)` L212
+    - `_set_tc_margin(tc_mar, tag, value)` L225
+    - `_add_page_numbers(doc, font_name, base_font_size)` L236
+    - `_collect_table_rows(lines, start_index)` L262
+    - `_is_main_section(line)` L280
+    - `_is_sub_section(line)` L284
+  - `skills/contract-review/scripts/utilities.py` (94 行)
+    - `class XMLEditor` L34
+      - `__init__(self, xml_path)` L37
+      - `save(self)` L43
+      - `get_nodes(self, tag, attrs)` L47
+      - `get_node(self, tag, attrs, line_number)` L54
+      - `append_to(self, parent, xml_fragment)` L61
+      - `insert_before(self, node, xml_fragment)` L70
+      - `insert_after(self, node, xml_fragment)` L82
+    - `_matches_attrs(node, attrs)` L15
+    - `_parse_fragment(fragment)` L24
+  - `skills/contract-review/scripts/workflow.py` (1422 行)
+    - `class ContractReviewWorkflow` L121
+      - `__init__(self, contract_path, reviewer_name, output_dir, enable_analysis, en...)` L129
+      - `_strip_risk_level_line(comment_text)` L193
+      - `_ensure_output_dir_for_language(self, output_language)` L224
+      - `step0_copy_contract(self)` L242
+      - `step1_unpack(self, unpacked_subdir)` L271
+      - `step2_initialize(self)` L308
+      - `step3_add_comments(self, comments)` L340
+      - `step4_verify(self)` L473
+      - `step5_save(self, output_filename, validate)` L511
+      - `step6_generate_summary(self, summary_text, summary_filename, summary_font)` L558
+      - `step7_generate_opinion(self, opinion_text, opinion_filename, opinion_font)` L604
+      - `step6_generate_flowchart(self, mermaid_code, mmd_filename, image_filename, render_image, the...)` L658
+      - `step7_generate_report(self, report_filename)` L741
+      - `step8_cleanup_output(self, output_docx_filename, report_filename)` L983
+      - `run_full_workflow(self, comments, output_docx_filename, report_filename, validate_doc...)` L1076
+    - `_detect_output_language()` L64
+    - `_detect_output_language_from_contract(contract_path)` L82
+    - `_section_cn(index)` L117
+    - `review_contract(contract_path, comments, output_docx_filename, reviewer_name, repor...)` L1324
+
+### 4.x `skills/historical-interview-scripts/`
+- 文档/提示词资源：`skills/historical-interview-scripts/README_SCRIPTS.md`, `skills/historical-interview-scripts/SKILL.md`, `skills/historical-interview-scripts/references/agent-roles.md`, `skills/historical-interview-scripts/references/full-pipeline-multi-agent.md`, `skills/historical-interview-scripts/references/historical-characters.md`, `skills/historical-interview-scripts/references/internet-memes.md`, `skills/historical-interview-scripts/references/multi-agent-collaboration.md`, `skills/historical-interview-scripts/references/script-examples.md`
+- 脚本代码：
+  - `skills/historical-interview-scripts/scripts/__init__.py` (1 行)
+  - `skills/historical-interview-scripts/scripts/agents/__init__.py` (2 行)
+  - `skills/historical-interview-scripts/scripts/agents/audio_matcher_agent.py` (90 行)
+    - `class AudioMatcherAgent` L10
+      - `execute(self, storyboards, characters_data)` L13
+      - `_generate_audio_config(self, storyboard, characters_data)` L36
+  - `skills/historical-interview-scripts/scripts/agents/base_agent.py` (60 行)
+    - `class BaseAgent` L10
+      - `__init__(self, memory, config)` L13
+      - `execute(self)` L25
+      - `_call_llm(self, prompt, system_prompt)` L29
+      - `log(self, message)` L57
+  - `skills/historical-interview-scripts/scripts/agents/historian_agent.py` (151 行)
+    - `class HistorianAgent` L10
+      - `execute(self, characters)` L13
+      - `_generate_character_profile(self, character)` L47
+  - `skills/historical-interview-scripts/scripts/agents/meme_analyst_agent.py` (112 行)
+    - `class MemeAnalystAgent` L10
+      - `execute(self, characters_data, platform, suggestions)` L13
+      - `_generate_meme_scheme(self, character, data, platform, suggestions)` L54
+  - `skills/historical-interview-scripts/scripts/agents/qc_optimizer_agent.py` (88 行)
+    - `class QCOptimizerAgent` L10
+      - `execute(self, draft_script, characters_data, platform)` L13
+      - `_evaluate_quality(self, script, characters_data, platform)` L34
+  - `skills/historical-interview-scripts/scripts/agents/scriptwriter_agent.py` (95 行)
+    - `class ScriptwriterAgent` L10
+      - `execute(self, characters_data, meme_schemes, theme, style, platform, sugges...)` L13
+      - `_generate_script(self, characters_data, meme_schemes, theme, style, platform, sugges...)` L43
+  - `skills/historical-interview-scripts/scripts/agents/storyboard_agent.py` (134 行)
+    - `class StoryboardAgent` L10
+      - `execute(self, script, visual_prompts, duration)` L13
+      - `_analyze_script_structure(self, script)` L56
+      - `_estimate_duration(self, section)` L88
+      - `_generate_storyboard(self, index, section, visual_prompts, duration)` L104
+  - `skills/historical-interview-scripts/scripts/agents/visual_design_agent.py` (64 行)
+    - `class VisualDesignAgent` L10
+      - `execute(self, characters, theme, style)` L13
+      - `_generate_visual_prompt(self, character, data, style)` L42
+  - `skills/historical-interview-scripts/scripts/config/__init__.py` (2 行)
+  - `skills/historical-interview-scripts/scripts/config/settings.py` (137 行)
+    - `load_config(config_path)` L78
+    - `_merge_config(base, override)` L103
+    - `_load_from_env(config)` L113
+    - `save_config_template(output_path)` L130
+  - `skills/historical-interview-scripts/scripts/full_pipeline.py` (366 行)
+    - `class FullPipeline` L26
+      - `__init__(self, config_path)` L29
+      - `run_basic_mode(self, characters, theme, style, platform)` L48
+      - `run_full_mode(self, characters, theme, style, platform, enable_video_generation)` L119
+      - `_auto_revision(self, draft_script, qc_report, characters_data, platform)` L212
+      - `_save_script(self, script, filepath)` L257
+      - `_save_all_outputs(self, script, visual_prompts, storyboard, audio_scheme, video_result)` L262
+    - `main()` L299
+  - `skills/historical-interview-scripts/scripts/full_pipeline_executor.py` (250 行)
+    - `class FullPipeline` L22
+      - `__init__(self, config)` L25
+      - `_create_output_dirs(self)` L53
+      - `execute(self, request)` L59
+  - `skills/historical-interview-scripts/scripts/memory/__init__.py` (2 行)
+  - `skills/historical-interview-scripts/scripts/memory/shared_memory.py` (334 行)
+    - `class SharedMemory` L13
+      - `__init__(self, project_id)` L16
+      - `get(self, key)` L25
+      - `set(self, key, value, module)` L35
+      - `get_version(self, key)` L42
+    - `class BaseMaterials` L47
+      - `__init__(self)` L50
+      - `get(self, key)` L58
+      - `set(self, key, value)` L77
+    - `class ProjectLibrary` L98
+      - `__init__(self, project_id)` L101
+      - `get(self, key)` L116
+      - `_get_latest(self, data_type)` L129
+      - `set(self, key, value, version)` L137
+      - `get_version(self, key)` L185
+      - `get_all_versions(self, data_type)` L196
+    - `class CreationRules` L218
+      - `__init__(self)` L221
+      - `get(self, key)` L261
+      - `set(self, key, value)` L293
+      - `_load_default_data(self)` L311
+  - `skills/historical-interview-scripts/scripts/tools/__init__.py` (2 行)
+  - `skills/historical-interview-scripts/scripts/tools/external_tools.py` (115 行)
+    - `class ExternalToolsManager` L11
+      - `__init__(self, llm_client, memory_manager)` L14
+      - `generate_image(self, prompt, style, output_path)` L17
+      - `generate_audio(self, text, voice_config, output_path)` L48
+      - `edit_video(self, storyboards, audio_configs, output_path)` L80
+
+### 4.x `skills/historical-science-video-prod/`
+- 文档/提示词资源：`skills/historical-science-video-prod/SKILL.md`, `skills/historical-science-video-prod/assets/output-templates/storyboard-template.md`, `skills/historical-science-video-prod/references/multi-agent-architecture.md`, `skills/historical-science-video-prod/references/script-structure.md`, `skills/historical-science-video-prod/references/style-guide.md`, `skills/historical-science-video-prod/references/veo2-prompt-template.md`
+- 脚本代码：
+  - `skills/historical-science-video-prod/scripts/generate_video_materials.py` (374 行)
+    - `async call_llm(prompt, temperature)` L82
+    - `async generate_script(theme, era, core_conclusion)` L119
+    - `async generate_character_design(script, era)` L158
+    - `async generate_storyboard(script, character_design)` L195
+    - `async generate_veo2_prompts(storyboard, era)` L238
+    - `async main()` L303
+
+### 4.x `skills/infinitetalk/`
+- 文档/提示词资源：`skills/infinitetalk/SKILL.md`, `skills/infinitetalk/infinitetalk/SKILL.md`, `skills/infinitetalk/infinitetalk/references/environment_setup.md`, `skills/infinitetalk/infinitetalk/references/model_download.md`, `skills/infinitetalk/infinitetalk/references/usage_examples.md`, `skills/infinitetalk/references/environment_setup.md`, `skills/infinitetalk/references/model_download.md`, `skills/infinitetalk/references/usage_examples.md`
+- 脚本代码：
+  - `skills/infinitetalk/infinitetalk/scripts/infer_infinitetalk.py` (393 行)
+    - `_validate_args(args)` L48
+    - `_parse_args()` L75
+    - `custom_init(device, wav2vec)` L188
+    - `loudness_norm(audio_array, sr, lufs)` L196
+    - `audio_prepare_single(audio_path, sample_rate)` L206
+    - `get_embedding(speech_array, wav2vec_feature_extractor, audio_encoder, sr, device)` L227
+    - `process_tts_single(text, save_dir, voice1)` L253
+    - `_init_logging(rank)` L271
+    - `main()` L283
+  - `skills/infinitetalk/scripts/infer_infinitetalk.py` (393 行)
+    - `_validate_args(args)` L48
+    - `_parse_args()` L75
+    - `custom_init(device, wav2vec)` L188
+    - `loudness_norm(audio_array, sr, lufs)` L196
+    - `audio_prepare_single(audio_path, sample_rate)` L206
+    - `get_embedding(speech_array, wav2vec_feature_extractor, audio_encoder, sr, device)` L227
+    - `process_tts_single(text, save_dir, voice1)` L253
+    - `_init_logging(rank)` L271
+    - `main()` L283
+
+### 4.x `skills/law-to-markdown/`
+- 文档/提示词资源：`skills/law-to-markdown/SKILL.md`
+- 脚本代码：
+  - `skills/law-to-markdown/scripts/cn_law_normalizer.py` (308 行)
+    - `_strip_heading_prefix(line)` L22
+    - `_canonical_without_format(text)` L26
+    - `_split_item_and_subitem(line)` L35
+    - `_cleanup_extra_spaces(lines)` L53
+    - `_is_non_law_document(lines)` L91
+    - `normalize_cn_law_markdown(text, law_decision, stage2_profile)` L107
+  - `skills/law-to-markdown/scripts/law_to_markdown.py` (834 行)
+    - `_write_text(path, text)` L20
+    - `_derive_stage_paths(base_out_path)` L25
+    - `_derive_stage3_report_path(stage2_path)` L33
+    - `_derive_legacy_stage3_txt_path(stage2_path)` L40
+    - `_derive_user_output_paths(base_dir, input_stem)` L47
+    - `_safe_unlink(path)` L54
+    - `_apply_artifact_policy(*stage1_path, *stage2_path, *stage3_md_path, *deliverable_path, *re...)` L63
+    - `_write_review_report_md(report_path, *input_ref, *stage1_path, *stage2_path, *stage3_md_pat...)` L103
+    - `_finalize_conversion(*input_ref, *input_stem, *stage1_path, *stage2_path, *pipeline, *la...)` L217
+    - `_prepare_stage2(stage1_path, stage2_path)` L283
+    - `_convert_txt(input_path, out_path)` L288
+    - `_convert_docx(input_path, out_path)` L293
+    - `_convert_pdf_pdfplumber(input_path, out_path)` L316
+    - `_resolve_mineru_ocr_convert_script()` L328
+    - `_convert_with_mineru_ocr_skill(input_path, out_path)` L341
+    - `_run_stage2_normalize(out_path, law_decision, stage2_profile)` L367
+    - `_stage2_profile_for_attempt(attempt)` L405
+    - `_apply_stage3_autofix(stage2_path, law_decision)` L413
+    - `_run_stage2_stage3_pipeline(stage1_path, stage2_path, law_decision, skip_stage3_check, stage3_m...)` L425
+    - `_mineru_ocr_install_hint()` L532
+    - `_parse_args()` L542
+    - `main()` L611
+  - `skills/law-to-markdown/scripts/stage3_checker.py` (431 行)
+    - `_read_text(path)` L19
+    - `_canonical_text(text)` L30
+    - `_first_mismatch(old, new)` L39
+    - `_check_stage3_a(stage1_text, stage2_text)` L57
+    - `_extract_heading(level_line)` L77
+    - `_is_non_law_text(lines)` L85
+    - `_check_stage3_b(stage2_text, law_decision, stage2_reason)` L101
+    - `run_stage3_checks(stage1_path, stage2_path, law_decision, attempt, stage2_reason)` L295
+    - `write_stage3_report_md(report_path, check_result)` L386
+
+### 4.x `skills/media-processor/`
+- 文档/提示词资源：`skills/media-processor/SKILL.md`, `skills/media-processor/references/ffmpeg_guide.md`, `skills/media-processor/references/imagemagick_guide.md`
+- 脚本代码：
+  - `skills/media-processor/scripts/image_compress.py` (95 行)
+    - `check_file_exists(file_path)` L13
+    - `compress_image(input_path, output_path, quality, method)` L20
+    - `main()` L72
+  - `skills/media-processor/scripts/image_convert.py` (87 行)
+    - `check_file_exists(file_path)` L13
+    - `convert_image(input_path, output_path, output_format, quality)` L20
+    - `main()` L57
+  - `skills/media-processor/scripts/image_scale.py` (100 行)
+    - `check_file_exists(file_path)` L13
+    - `scale_image(input_path, output_path, width, height, maintain_aspect, filter_type)` L20
+    - `main()` L69
+  - `skills/media-processor/scripts/video_compress.py` (101 行)
+    - `check_file_exists(file_path)` L13
+    - `compress_video(input_path, output_path, crf, bitrate, preset)` L20
+    - `main()` L73
+  - `skills/media-processor/scripts/video_convert.py` (84 行)
+    - `check_file_exists(file_path)` L13
+    - `convert_video(input_path, output_path, output_format, video_codec, audio_codec)` L20
+    - `main()` L56
+  - `skills/media-processor/scripts/video_scale.py` (100 行)
+    - `check_file_exists(file_path)` L13
+    - `scale_video(input_path, output_path, width, height, maintain_aspect)` L20
+    - `main()` L72
+
+### 4.x `skills/nanobanana-ppt-visualizer/`
+- 文档/提示词资源：`skills/nanobanana-ppt-visualizer/SKILL.md`, `skills/nanobanana-ppt-visualizer/assets/styles/gradient-glass.md`, `skills/nanobanana-ppt-visualizer/assets/styles/vector-illustration.md`, `skills/nanobanana-ppt-visualizer/references/collaboration_guide.md`, `skills/nanobanana-ppt-visualizer/references/ppt_structure_guide.md`
+- 脚本代码：
+  - `skills/nanobanana-ppt-visualizer/scripts/generate_viewer.py` (228 行)
+    - `load_ppt_data(input_path)` L30
+    - `generate_viewer_html(ppt_data, template_path, output_path)` L52
+    - `create_output_directory(base_dir)` L108
+    - `copy_template_assets(output_dir, template_dir)` L133
+    - `main()` L163
+  - `skills/nanobanana-ppt-visualizer/scripts/video_materials.py` (272 行)
+    - `class VideoMaterialsManager` L26
+      - `__init__(self, base_dir, auto_collect)` L29
+      - `collect_materials(self)` L55
+      - `validate_materials(self)` L88
+      - `organize_materials(self, output_dir)` L133
+      - `_build_sequence(self, validation)` L178
+    - `main()` L230
+
+### 4.x `skills/paper-analysis-assistant/`
+- 文档/提示词资源：`skills/paper-analysis-assistant/SKILL.md`
+- 脚本代码：
+  - `skills/paper-analysis-assistant/scripts/analyze_word_frequency.py` (104 行)
+    - `load_stopwords(stopwords_path)` L12
+    - `analyze_word_frequency(txt_path, output_path, stopwords_path)` L35
+    - `main()` L87
+  - `skills/paper-analysis-assistant/scripts/dialogue_to_podcast.py` (160 行)
+    - `parse_dialogue(dialogue_text)` L11
+    - `dialogue_to_podcast(dialogue_path, output_path, voice_rate)` L64
+    - `main()` L148
+  - `skills/paper-analysis-assistant/scripts/download_pdf.py` (76 行)
+    - `download_arxiv_pdf(arxiv_url, output_path)` L12
+    - `main()` L65
+  - `skills/paper-analysis-assistant/scripts/extract_references.py` (112 行)
+    - `extract_references(txt_path, output_path)` L11
+    - `main()` L101
+  - `skills/paper-analysis-assistant/scripts/extract_text.py` (63 行)
+    - `extract_text_from_pdf(pdf_path, output_path)` L10
+    - `main()` L52
+  - `skills/paper-analysis-assistant/scripts/generate_html.py` (251 行)
+    - `generate_html(txt_path, word_freq_path, output_path)` L10
+    - `main()` L239
+  - `skills/paper-analysis-assistant/scripts/text_to_speech.py` (63 行)
+    - `text_to_speech(txt_path, output_path, voice_rate)` L10
+    - `main()` L51
+
+### 4.x `skills/pet-commerce-creator/`
+- 文档/提示词资源：`skills/pet-commerce-creator/SKILL.md`, `skills/pet-commerce-creator/references/agents-prompts.md`, `skills/pet-commerce-creator/references/coze-api-specs.md`, `skills/pet-commerce-creator/references/knowledge-base-structure.md`, `skills/pet-commerce-creator/references/output-templates.md`, `skills/pet-commerce-creator/references/pet-character-library.md`
+- 脚本代码：
+  - `skills/pet-commerce-creator/scripts/coze_video_api.py` (431 行)
+    - `class CozeVideoAPIError` L27
+    - `class CozeVideoAPI` L32
+      - `__init__(self)` L35
+      - `_request(self, method, endpoint, data, files, retries)` L48
+      - `upload_image(self, image_path)` L109
+      - `upload_audio(self, audio_path)` L144
+      - `create_video_task(self, image_ids, audio_ids, subtitle_config, duration, resolution, ...)` L178
+      - `poll_task_status(self, task_id, timeout)` L236
+      - `download_video(self, download_url, output_path)` L275
+      - `batch_create_video(self, image_paths, audio_paths, subtitle_config, output_path)` L307
+    - `main()` L372
+  - `skills/pet-commerce-creator/scripts/video_downloader.py` (303 行)
+    - `class VideoDownloaderError` L23
+    - `class VideoDownloader` L28
+      - `__init__(self, output_dir)` L31
+      - `download_video(self, url, format, download_thumbnail)` L41
+      - `get_video_info(self, url)` L94
+      - `_extract_video_info(self, info)` L129
+      - `_get_file_paths(self, info)` L158
+      - `download_playlist(self, url, max_videos)` L192
+    - `main()` L245
+
+### 4.x `skills/ppt-generator/`
+- 文档/提示词资源：`skills/ppt-generator/SKILL.md`, `skills/ppt-generator/assets/ppt_templates/README.md`, `skills/ppt-generator/references/ppt_structure_guide.md`, `skills/ppt-generator/references/visual_design_guide.md`
+- 脚本代码：
+  - `skills/ppt-generator/scripts/generate_pptx.py` (391 行)
+    - `class PPTGenerator` L30
+      - `__init__(self, input_json)` L44
+      - `_validate_input(self)` L55
+      - `generate(self)` L84
+      - `_set_metadata(self)` L103
+      - `_add_slide(self, slide_data)` L120
+      - `_set_title(self, slide, title_text)` L155
+      - `_set_content(self, slide, content, layout_type)` L175
+      - `_set_two_column_content(self, slide, content)` L220
+      - `_set_title_slide_content(self, slide, content)` L297
+      - `_set_notes(self, slide, notes_text)` L319
+      - `save(self, output_path)` L331
+    - `main()` L345
+
+### 4.x `skills/ppt-roadshow-generator/`
+- 文档/提示词资源：`skills/ppt-roadshow-generator/SKILL.md`, `skills/ppt-roadshow-generator/assets/music/README.md`, `skills/ppt-roadshow-generator/assets/styles/README.md`, `skills/ppt-roadshow-generator/references/brand_style_guide.md`, `skills/ppt-roadshow-generator/references/collaboration_guide.md`, `skills/ppt-roadshow-generator/references/design-system-import-guide.md`, `skills/ppt-roadshow-generator/references/roadshow_script_template.md`
+- 脚本代码：
+  - `skills/ppt-roadshow-generator/scripts/audio_processor.py` (269 行)
+    - `class TTSVoiceGenerator` L33
+      - `__init__(self, api_key, model, voice)` L36
+      - `generate_audio(self, text, output_path)` L68
+    - `class AudioProcessor` L134
+      - `__init__(self, output_dir, tts_generator)` L137
+      - `process_script(self, script_path, brand_style_path)` L156
+    - `main()` L225
+  - `skills/ppt-roadshow-generator/scripts/roadshow_composer.py` (403 行)
+    - `class RoadshowComposer` L30
+      - `__init__(self, resolution, fps, transition_duration)` L33
+      - `collect_materials(self, images_dir, audio_dir, subtitles_path)` L56
+      - `create_slideshow_video(self, images, output_path, duration_per_slide)` L106
+      - `add_audio_to_video(self, video_path, voiceover_path, background_music_path, output_path)` L157
+      - `burn_subtitles(self, video_path, subtitles_path, output_path)` L209
+      - `compose_roadshow(self, images_dir, audio_dir, subtitles_path, output_path)` L249
+    - `main()` L352
+  - `skills/ppt-roadshow-generator/scripts/style_learner.py` (220 行)
+    - `class BrandStyleAnalyzer` L32
+      - `__init__(self, examples_dir)` L35
+      - `analyze_images(self)` L65
+      - `_rgb_to_hex(self, rgb)` L115
+      - `analyze_style_description(self, description)` L119
+      - `load_from_json(self, json_path)` L137
+      - `save_to_json(self, output_path)` L153
+    - `main()` L177
+  - `skills/ppt-roadshow-generator/scripts/subtitle_generator.py` (219 行)
+    - `class SubtitleGenerator` L27
+      - `__init__(self, brand_style_path, words_per_second)` L30
+      - `parse_script(self, script_path)` L53
+      - `generate_srt(self, sections)` L90
+      - `_seconds_to_srt_time(self, seconds)` L118
+      - `apply_brand_style(self, text)` L135
+    - `main()` L161
+
+### 4.x `skills/pptx-generator/`
+- 文档/提示词资源：`skills/pptx-generator/SKILL.md`, `skills/pptx-generator/references/collaboration_guide.md`, `skills/pptx-generator/references/json_format_spec.md`, `skills/pptx-generator/references/layout_guide.md`
+- JSON/配置资源：`skills/pptx-generator/assets/styles/business.json`, `skills/pptx-generator/assets/styles/minimal.json`, `skills/pptx-generator/assets/styles/modern.json`, `skills/pptx-generator/assets/templates/ppt_data_template.json`
+- 脚本代码：
+  - `skills/pptx-generator/scripts/json_validator.py` (195 行)
+    - `class JSONValidator` L20
+      - `__init__(self)` L23
+      - `validate(self, json_path)` L28
+      - `_validate_structure(self, data)` L58
+      - `_validate_metadata(self, metadata)` L88
+      - `_validate_slide(self, slide, index)` L108
+      - `_print_results(self)` L148
+    - `main()` L170
+  - `skills/pptx-generator/scripts/pptx_builder.py` (341 行)
+    - `class PPTXBuilder` L39
+      - `__init__(self, style_config)` L42
+      - `load_json(self, json_path)` L56
+      - `create_presentation(self, metadata)` L72
+      - `add_slide(self, slide_data, slide_index)` L91
+      - `_select_layout(self, layout_name)` L132
+      - `_apply_title_style(self, title_shape)` L154
+      - `_add_content(self, slide, content)` L173
+      - `_hex_to_rgb(self, hex_color)` L217
+      - `save(self, output_path)` L230
+      - `build_from_json(self, json_path, output_path)` L246
+    - `main()` L295
+  - `skills/pptx-generator/scripts/pptx_validator.py` (163 行)
+    - `class PPTXValidator` L26
+      - `__init__(self)` L29
+      - `validate(self, pptx_path)` L34
+      - `_validate_slides(self, presentation)` L72
+      - `_validate_slide(self, slide, index)` L90
+      - `_print_results(self)` L116
+    - `main()` L138
+
+### 4.x `skills/product-manager-toolkit/`
+- 文档/提示词资源：`skills/product-manager-toolkit/SKILL.md`, `skills/product-manager-toolkit/references/prd_templates.md`
+- 脚本代码：
+  - `skills/product-manager-toolkit/scripts/customer_interview_analyzer.py` (442 行)
+    - `class InterviewAnalyzer` L12
+      - `__init__(self)` L15
+      - `analyze_interview(self, text)` L48
+      - `_split_sentences(self, text)` L67
+      - `_extract_pain_points(self, sentences)` L73
+      - `_extract_delights(self, sentences)` L91
+      - `_extract_requests(self, sentences)` L108
+      - `_extract_jtbd(self, text)` L125
+      - `_calculate_sentiment(self, text)` L144
+      - `_extract_themes(self, text)` L169
+      - `_extract_key_quotes(self, sentences)` L191
+      - `_extract_metrics(self, text)` L221
+      - `_extract_competitors(self, text)` L245
+      - `_assess_severity(self, text)` L267
+      - `_assess_strength(self, text)` L275
+      - `_classify_request(self, text)` L281
+      - `_assess_request_priority(self, text)` L293
+    - `aggregate_interviews(interviews)` L303
+    - `format_single_interview(analysis)` L358
+    - `main()` L413
+  - `skills/product-manager-toolkit/scripts/rice_prioritizer.py` (297 行)
+    - `class RICECalculator` L13
+      - `__init__(self)` L16
+      - `calculate_rice(self, reach, impact, confidence, effort)` L39
+      - `prioritize_features(self, features)` L59
+      - `analyze_portfolio(self, features)` L77
+      - `generate_roadmap(self, features, team_capacity)` L128
+    - `format_output(features, analysis, roadmap)` L168
+    - `load_features_from_csv(filepath)` L207
+    - `create_sample_csv(filepath)` L224
+    - `main()` L246
+
+### 4.x `skills/product-video-creator/`
+- 文档/提示词资源：`skills/product-video-creator/SKILL.md`, `skills/product-video-creator/references/storyboard_format.md`, `skills/product-video-creator/references/subtitle_format.md`, `skills/product-video-creator/references/video_specs.md`
+- 脚本代码：
+  - `skills/product-video-creator/scripts/video_composer.py` (397 行)
+    - `load_subtitles(subtitle_file)` L31
+    - `create_subtitle_clip(subtitle, video_width, video_height)` L53
+    - `get_transition_duration(transition_type)` L134
+    - `create_video_from_images(image_paths, durations, transitions, fps)` L156
+    - `compose_video(images, subtitles, audio_file, output_file, durations, transitions,...)` L220
+    - `main()` L325
+
+### 4.x `skills/qwen3-asr-assistant/`
+- 文档/提示词资源：`skills/qwen3-asr-assistant/SKILL.md`, `skills/qwen3-asr-assistant/references/asr-api-config.md`, `skills/qwen3-asr-assistant/references/text-rewrite-guide.md`
+- 脚本代码：
+  - `skills/qwen3-asr-assistant/scripts/asr_transcriber.py` (372 行)
+    - `class Qwen3ASRTranscriber` L25
+      - `__init__(self, api_key, base_url)` L28
+      - `transcribe(self, audio_file, language, format, sample_rate, return_timestamps,...)` L51
+      - `transcribe_with_speaker_diarization(self, audio_file, language, num_speakers, return_timestamps)` L136
+      - `get_supported_languages(self)` L211
+    - `main()` L244
+
+### 4.x `skills/qwen3-tts-local/`
+- 文档/提示词资源：`skills/qwen3-tts-local/SKILL.md`, `skills/qwen3-tts-local/references/voice-guide.md`
+- 脚本代码：
+  - `skills/qwen3-tts-local/scripts/audio_processor.py` (252 行)
+    - `class AudioProcessor` L11
+      - `__init__(self)` L14
+      - `convert_format(self, input_file, output_file, format, sample_rate)` L18
+      - `optimize_quality(self, input_file, output_file, normalize, remove_silence)` L69
+      - `get_audio_info(self, audio_file)` L122
+      - `concatenate_audio(self, audio_files, output_file)` L151
+    - `main()` L202
+  - `skills/qwen3-tts-local/scripts/tts_generator.py` (221 行)
+    - `class LocalTTSGenerator` L11
+      - `__init__(self)` L14
+      - `generate_speech(self, text, voice, output_file, rate, pitch, volume)` L18
+      - `async _generate_speech_async(self, text, voice, output_file, rate, pitch, volume)` L73
+      - `_get_audio_info(self, audio_file)` L127
+      - `list_voices(self)` L140
+    - `main()` L175
+
+### 4.x `skills/remotion-video-enhancer/`
+- 文档/提示词资源：`skills/remotion-video-enhancer/SKILL.md`, `skills/remotion-video-enhancer/references/collaboration_guide.md`, `skills/remotion-video-enhancer/references/transition_guide.md`
+- JSON/配置资源：`skills/remotion-video-enhancer/assets/animations/cinematic.json`, `skills/remotion-video-enhancer/assets/animations/dynamic.json`, `skills/remotion-video-enhancer/assets/animations/minimal.json`, `skills/remotion-video-enhancer/assets/animations/playful.json`
+- 脚本代码：
+  - `skills/remotion-video-enhancer/scripts/animation_planner.py` (375 行)
+    - `class AnimationPlanner` L87
+      - `__init__(self, style)` L90
+      - `analyze_input(self, input_path)` L109
+      - `generate_transition_plan(self, analysis)` L158
+      - `generate_element_animations(self, analysis)` L219
+      - `generate_plan(self, input_path, output_path)` L275
+    - `main()` L334
+  - `skills/remotion-video-enhancer/scripts/html_animations.py` (341 行)
+    - `load_ppt_data(input_path)` L29
+    - `load_animation_plan(plan_path)` L43
+    - `generate_framer_motion_html(ppt_data, template_path, output_path, animation_plan)` L64
+    - `create_output_directory(base_dir)` L223
+    - `copy_template_assets(output_dir, template_dir)` L248
+    - `main()` L278
+  - `skills/remotion-video-enhancer/scripts/video_transitions.py` (466 行)
+    - `class VideoTransitions` L31
+      - `__init__(self, resolution, fps, default_duration)` L34
+      - `load_transitions(self, config_path)` L57
+      - `apply_fade_transition(self, input_path, output_path, duration, opacity_start, opacity_end)` L71
+      - `apply_slide_transition(self, input_path, output_path, duration, direction)` L106
+      - `apply_zoom_transition(self, input_path, output_path, duration, scale, direction)` L149
+      - `apply_blur_transition(self, input_path, output_path, duration, blur_radius)` L189
+      - `apply_rotation_transition(self, input_path, output_path, duration, angle)` L226
+      - `apply_transition(self, input_path, transition_config, output_path)` L259
+      - `apply_transitions_to_video(self, input_path, transitions_config, output_path)` L312
+      - `_run_ffmpeg(self, cmd, description)` L368
+    - `main()` L399
+
+### 4.x `skills/review/`
+- 文档/提示词资源：`skills/review/SKILL.md`
+- 脚本代码：
+  - `skills/review/__init__.py` (7 行)
+
+### 4.x `skills/stock-analysis/`
+- 文档/提示词资源：`skills/stock-analysis/SKILL.md`, `skills/stock-analysis/references/stock_code_format.md`
+- 脚本代码：
+  - `skills/stock-analysis/scripts/analyze_stock.py` (672 行)
+    - `calculate_ma(data, period)` L14
+    - `calculate_macd(close_prices, fast, slow, signal)` L38
+    - `calculate_rsi(close_prices, period)` L97
+    - `calculate_support_resistance(historical_data, current_price)` L133
+    - `detect_gaps(historical_data)` L188
+    - `analyze_ma_trend(ma5, ma10, ma20, ma60)` L251
+    - `analyze_macd_signal(macd_data)` L315
+    - `analyze_rsi_signal(rsi_data)` L377
+    - `analyze_volume(historical_data)` L424
+    - `perform_analysis(data_file)` L469
+    - `print_analysis(analysis_result)` L541
+    - `main()` L642
+  - `skills/stock-analysis/scripts/fetch_stock_data.py` (280 行)
+    - `fetch_real_time_quote(stock_code)` L16
+    - `format_stock_code(stock_code)` L75
+    - `fetch_historical_data(stock_code, days)` L104
+    - `calculate_change(real_time_data, historical_data)` L170
+    - `save_to_file(stock_code, real_time_data, historical_data, output_dir)` L201
+    - `main()` L233
+
+### 4.x `skills/three-body-video-creator/`
+- 文档/提示词资源：`skills/three-body-video-creator/SKILL.md`, `skills/three-body-video-creator/assets/character-reference/luoji-character.md`, `skills/three-body-video-creator/assets/scene-examples/deterrence-control-room.md`, `skills/three-body-video-creator/assets/ui-components/ui-design-spec.md`, `skills/three-body-video-creator/references/character-profiles.md`, `skills/three-body-video-creator/references/storyboard-template.md`, `skills/three-body-video-creator/references/three-body-settings.md`, `skills/three-body-video-creator/references/visual-style-guide.md`
+- 脚本代码：
+  - `skills/three-body-video-creator/scripts/error_handler.py` (337 行)
+    - `class RetryLimitExceeded` L14
+    - `class ErrorLogger` L19
+      - `__init__(self, log_file)` L22
+      - `_load_errors(self)` L33
+      - `_save_errors(self)` L42
+      - `log_error(self, error, context)` L47
+      - `get_errors(self, error_type)` L74
+      - `clear_errors(self)` L88
+    - `class CheckpointManager` L161
+      - `__init__(self, checkpoint_file)` L164
+      - `_load_checkpoints(self)` L175
+      - `_save_checkpoints(self)` L184
+      - `save_checkpoint(self, key, data)` L189
+      - `load_checkpoint(self, key)` L204
+      - `has_checkpoint(self, key)` L219
+      - `clear_checkpoint(self, key)` L231
+      - `clear_all_checkpoints(self)` L243
+      - `list_checkpoints(self)` L249
+    - `retry_on_failure(max_retries, delay, backoff, exceptions, error_logger, context)` L94
+    - `safe_execute(func, *max_retries, *error_logger, *checkpoint_key, *checkpoint_man...)` L259
+  - `skills/three-body-video-creator/scripts/quality_checker.py` (254 行)
+    - `check_video_quality(video_path, expected_resolution, expected_duration, expected_fps, a...)` L12
+    - `print_quality_report(results)` L143
+  - `skills/three-body-video-creator/scripts/sound_generator.py` (554 行)
+    - `class SunoMusicGenerator` L17
+      - `__init__(self, api_key)` L20
+      - `generate_music(self, prompt, output_dir, instrumental, model, title)` L45
+      - `_check_task_status(self, task_id)` L159
+      - `_download_audio(self, url, output_file)` L210
+      - `_generate_music_placeholder(self, prompt, output_dir, title)` L226
+    - `generate_sound_effects(sound_data, output_dir)` L323
+    - `generate_background_music(music_data, output_dir)` L414
+    - `validate_sound_data(sound_data)` L448
+    - `validate_music_data(music_data)` L470
+  - `skills/three-body-video-creator/scripts/video_compositor.py` (273 行)
+    - `composite_video(images_dir, audio_dir, subtitles_file, output_path, fps, duration_p...)` L25
+    - `_add_subtitles(video_clip, subtitles_file)` L157
+    - `_add_subtitles_simple(video_clip, subtitles_file)` L214
+  - `skills/three-body-video-creator/scripts/voice_generator.py` (279 行)
+    - `generate_voice(narration_data, output_dir)` L25
+    - `_generate_voice_placeholder(narration_data, output_dir, results)` L116
+    - `validate_narration_data(narration_data)` L181
+    - `list_available_voices()` L207
+
+### 4.x `skills/tts-voice-synthesis/`
+- 文档/提示词资源：`skills/tts-voice-synthesis/SKILL.md`, `skills/tts-voice-synthesis/references/emotion_guide.md`, `skills/tts-voice-synthesis/references/model_config.md`, `skills/tts-voice-synthesis/references/usage_examples.md`
+- 脚本代码：
+  - `skills/tts-voice-synthesis/scripts/tts_generate.py` (355 行)
+    - `class TTSGenerator` L102
+      - `__init__(self, model_name, model_path, device)` L105
+      - `_load_model(self, model_path)` L125
+      - `_load_fish_speech(self, model_path)` L147
+      - `_load_chattts(self, model_path)` L154
+      - `_load_cosyvoice(self, model_path)` L161
+      - `synthesize(self, text, voice, speed, pitch, volume, emotion, emotion_strength,...)` L168
+      - `_apply_emotion(self, emotion, strength, speed, pitch, volume)` L207
+      - `_synthesize_placeholder(self, text, voice, speed, pitch, volume)` L239
+      - `save_audio(self, audio, output_path, sample_rate, audio_format, volume)` L266
+    - `parse_args()` L29
+    - `main()` L307
+  - `skills/tts-voice-synthesis/scripts/voice_clone.py` (362 行)
+    - `class VoiceCloner` L64
+      - `__init__(self, model_name, device)` L67
+      - `load_audio(self, audio_path, target_sample_rate)` L83
+      - `extract_segment(self, audio, segment_duration, sample_rate)` L110
+      - `extract_voice_embedding(self, audio, model_name)` L135
+      - `save_voice_model(self, voice_name, embedding, reference_audio, output_dir, model_name)` L171
+      - `clone_voice(self, reference_audio, voice_name, output_dir, segment_duration, sa...)` L217
+    - `parse_args()` L30
+    - `validate_reference_audio(audio_path)` L259
+    - `main()` L316
+
+### 4.x `skills/video-creation-collaborator/`
+- 文档/提示词资源：`skills/video-creation-collaborator/SKILL.md`, `skills/video-creation-collaborator/assets/reports/quality-report-template.md`, `skills/video-creation-collaborator/assets/templates/storyboard-template.md`, `skills/video-creation-collaborator/references/agent-prompts.md`, `skills/video-creation-collaborator/references/asset-specifications.md`, `skills/video-creation-collaborator/references/quality-standards.md`
+- 脚本代码：
+  - `skills/video-creation-collaborator/scripts/audio_generator.py` (249 行)
+    - `generate_audio(narration_data, output_dir, voice_style)` L13
+    - `generate_single_audio(text, voice, speed, emotion)` L106
+    - `download_audio(audio_url, filepath)` L141
+    - `merge_audio_with_background(narration_files, background_music, output_file, narration_volume, b...)` L164
+    - `print_generation_report(results)` L191
+  - `skills/video-creation-collaborator/scripts/image_generator.py` (230 行)
+    - `generate_images(script_data, output_dir, resolution, style)` L13
+    - `generate_single_image(prompt, negative_prompt, resolution, style)` L107
+    - `download_image(image_url, filepath)` L147
+    - `print_generation_report(results)` L170
+  - `skills/video-creation-collaborator/scripts/image_quality_checker.py` (350 行)
+    - `check_image_quality(image_path, expected_resolution, check_limb_anomaly, check_blur, ch...)` L14
+    - `print_quality_report(results)` L233
+  - `skills/video-creation-collaborator/scripts/subtitle_generator.py` (273 行)
+    - `generate_subtitle(subtitle_data, output_file, format)` L12
+    - `generate_srt_content(subtitles)` L57
+    - `generate_ass_content(subtitles)` L84
+    - `convert_to_ass_time(time_str)` L135
+    - `validate_subtitle_data(subtitle_data)` L161
+    - `print_validation_result(result)` L212
+  - `skills/video-creation-collaborator/scripts/video_compositor.py` (264 行)
+    - `compose_video(project_config, output_file)` L13
+    - `parse_subtitle_file(subtitle_file)` L137
+    - `validate_project_config(project_config)` L154
+    - `print_validation_result(result)` L211
+  - `skills/video-creation-collaborator/scripts/video_quality_checker.py` (387 行)
+    - `check_video_quality(video_path, expected_resolution, expected_duration, expected_fps, m...)` L12
+    - `print_quality_report(results)` L244
+
+### 4.x `skills/video-creation-pro/`
+- 文档/提示词资源：`skills/video-creation-pro/SKILL.md`, `skills/video-creation-pro/references/agent_specs.md`, `skills/video-creation-pro/references/audio_format.md`, `skills/video-creation-pro/references/development_guide.md`, `skills/video-creation-pro/references/mask_video_guide.md`, `skills/video-creation-pro/references/quality_standards.md`, `skills/video-creation-pro/references/storyboard_format.md`, `skills/video-creation-pro/references/subtitle_format.md`，另有 3 个 Markdown 资源
+- 脚本代码：
+  - `skills/video-creation-pro/scripts/image_quality_checker.py` (350 行)
+    - `class ImageQualityChecker` L25
+      - `__init__(self)` L28
+      - `check_blur_quality(self, img)` L37
+      - `check_pose_quality(self, img)` L57
+      - `check_product_visibility(self, img, product_area)` L122
+      - `check_image(self, image_path)` L181
+      - `batch_check(self, image_dir, pattern)` L227
+    - `main()` L275
+  - `skills/video-creation-pro/scripts/video_composer.py` (399 行)
+    - `load_subtitles(subtitle_file)` L31
+    - `create_subtitle_clip(subtitle, video_width, video_height)` L53
+    - `get_transition_duration(transition_type)` L135
+    - `create_video_from_images(image_paths, durations, transitions, fps)` L159
+    - `compose_video(images, subtitles, audio_file, output_file, durations, transitions,...)` L224
+    - `main()` L326
+
+### 4.x `skills/video-creation-suite/`
+- 文档/提示词资源：`skills/video-creation-suite/SKILL.md`, `skills/video-creation-suite/assets/character-reference/luoji-character.md`, `skills/video-creation-suite/assets/scene-examples/deterrence-control-room.md`, `skills/video-creation-suite/assets/ui-components/ui-design-spec.md`, `skills/video-creation-suite/references/character-profiles.md`, `skills/video-creation-suite/references/prompt-templates.md`, `skills/video-creation-suite/references/recreation-guide.md`, `skills/video-creation-suite/references/storyboard-template.md`，另有 3 个 Markdown 资源
+- 脚本代码：
+  - `skills/video-creation-suite/scripts/audio_generator.py` (176 行)
+    - `generate_audio(narration_data, output_dir, voice_style)` L17
+    - `validate_narration_data(narration_data)` L106
+  - `skills/video-creation-suite/scripts/compose_video.py` (209 行)
+    - `composite_video_from_script(script_path, images_dir, audio_dir, subtitles_path, output_path)` L13
+  - `skills/video-creation-suite/scripts/coze_bot_client.py` (362 行)
+    - `encode_image_to_base64(image_path)` L15
+    - `call_coze_bot(message, image_path, bot_id, user_id, api_key, stream)` L29
+    - `analyze_image_with_coze_bot(image_path, prompt, bot_id, user_id, api_key)` L119
+    - `batch_analyze_images_with_coze_bot(image_dir, prompt, bot_id, api_key, output_file)` L180
+    - `main()` L283
+  - `skills/video-creation-suite/scripts/download_coze_images.py` (112 行)
+    - `download_coze_image(coze_url, output_path)` L12
+    - `batch_download_images(image_list, output_dir)` L47
+  - `skills/video-creation-suite/scripts/error_handler.py` (337 行)
+    - `class RetryLimitExceeded` L14
+    - `class ErrorLogger` L19
+      - `__init__(self, log_file)` L22
+      - `_load_errors(self)` L33
+      - `_save_errors(self)` L42
+      - `log_error(self, error, context)` L47
+      - `get_errors(self, error_type)` L74
+      - `clear_errors(self)` L88
+    - `class CheckpointManager` L161
+      - `__init__(self, checkpoint_file)` L164
+      - `_load_checkpoints(self)` L175
+      - `_save_checkpoints(self)` L184
+      - `save_checkpoint(self, key, data)` L189
+      - `load_checkpoint(self, key)` L204
+      - `has_checkpoint(self, key)` L219
+      - `clear_checkpoint(self, key)` L231
+      - `clear_all_checkpoints(self)` L243
+      - `list_checkpoints(self)` L249
+    - `retry_on_failure(max_retries, delay, backoff, exceptions, error_logger, context)` L94
+    - `safe_execute(func, *max_retries, *error_logger, *checkpoint_key, *checkpoint_man...)` L259
+  - `skills/video-creation-suite/scripts/file_server.py` (263 行)
+    - `class FileDownloadHandler` L14
+      - `__init__(self, *directory)` L17
+      - `do_GET(self)` L21
+      - `_generate_index_page(self)` L49
+      - `_get_files_in_directory(self, directory)` L163
+      - `log_message(self, format)` L203
+    - `start_file_server(directory, host, port)` L208
+  - `skills/video-creation-suite/scripts/generate_background_music.py` (68 行)
+    - `generate_background_music(script_path, output_dir)` L12
+  - `skills/video-creation-suite/scripts/generate_narration.py` (69 行)
+    - `generate_narration_audio(script_path, output_dir)` L12
+  - `skills/video-creation-suite/scripts/generate_subtitles.py` (96 行)
+    - `generate_subtitles(script_path, output_srt)` L12
+    - `generate_narration_text(script_path, output_txt)` L57
+  - `skills/video-creation-suite/scripts/image_generator.py` (118 行)
+    - `generate_image_from_prompt(prompt, output_path, image_size, style, seed)` L14
+    - `batch_generate_images(prompts, output_dir, naming_pattern)` L61
+  - `skills/video-creation-suite/scripts/quality_checker.py` (254 行)
+    - `check_video_quality(video_path, expected_resolution, expected_duration, expected_fps, a...)` L12
+    - `print_quality_report(results)` L143
+  - `skills/video-creation-suite/scripts/sound_generator.py` (554 行)
+    - `class SunoMusicGenerator` L17
+      - `__init__(self, api_key)` L20
+      - `generate_music(self, prompt, output_dir, instrumental, model, title)` L45
+      - `_check_task_status(self, task_id)` L159
+      - `_download_audio(self, url, output_file)` L210
+      - `_generate_music_placeholder(self, prompt, output_dir, title)` L226
+    - `generate_sound_effects(sound_data, output_dir)` L323
+    - `generate_background_music(music_data, output_dir)` L414
+    - `validate_sound_data(sound_data)` L448
+    - `validate_music_data(music_data)` L470
+  - `skills/video-creation-suite/scripts/subtitle_generator.py` (273 行)
+    - `generate_subtitle(subtitle_data, output_file, format)` L12
+    - `generate_srt_content(subtitles)` L57
+    - `generate_ass_content(subtitles)` L84
+    - `convert_to_ass_time(time_str)` L135
+    - `validate_subtitle_data(subtitle_data)` L161
+    - `print_validation_result(result)` L212
+  - `skills/video-creation-suite/scripts/test_image_url.py` (49 行)
+  - `skills/video-creation-suite/scripts/video_compositor.py` (282 行)
+    - `composite_video(images_dir, audio_dir, subtitles_file, output_path, fps, duration_p...)` L25
+    - `_add_subtitles(video_clip, subtitles_file)` L166
+    - `_add_subtitles_simple(video_clip, subtitles_file)` L223
+  - `skills/video-creation-suite/scripts/video_frame_extractor.py` (207 行)
+    - `extract_frames(video_path, output_dir, interval, max_frames, start_time, end_time,...)` L15
+    - `main()` L151
+  - `skills/video-creation-suite/scripts/visual_analyzer.py` (305 行)
+    - `encode_image(image_path)` L17
+    - `analyze_image_with_vision_api(image_path, api_key, api_base, model, prompt, detail)` L31
+    - `batch_analyze_images(input_path, output_file, api_key, api_base, model, prompt, detail, ...)` L119
+    - `main()` L251
+  - `skills/video-creation-suite/scripts/voice_generator.py` (279 行)
+    - `generate_voice(narration_data, output_dir)` L25
+    - `_generate_voice_placeholder(narration_data, output_dir, results)` L116
+    - `validate_narration_data(narration_data)` L181
+    - `list_available_voices()` L207
+
+### 4.x `skills/video-frame-extractor/`
+- 文档/提示词资源：`skills/video-frame-extractor/SKILL.md`, `skills/video-frame-extractor/references/analysis-guide.md`
+- 脚本代码：
+  - `skills/video-frame-extractor/scripts/coze_bot_client.py` (362 行)
+    - `encode_image_to_base64(image_path)` L15
+    - `call_coze_bot(message, image_path, bot_id, user_id, api_key, stream)` L29
+    - `analyze_image_with_coze_bot(image_path, prompt, bot_id, user_id, api_key)` L119
+    - `batch_analyze_images_with_coze_bot(image_dir, prompt, bot_id, api_key, output_file)` L180
+    - `main()` L283
+  - `skills/video-frame-extractor/scripts/video_frame_extractor.py` (207 行)
+    - `extract_frames(video_path, output_dir, interval, max_frames, start_time, end_time,...)` L15
+    - `main()` L151
+  - `skills/video-frame-extractor/scripts/visual_analyzer.py` (305 行)
+    - `encode_image(image_path)` L17
+    - `analyze_image_with_vision_api(image_path, api_key, api_base, model, prompt, detail)` L31
+    - `batch_analyze_images(input_path, output_file, api_key, api_base, model, prompt, detail, ...)` L119
+    - `main()` L251
+
+### 4.x `skills/video-recreation/`
+- 文档/提示词资源：`skills/video-recreation/SKILL.md`, `skills/video-recreation/references/prompt-templates.md`, `skills/video-recreation/references/recreation-guide.md`, `skills/video-recreation/references/suno-api-guide.md`
+- 脚本代码：
+  - `skills/video-recreation/scripts/audio_generator.py` (176 行)
+    - `generate_audio(narration_data, output_dir, voice_style)` L17
+    - `validate_narration_data(narration_data)` L106
+  - `skills/video-recreation/scripts/error_handler.py` (337 行)
+    - `class RetryLimitExceeded` L14
+    - `class ErrorLogger` L19
+      - `__init__(self, log_file)` L22
+      - `_load_errors(self)` L33
+      - `_save_errors(self)` L42
+      - `log_error(self, error, context)` L47
+      - `get_errors(self, error_type)` L74
+      - `clear_errors(self)` L88
+    - `class CheckpointManager` L161
+      - `__init__(self, checkpoint_file)` L164
+      - `_load_checkpoints(self)` L175
+      - `_save_checkpoints(self)` L184
+      - `save_checkpoint(self, key, data)` L189
+      - `load_checkpoint(self, key)` L204
+      - `has_checkpoint(self, key)` L219
+      - `clear_checkpoint(self, key)` L231
+      - `clear_all_checkpoints(self)` L243
+      - `list_checkpoints(self)` L249
+    - `retry_on_failure(max_retries, delay, backoff, exceptions, error_logger, context)` L94
+    - `safe_execute(func, *max_retries, *error_logger, *checkpoint_key, *checkpoint_man...)` L259
+  - `skills/video-recreation/scripts/file_server.py` (238 行)
+    - `class FileHTTPRequestHandler` L16
+      - `__init__(self, *directory)` L19
+      - `do_GET(self)` L24
+      - `send_file_list(self)` L36
+      - `format_size(size_bytes)` L174
+    - `start_server(directory, port)` L183
+    - `main()` L220
+  - `skills/video-recreation/scripts/image_generator.py` (118 行)
+    - `generate_image_from_prompt(prompt, output_path, image_size, style, seed)` L14
+    - `batch_generate_images(prompts, output_dir, naming_pattern)` L61
+  - `skills/video-recreation/scripts/sound_generator.py` (554 行)
+    - `class SunoMusicGenerator` L17
+      - `__init__(self, api_key)` L20
+      - `generate_music(self, prompt, output_dir, instrumental, model, title)` L45
+      - `_check_task_status(self, task_id)` L159
+      - `_download_audio(self, url, output_file)` L210
+      - `_generate_music_placeholder(self, prompt, output_dir, title)` L226
+    - `generate_sound_effects(sound_data, output_dir)` L323
+    - `generate_background_music(music_data, output_dir)` L414
+    - `validate_sound_data(sound_data)` L448
+    - `validate_music_data(music_data)` L470
+  - `skills/video-recreation/scripts/subtitle_generator.py` (273 行)
+    - `generate_subtitle(subtitle_data, output_file, format)` L12
+    - `generate_srt_content(subtitles)` L57
+    - `generate_ass_content(subtitles)` L84
+    - `convert_to_ass_time(time_str)` L135
+    - `validate_subtitle_data(subtitle_data)` L161
+    - `print_validation_result(result)` L212
+  - `skills/video-recreation/scripts/video_compositor.py` (264 行)
+    - `compose_video(project_config, output_file)` L13
+    - `parse_subtitle_file(subtitle_file)` L137
+    - `validate_project_config(project_config)` L154
+    - `print_validation_result(result)` L211
+  - `skills/video-recreation/scripts/video_frame_extractor.py` (207 行)
+    - `extract_frames(video_path, output_dir, interval, max_frames, start_time, end_time,...)` L15
+    - `main()` L151
+  - `skills/video-recreation/scripts/voice_generator.py` (279 行)
+    - `generate_voice(narration_data, output_dir)` L25
+    - `_generate_voice_placeholder(narration_data, output_dir, results)` L116
+    - `validate_narration_data(narration_data)` L181
+    - `list_available_voices()` L207
+
+### 4.x `skills/video-transcript-downloader/`
+- 文档/提示词资源：`skills/video-transcript-downloader/SKILL.md`
+- JSON/配置资源：`skills/video-transcript-downloader/package-lock.json`, `skills/video-transcript-downloader/package.json`
+- 脚本代码：
+  - `skills/video-transcript-downloader/scripts/vtd.js` (436 行)
+    - `die(message, code = 1)` L13
+    - `parseArgs(argv)` L18
+    - `toArray(v)` L53
+    - `which(cmd)` L59
+    - `resolveBin(name, fallback)` L70
+    - `run(cmd, args, { cwd } = {})` L74
+    - `isYouTubeUrl(url)` L85
+    - `extractYouTubeId(input)` L89
+    - `decodeHtmlEntities(input)` L97
+    - `formatTimestamp(seconds)` L117
+    - `cleanSegments(segments, { keepBrackets } = {})` L126
+    - `toParagraph(segments, { keepBrackets } = {})` L161
+    - `parseSrt(text)` L166
+    - `parseVtt(text)` L179
+    - `async ytDlpSubtitlesToTemp({ url, lang, ytdlpPath, extra })` L197
+    - `async cmdTranscript({ url, lang, timestamps, keepBrackets, extra })` L237
+    - `async cmdSubs({ url, lang, outputDir, extra })` L286
+    - `async cmdDownload({ url, outputDir, extra })` L306
+    - `async cmdAudio({ url, outputDir, extra })` L330
+    - `async cmdFormats({ url, extra })` L367
+    - `usage()` L382
+    - `async main()` L394
+
+### 4.x `skills/viral-video-copywriting/`
+- 文档/提示词资源：`skills/viral-video-copywriting/SKILL.md`, `skills/viral-video-copywriting/references/analysis-framework.md`, `skills/viral-video-copywriting/references/sample-video-data.md`
+- 脚本代码：
+  - `skills/viral-video-copywriting/scripts/extract_douyin_video.py` (374 行)
+    - `extract_video_id_from_url(url)` L28
+    - `extract_douyin_web(url)` L54
+    - `extract_douyin_ytdlp(url)` L203
+    - `extract_douyin_video(url)` L313
+    - `main()` L349
+  - `skills/viral-video-copywriting/scripts/test_workflow.py` (436 行)
+    - `step1_get_video_info(source_type)` L12
+    - `step2_analyze_viral_factors(video_info)` L56
+    - `step3_understand_user_needs()` L165
+    - `step4_create_new_copywriting(video_info, analysis_report, user_needs)` L195
+    - `step5_iterate_optimize(copywriting_versions)` L340
+    - `get_sample_video_data()` L369
+    - `main()` L385
+
+### 4.x `skills/web-design-analyzer/`
+- 文档/提示词资源：`skills/web-design-analyzer/SKILL.md`, `skills/web-design-analyzer/references/api-spec.md`, `skills/web-design-analyzer/references/roadshow-export-guide.md`
+- 脚本代码：
+  - `skills/web-design-analyzer/scripts/analyze_design.py` (297 行)
+    - `encode_image_to_base64(image_path)` L25
+    - `validate_image(image_path)` L42
+    - `call_openai_vision_api(api_key, image_base64, model)` L56
+    - `parse_analysis_result(raw_content)` L187
+    - `main()` L230
+  - `skills/web-design-analyzer/scripts/convert_to_roadshow_style.py` (263 行)
+    - `class DesignSystemConverter` L48
+      - `__init__(self, input_data)` L51
+      - `convert_colors(self)` L81
+      - `convert_fonts(self)` L128
+      - `infer_layout_style(self)` L154
+      - `infer_overall_theme(self)` L177
+      - `convert(self)` L188
+    - `main()` L210
+
+### 4.x `skills/web-to-app/`
+- 文档/提示词资源：`skills/web-to-app/SKILL.md`, `skills/web-to-app/references/parameter-guide.md`
+- 脚本代码：
+  - `skills/web-to-app/scripts/build_app.py` (254 行)
+    - `build_app(url, name, icon, width, height, min_width, min_height, zoom, options)` L13
+    - `main()` L219
+  - `skills/web-to-app/scripts/install_pake.py` (122 行)
+    - `check_node_version()` L10
+    - `check_pake_installed()` L37
+    - `install_pake()` L62
+    - `main()` L96
+
+### 4.x `skills/wechat-hotspot-publisher/`
+- 文档/提示词资源：`skills/wechat-hotspot-publisher/SKILL.md`, `skills/wechat-hotspot-publisher/references/bilibili-api-guide.md`, `skills/wechat-hotspot-publisher/references/content-template.md`, `skills/wechat-hotspot-publisher/references/html-layout-guide.md`, `skills/wechat-hotspot-publisher/references/sources-config.md`, `skills/wechat-hotspot-publisher/references/viral-content-templates.md`, `skills/wechat-hotspot-publisher/references/wechat-api-guide.md`, `skills/wechat-hotspot-publisher/references/xiaohongshu-api-guide.md`
+- 脚本代码：
+  - `skills/wechat-hotspot-publisher/scripts/auto_publisher.py` (241 行)
+    - `class AutoPublisher` L16
+      - `__init__(self, config_path)` L19
+      - `_load_config(self, config_path)` L23
+      - `fetch_sources(self)` L32
+      - `generate_content(self, sources_file)` L66
+      - `publish_content(self, content_info)` L102
+      - `run(self)` L144
+    - `main()` L193
+  - `skills/wechat-hotspot-publisher/scripts/copy_to_clipboard.py` (181 行)
+    - `copy_text_to_clipboard_macos(text)` L14
+    - `copy_text_to_clipboard_windows(text)` L33
+    - `copy_text_to_clipboard_linux(text)` L60
+    - `copy_text_to_clipboard(text)` L92
+    - `main()` L108
+  - `skills/wechat-hotspot-publisher/scripts/fetch_sources.py` (230 行)
+    - `class SourceFetcher` L17
+      - `__init__(self, config_path)` L20
+      - `_load_config(self, config_path)` L23
+      - `fetch_rss(self, url, count)` L33
+      - `fetch_zhihu_hot(self)` L55
+      - `fetch_weibo_hot(self)` L80
+      - `fetch_all(self)` L102
+      - `filter_by_keywords(self, items, keywords)` L122
+    - `main()` L140
+  - `skills/wechat-hotspot-publisher/scripts/filter_topics.py` (312 行)
+    - `class TopicFilter` L16
+      - `__init__(self, user_keywords)` L19
+      - `score_heat(self, item)` L28
+      - `score_controversy(self, item)` L69
+      - `score_value(self, item)` L98
+      - `score_relevance(self, item)` L139
+      - `score_item(self, item)` L162
+      - `filter_topics(self, items, min_score)` L194
+    - `main()` L222
+  - `skills/wechat-hotspot-publisher/scripts/publish_bilibili.py` (212 行)
+    - `get_bilibili_credentials()` L17
+    - `get_upload_url(creds)` L54
+    - `publish_bilibili_article(title, content, category_id, summary)` L73
+    - `main()` L149
+  - `skills/wechat-hotspot-publisher/scripts/publish_wechat.py` (503 行)
+    - `get_access_token()` L22
+    - `upload_media(access_token, image_path, media_type)` L41
+    - `upload_temp_media(access_token, image_path)` L111
+    - `upload_thumb_media(access_token, image_path)` L125
+    - `create_draft(access_token, title, content, thumb_media_id, author, digest, show_...)` L139
+    - `publish_to_custom_api(title, content, cover_url, tags, api_url)` L214
+    - `complete_workflow(access_token, title, content, cover_image_path, author, digest)` L277
+    - `main()` L318
+  - `skills/wechat-hotspot-publisher/scripts/publish_xiaohongshu.py` (188 行)
+    - `get_xiaohongshu_credentials()` L17
+    - `publish_xiaohongshu_note(title, content, images, tags)` L60
+    - `main()` L124
+  - `skills/wechat-hotspot-publisher/scripts/search_images.py` (205 行)
+    - `class ImageSearcher` L16
+      - `__init__(self, api_key)` L19
+      - `search(self, query, per_page, orientation)` L29
+      - `search_cover(self, query, ratio)` L83
+      - `get_placeholder(self, width, height, text)` L98
+    - `main()` L114
+
+### 4.x `skills/wechatsync-publisher/`
+- 文档/提示词资源：`skills/wechatsync-publisher/SKILL.md`, `skills/wechatsync-publisher/references/content-adaptation-guide.md`, `skills/wechatsync-publisher/references/html-layout-guide.md`, `skills/wechatsync-publisher/references/platform-requirements.md`, `skills/wechatsync-publisher/references/server-config-guide.md`, `skills/wechatsync-publisher/references/viral-content-templates.md`, `skills/wechatsync-publisher/references/xiaohongshu-creation-guide.md`
+- 脚本代码：
+  - `skills/wechatsync-publisher/scripts/filter_topics.py` (106 行)
+    - `filter_topics(topics, threshold)` L21
+    - `main()` L80
+  - `skills/wechatsync-publisher/scripts/publish.py` (226 行)
+    - `publish_to_api(platform, title, content, cover_image, tags)` L18
+    - `publish(platform, title, content, cover_image, tags)` L148
+    - `main()` L190
+  - `skills/wechatsync-publisher/scripts/search_images.py` (86 行)
+    - `search_images(keyword, count, size)` L17
+    - `main()` L61
+
+### 4.x `skills/x-article-publisher-headless/`
+- 文档/提示词资源：`skills/x-article-publisher-headless/CHANGELOG.md`, `skills/x-article-publisher-headless/README.md`, `skills/x-article-publisher-headless/SKILL.md`, `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/CHANGELOG.md`, `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/CONTRIBUTING.md`, `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/README.md`, `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/README_FULL.md`, `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/SKILL.md`
+- JSON/配置资源：`skills/x-article-publisher-headless/metadata.json`, `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/metadata.json`
+- 脚本代码：
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/auth_manager.py` (259 行)
+    - `class XAuthManager` L52
+      - `__init__(self)` L69
+      - `is_authenticated(self)` L81
+      - `get_auth_info(self)` L85
+      - `setup_auth(self, headless, timeout_minutes)` L89
+      - `validate_auth(self)` L103
+      - `clear_auth(self)` L107
+      - `get_authenticated_context(self)` L111
+    - `main()` L119
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/copy_to_clipboard.py` (180 行)
+    - `compress_image(image_path, quality, max_size)` L34
+    - `copy_image_to_clipboard_macos(image_path, quality)` L53
+    - `copy_html_to_clipboard_macos(html)` L97
+    - `main()` L126
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/debug_editor.py` (147 行)
+    - `main()` L18
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/debug_page.py` (76 行)
+    - `main()` L18
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/parse_markdown.py` (500 行)
+    - `split_into_blocks(markdown)` L38
+    - `resolve_image_path(img_path, base_path)` L108
+    - `extract_images_with_placeholders(markdown, base_path)` L156
+    - `extract_images_with_block_index(markdown, base_path)` L199
+    - `extract_title(markdown)` L247
+    - `convert_markdown_table(table_text)` L292
+    - `markdown_to_html(markdown)` L341
+    - `parse_markdown_file(filepath, use_placeholders)` L430
+    - `main()` L474
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/publish_article.py` (908 行)
+    - `class ArticlePublisher` L71
+      - `__init__(self)` L74
+      - `check_auth(self)` L80
+      - `parse_markdown(self, file_path)` L87
+      - `copy_html_to_clipboard(self, html)` L104
+      - `copy_image_to_clipboard(self, image_path)` L121
+      - `publish(self, file_path, custom_title, custom_cover, headless)` L134
+    - `main()` L886
+  - `skills/x-article-publisher-headless/qiaomu-x-article-publisher-github/scripts/site_config.py` (47 行)
+  - `skills/x-article-publisher-headless/scripts/auth_manager.py` (259 行)
+    - `class XAuthManager` L52
+      - `__init__(self)` L69
+      - `is_authenticated(self)` L81
+      - `get_auth_info(self)` L85
+      - `setup_auth(self, headless, timeout_minutes)` L89
+      - `validate_auth(self)` L103
+      - `clear_auth(self)` L107
+      - `get_authenticated_context(self)` L111
+    - `main()` L119
+  - `skills/x-article-publisher-headless/scripts/copy_to_clipboard.py` (180 行)
+    - `compress_image(image_path, quality, max_size)` L34
+    - `copy_image_to_clipboard_macos(image_path, quality)` L53
+    - `copy_html_to_clipboard_macos(html)` L97
+    - `main()` L126
+  - `skills/x-article-publisher-headless/scripts/debug_editor.py` (147 行)
+    - `main()` L18
+  - `skills/x-article-publisher-headless/scripts/debug_page.py` (76 行)
+    - `main()` L18
+  - `skills/x-article-publisher-headless/scripts/parse_markdown.py` (618 行)
+    - `split_into_blocks(markdown)` L38
+    - `resolve_image_path(img_path, base_path)` L109
+    - `extract_images_with_placeholders(markdown, base_path)` L191
+    - `extract_images_with_block_index(markdown, base_path)` L276
+    - `extract_title(markdown)` L324
+    - `convert_markdown_table(table_text)` L369
+    - `markdown_to_html(markdown)` L418
+    - `parse_markdown_file(filepath, use_placeholders)` L545
+    - `main()` L592
+  - `skills/x-article-publisher-headless/scripts/publish_article.py` (995 行)
+    - `class ArticlePublisher` L164
+      - `__init__(self)` L167
+      - `check_auth(self)` L173
+      - `parse_markdown(self, file_path)` L180
+      - `copy_html_to_clipboard(self, html)` L197
+      - `copy_image_to_clipboard(self, image_path)` L214
+      - `publish(self, file_path, custom_title, custom_cover, headless, wait_seconds)` L227
+    - `acquire_lock()` L70
+    - `release_lock()` L86
+    - `cleanup()` L99
+    - `signal_handler(signum, frame)` L120
+    - `check_chrome_running()` L133
+    - `main()` L970
+  - `skills/x-article-publisher-headless/scripts/site_config.py` (47 行)
+
+### 4.x `skills/x-article-publisher-show-browser/`
+- 文档/提示词资源：`skills/x-article-publisher-show-browser/CHANGELOG.md`, `skills/x-article-publisher-show-browser/CONTRIBUTING.md`, `skills/x-article-publisher-show-browser/README.md`, `skills/x-article-publisher-show-browser/README_FULL.md`, `skills/x-article-publisher-show-browser/SKILL.md`
+- JSON/配置资源：`skills/x-article-publisher-show-browser/metadata.json`
+- 脚本代码：
+  - `skills/x-article-publisher-show-browser/scripts/auth_manager.py` (259 行)
+    - `class XAuthManager` L52
+      - `__init__(self)` L69
+      - `is_authenticated(self)` L81
+      - `get_auth_info(self)` L85
+      - `setup_auth(self, headless, timeout_minutes)` L89
+      - `validate_auth(self)` L103
+      - `clear_auth(self)` L107
+      - `get_authenticated_context(self)` L111
+    - `main()` L119
+  - `skills/x-article-publisher-show-browser/scripts/copy_to_clipboard.py` (180 行)
+    - `compress_image(image_path, quality, max_size)` L34
+    - `copy_image_to_clipboard_macos(image_path, quality)` L53
+    - `copy_html_to_clipboard_macos(html)` L97
+    - `main()` L126
+  - `skills/x-article-publisher-show-browser/scripts/debug_editor.py` (147 行)
+    - `main()` L18
+  - `skills/x-article-publisher-show-browser/scripts/debug_page.py` (76 行)
+    - `main()` L18
+  - `skills/x-article-publisher-show-browser/scripts/parse_markdown.py` (500 行)
+    - `split_into_blocks(markdown)` L38
+    - `resolve_image_path(img_path, base_path)` L108
+    - `extract_images_with_placeholders(markdown, base_path)` L156
+    - `extract_images_with_block_index(markdown, base_path)` L199
+    - `extract_title(markdown)` L247
+    - `convert_markdown_table(table_text)` L292
+    - `markdown_to_html(markdown)` L341
+    - `parse_markdown_file(filepath, use_placeholders)` L430
+    - `main()` L474
+  - `skills/x-article-publisher-show-browser/scripts/publish_article.py` (908 行)
+    - `class ArticlePublisher` L71
+      - `__init__(self)` L74
+      - `check_auth(self)` L80
+      - `parse_markdown(self, file_path)` L87
+      - `copy_html_to_clipboard(self, html)` L104
+      - `copy_image_to_clipboard(self, image_path)` L121
+      - `publish(self, file_path, custom_title, custom_cover, headless)` L134
+    - `main()` L886
+  - `skills/x-article-publisher-show-browser/scripts/site_config.py` (47 行)
+
+## 5. 关键运行流程
+
+### 5.1 启动与交互
+
+```text
+用户执行 myAgent
+└── __main__.main()
+    ├── get_docker_image() / ensure_docker_image()
+    ├── FileStateCache + WorkspaceChangeTracker.start()
+    ├── MemoryRuntime(...) 初始化会话记忆与清理过期会话
+    ├── create_default_registry(...) 注册基础工具
+    ├── SkillRuntime.initialize() 同步并注册 Skill 工具
+    ├── build_command_registry() 注册 /resume、/delete
+    └── while True: read_user_prompt() -> 命令分发或 client.ask_deepseek()
+```
+
+### 5.2 模型工具调用
+
+```text
+client.ask_deepseek()
+├── 构造/追加用户消息
+├── MemoryRuntime.render_messages_for_model() 压缩上下文
+├── SkillRuntime.select_tools_for_prompt() 动态选择 Skill
+├── stream_chat_completion() 读取流式 assistant 输出
+├── 如果存在 tool_calls: execute_tool_call()
+│   └── ToolRegistry.execute() -> 具体工具 run()
+├── MemoryRuntime.save_tool_output() 保存可恢复工具输出
+└── 循环直到 finish_reason=stop 或达到 MAX_TOOL_ROUNDS
+```
+
+### 5.3 长上下文与会话恢复
+
+```text
+MemoryRuntime
+├── PromptBudgetManager 估算 token 压力阶段
+├── ContextCompressor 截断/指针化工具输出
+├── WorkingContext 保存 RecoverableContextObject
+├── CheckpointManager 生成 ConversationSnapshot
+├── MemoryStore/ConversationStore 持久化 SQLite 数据
+└── await_pending_rollover()/on_turn_completed() 在高压时翻转会话
+```
+
+### 5.4 Skill 路由
+
+```text
+SkillRuntime.initialize()/sync()
+├── discover_skills() 扫描 SKILL.md 与 references
+├── SkillStore 保存 SkillRecord/ReferenceRecord
+├── SkillVectorStore + EmbeddingProvider 建立语义索引
+├── SkillRouter 融合向量结果、用户 LRFU、会话 LRFU、固定 Skill
+├── skills/tools.py 注册 search_tool/Get_skill_reference 等管理工具
+└── record_skill_invocation() 更新调用反馈与 LRFU
+```
+
+## 6. 已知索引异常
+
+以下文件存在语法或解析异常，框架图中无法通过 AST 完整提取其类/函数；后续修复代码时应同步补充本节：
+- `skills/paper-analysis-assistant/scripts/generate_ppt.py`：`SyntaxError('f-string expression part cannot include a backslash', ('skills/paper-analysis-assistant/scripts/generate_ppt.py', 91, 9, '        f"段落数: {len([p for p in text.split(\'\\\\n\') if p.strip()]):,}",\n'))`
+- `skills/video-recreation/scripts/coze_bot_client.py`：`SyntaxError('invalid syntax', ('skills/video-recreation/scripts/coze_bot_client.py', 108, 5, '    except requests.exceptions.RequestException as e:\n'))`
+
+## 7. 维护约定
+
+- 修改任何核心源码后，同步更新第 3 节对应模块的类、函数和职责。
+- 新增、删除或重命名 Skill 包后，同步更新第 4 节对应技能包。
+- 修改启动流程、模型工具循环、记忆流程或 Skill 路由时，同步更新第 5 节关键运行流程。
+- 修复第 6 节列出的语法/解析异常后，删除对应异常并补充该文件的函数级结构。

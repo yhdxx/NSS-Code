@@ -17,14 +17,10 @@ def is_skill_related_tool(tool_name: str) -> bool:
 
 
 def persistent_assistant_tool_message(assistant_message: dict[str, Any]) -> dict[str, Any] | None:
-    persistent_tool_calls = [
-        tool_call
-        for tool_call in assistant_message.get("tool_calls", [])
-        if not is_skill_related_tool(tool_call.get("function", {}).get("name", ""))
-    ]
-    if not persistent_tool_calls:
+    tool_calls = list(assistant_message.get("tool_calls", []))
+    if not tool_calls:
         return None
-    persistent_message: dict[str, Any] = {"role": "assistant", "tool_calls": persistent_tool_calls}
+    persistent_message: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
     if assistant_message.get("content"):
         persistent_message["content"] = assistant_message["content"]
     return persistent_message
