@@ -368,6 +368,73 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
     assert restored.token_usage.prompt_cache_miss_tokens == 30
 
 
+def test_token_output_flags_control_terminal_lines(monkeypatch, tmp_path, capsys):
+    async def run_case(name: str, *, step_token: bool, round_token: bool, conversation_token: bool):
+        runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / f"{name}.sqlite3"))
+
+        async def fake_stream_one_round(_client, _model, messages, tools):
+            return (
+                "done",
+                [],
+                SimpleNamespace(
+                    prompt_tokens=100,
+                    prompt_cache_hit_tokens=70,
+                    prompt_cache_miss_tokens=30,
+                    completion_tokens=8,
+                    total_tokens=108,
+                ),
+            )
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+        monkeypatch.setattr(agent_client, "DEBUG", False)
+        monkeypatch.setattr(agent_client, "STEP_TOKEN", step_token)
+        monkeypatch.setattr(agent_client, "ROUND_TOKEN", round_token)
+        monkeypatch.setattr(agent_client, "CONVERSATION_TOKEN", conversation_token)
+
+        text, _updated = await agent_client.ask_deepseek(
+            client=object(),
+            prompt="hello",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+            memory_runtime=runtime,
+        )
+        session_id = runtime.get_current_session_id()
+        assert session_id is not None
+        restored = runtime.load_session(session_id)
+        await runtime.close()
+        return text, restored
+
+    cases = [
+        ("no_step", False, True, True, False, True, True),
+        ("no_round", True, False, True, True, False, True),
+        ("no_conversation", True, True, False, True, True, False),
+    ]
+    for name, step_token, round_token, conversation_token, expect_step, expect_round, expect_conversation in cases:
+        text, restored = asyncio.run(
+            run_case(
+                name,
+                step_token=step_token,
+                round_token=round_token,
+                conversation_token=conversation_token,
+            )
+        )
+        output = capsys.readouterr().out
+
+        assert text == "done"
+        assert ("[Token] 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output) is expect_step
+        assert (
+            "[Token][本轮] 请求 1 | 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
+        ) is expect_round
+        assert (
+            "[Token][会话] 请求 1 | 输入 100 (缓存命中 70, 未命中 30) | 输出 8 | 总计 108" in output
+        ) is expect_conversation
+        assert restored is not None
+        assert restored.token_usage.request_count == 1
+        assert restored.token_usage.prompt_cache_hit_tokens == 70
+        assert restored.token_usage.prompt_cache_miss_tokens == 30
+
+
 def test_debug_true_prints_prompt_debug(monkeypatch, capsys):
     async def scenario():
         async def fake_stream_one_round(_client, _model, messages, tools):

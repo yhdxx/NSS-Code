@@ -35,6 +35,9 @@ MAX_DISPLAY_STRING_CHARS = CONFIG.client.max_display_string_chars  # 终端展�
 MAX_TOOL_OUTPUT_CHARS = CONFIG.client.max_tool_output_chars
 MULTILINE_ARGUMENT_FIELDS = CONFIG.client.multiline_argument_fields  # 这些字段通常包含代码、命令或长文本，打印工具调用时优先按多行展示。
 DEBUG = CONFIG.client.debug
+STEP_TOKEN = CONFIG.client.step_token
+ROUND_TOKEN = CONFIG.client.round_token
+CONVERSATION_TOKEN = CONFIG.client.conversation_token
 
 
 @dataclass  # 自动生成 `__init__` 等方法，让该类只承担“保存状态”的职责。
@@ -663,12 +666,15 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         nonlocal session_token_usage
         if turn_token_usage.request_count == 0:
             return
-        if session_token_usage is None and memory_runtime is not None and session_id:
+        lines: list[str] = []
+        if ROUND_TOKEN:
+            lines.append(format_token_summary("本轮", turn_token_usage))
+        if CONVERSATION_TOKEN and session_token_usage is None and memory_runtime is not None and session_id:
             session_token_usage = memory_runtime.load_token_usage_summary(session_id)
-        lines = [format_token_summary("本轮", turn_token_usage)]
-        if session_token_usage is not None:
+        if CONVERSATION_TOKEN and session_token_usage is not None:
             lines.append(format_token_summary("会话", session_token_usage))
-        print_token_block(*lines)
+        if lines:
+            print_token_block(*lines)
 
     # 追加当前用户问题  # 每次调用 `ask_deepseek` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
@@ -764,7 +770,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     f"未命中 {usage_values['prompt_cache_miss_tokens']})"
                 )
             parts.append(f"| 输出 {usage_values['completion_tokens']} | 总计 {usage_values['total_tokens']}")
-            print_token_block(f"[Token] {' '.join(parts)}")
+            if STEP_TOKEN:
+                print_token_block(f"[Token] {' '.join(parts)}")
         if assistant_text.startswith("Error: API ") and not tool_calls:
             del messages[turn_start:]
             save_session_state(sync=True)

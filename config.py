@@ -128,6 +128,9 @@ class ClientConfig:
     max_tool_output_chars: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MAX_TOOL_OUTPUT_CHARS", 12000))
     multiline_argument_fields: frozenset[str] = frozenset({"command", "content", "old_string", "new_string"})
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", _env_bool("MYCODINGAGENT_DEBUG", False)))
+    step_token: bool = field(default_factory=lambda: _env_bool("STEP_TOKEN", True))
+    round_token: bool = field(default_factory=lambda: _env_bool("ROUND_TOKEN", True))
+    conversation_token: bool = field(default_factory=lambda: _env_bool("CONVERSATION_TOKEN", True))
 
 
 @dataclass(frozen=True)
