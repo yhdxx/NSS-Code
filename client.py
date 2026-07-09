@@ -405,6 +405,56 @@ def compact_notice_value(value: Any, limit: int = 120) -> str:  # 把参数压�
     return text[:limit] + f"... <truncated {len(text) - limit} chars>"
 
 
+def parse_tool_arguments(raw_args: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(raw_args) if raw_args else {}
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def compact_tool_metadata_value(value: Any, limit: int = 160) -> str:
+    text = " ".join(str(value).split()) if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
+    if len(text) <= limit:
+        return text
+    return text[:limit]
+
+
+def tool_call_metadata(tool_name: str, raw_args: str, output: str) -> dict[str, Any]:
+    args = parse_tool_arguments(raw_args)
+    metadata: dict[str, Any] = {"tool_name": tool_name}
+    if args.get("intent"):
+        metadata["intent"] = compact_tool_metadata_value(args["intent"])
+    for source_key, metadata_key in (
+        ("server", "mcp_server"),
+        ("tool", "mcp_tool"),
+        ("uri", "mcp_resource"),
+        ("prompt", "mcp_prompt"),
+    ):
+        if args.get(source_key):
+            metadata.setdefault(metadata_key, compact_tool_metadata_value(args[source_key]))
+    try:
+        payload = json.loads(output) if output and output.lstrip().startswith("{") else {}
+    except json.JSONDecodeError:
+        payload = {}
+    if isinstance(payload, dict):
+        for key in (
+            "intent",
+            "risk",
+            "approval",
+            "mcp_server",
+            "mcp_tool",
+            "mcp_resource",
+            "mcp_prompt",
+            "operation",
+            "name",
+            "content_type",
+        ):
+            if payload.get(key) is not None:
+                metadata[key] = compact_tool_metadata_value(payload[key])
+    return metadata
+
+
 async def execute_local_tool(
     registry: ToolRegistry,
     tool_name: str,
@@ -517,6 +567,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     core_tool_schemas: list[dict[str, Any]] | None = None,  # 六大核心工具的原始 schema，避免大量 SKILL 全量进入上下文。
     workspace_tracker: Any | None = None,
     memory_runtime: MemoryRuntime | None = None,
+    capability_router: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:  # 返回 `(最终模型文本, 更新后的消息历史)`，供 CLI 继续保持上下文。
     # `messages` 在工具调用后的完整结构示例：  # 展示本函数维护的对话历史长什么样。
     # [  # 消息历史是一个有序数组，顺序就是模型看到的上下文顺序。
@@ -589,6 +640,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -搜索内容用 Grep 工具，而不是 grep 或 rg
                     -查询、列举或确认当前可用 SKILL/技能/能力时，必须使用 Get_all_tool、search_tool 或 Get_tool_by_name；
                      不要用 Bash、Glob、ReadFile 直接查看 skills 目录、SQLite 数据库或 .skill_runtime
+                    -每一次工具调用都必须提供简短 intent 字段，用一句话说明本次调用意图；intent 应短小稳定，用于历史工具输出虚拟化后的 metadata，而不是长篇推理。
+                    -MCP discovery 工具统一使用 offset/limit 分页；MCP call_tool 总是经 hook 请求用户确认，若用户拒绝则按工具结果继续处理。
 
                     ***Work Context Sufficiency Protocol***
                     Before producing the final answer, evaluate whether the current Working Context is sufficient to answer correctly.
@@ -681,10 +734,23 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
     temporary_system_messages: list[dict[str, Any]] = []
-    base_runtime_context = RuntimeContextBuilder(workspace_tracker=workspace_tracker).build()
+    capability_result = await capability_router.route(prompt) if capability_router is not None else None
+    base_runtime_context = RuntimeContextBuilder(
+        workspace_tracker=workspace_tracker,
+        capabilities=capability_result,
+    ).build()
     rendered_prompt = PromptRenderer.render_current_user_message(base_runtime_context, prompt)
     round_messages = list(messages)
-    current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)  # 本用户轮内保持 tools schema 稳定。
+    if capability_router is None:
+        current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)
+    else:
+        current_tools = await build_round_tools(
+            prompt,
+            tools,
+            skill_runtime,
+            core_tool_schemas,
+            capability_router=capability_router,
+        )
     seen_tool_failures: set[tuple[str, str]] = set()
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
@@ -830,6 +896,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     seen_tool_failures.add(failure_key)
             output_id = ""
             skill_related_tool = is_skill_related_tool(tool_call.tool_name)
+            metadata = tool_call_metadata(tool_call.tool_name, tool_call.arguments, tool_output)
             if memory_runtime is not None and session_id and not skill_related_tool:
                 output_id = memory_runtime.save_tool_output(
                     session_id=session_id,
@@ -837,6 +904,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     tool_name=tool_call.tool_name,
                     arguments=tool_call.arguments,
                     output=tool_output,
+                    metadata=metadata,
                 )
             if skill_related_tool:
                 tool_output = tool_output
@@ -856,14 +924,14 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 "content": tool_output,
             }
             if output_id:
-                tool_message["metadata"] = {"output_id": output_id, "tool_name": tool_call.tool_name}
+                tool_message["metadata"] = {"output_id": output_id, **metadata}
             if skill_related_tool:
                 messages.append(
                     {
                         "role": "tool",
                         "tool_call_id": tool_call_id,
                         "content": "[Skill output omitted after current turn]",
-                        "metadata": {"tool_name": tool_call.tool_name, "skill_omitted": True},
+                        "metadata": {**metadata, "skill_omitted": True},
                     }
                 )
             else:
@@ -962,7 +1030,11 @@ async def build_round_tools(
     default_tools: list[dict[str, Any]],
     skill_runtime: Any | None,
     core_tool_schemas: list[dict[str, Any]] | None,
+    capability_router: Any | None = None,
 ) -> list[dict[str, Any]]:
+    if capability_router is not None and core_tool_schemas is not None:
+        raw_tools = await capability_router.build_tools_for_prompt(prompt, core_tool_schemas)
+        return format_openai_tools(raw_tools)
     if skill_runtime is None or core_tool_schemas is None:
         return default_tools
     raw_tools = await skill_runtime.build_tools_for_prompt_async(prompt, core_tool_schemas)

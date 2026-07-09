@@ -21,6 +21,7 @@ import pyfiglet  # 导入当前模块需要的依赖。
 
 from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
 
+from capabilities import CapabilityRouter
 from cli_input import read_char_from_fd, read_escape_sequence_from_fd, read_user_prompt, render_screen, safe_render_columns
 from commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from config import CONFIG  # 统一读取项目运行配置。
@@ -32,7 +33,12 @@ from tools import create_default_registry  # 导入当前模块需要的依赖�
 from tools.bash import ensure_docker_image, get_docker_image  # 启动时确保 Bash 工具使用的 Docker 镜像已在本地可用。
 from tools.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
 from tools.file_state_cache import FileStateCache  # 共享文件读取状态，判断用户是否修改了模型已读文件。
+from tools.mcp_discovery import register_mcp_discovery_tools
+from tools.mcp_execution import register_mcp_execution_tools
 from tools.workspace_change_tracker import WorkspaceChangeTracker  # 监听工作区文件变化并过滤模型自身写入。
+from mcp_client import MCPClientManager, MCPConfigLoader
+from mcp_client.hooks import CLIApprovalHook
+from mcp_client.policy import MCPToolPermissionPolicy
 import client  # 导入当前模块需要的依赖。
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
@@ -68,7 +74,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
     )
-    core_tool_schemas = registry.get_all_schemas("openai")  # 保存六大核心工具 schema，后续每轮基于它动态追加 SKILL。
+    base_tool_schemas = registry.get_all_schemas("openai")  # 保存核心工具 schema，后续每轮基于它动态追加 SKILL。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
         skills_root=CONFIG.skills.root,
         skill_roots=CONFIG.skills.roots,
@@ -76,6 +82,50 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     )  # 结束上方的多行结构。
     skill_report = await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_tool/skill 工具执行入口。
     print(skill_report.summary(), flush=True)  # 输出本次 SKILL 索引变化情况。
+    mcp_manager: MCPClientManager | None = None
+    capability_router: CapabilityRouter | None = None
+    if CONFIG.mcp.enabled:
+        mcp_manager = MCPClientManager(
+            config_loader=MCPConfigLoader(
+                project_path=CONFIG.mcp.project_config_path,
+                user_path=CONFIG.mcp.user_config_path,
+                env_path_var=CONFIG.mcp.env_config_var,
+            )
+        )
+        try:
+            await mcp_manager.initialize()
+        except ValueError as exc:
+            print(f"MCP config error: {exc}", flush=True)
+        capability_router = CapabilityRouter(skill_runtime=skill_runtime, mcp_manager=mcp_manager)
+        register_mcp_discovery_tools(registry, manager=mcp_manager, router=capability_router)
+        register_mcp_execution_tools(
+            registry,
+            manager=mcp_manager,
+            policy=MCPToolPermissionPolicy(),
+            approval_hook=CLIApprovalHook(),
+        )
+        print(f"MCP servers configured: {mcp_manager.server_count()}", flush=True)
+    else:
+        capability_router = CapabilityRouter(skill_runtime=skill_runtime, mcp_manager=None)
+    discovery_tool_names = {
+        "list_servers",
+        "search_servers",
+        "list_tools",
+        "search_tools",
+        "list_resources",
+        "search_resources",
+        "list_prompts",
+        "search_prompts",
+        "call_tool",
+        "read_resource",
+        "get_prompt",
+    }
+    discovery_tool_schemas = [
+        schema
+        for schema in registry.get_all_schemas("openai")
+        if schema.get("name") in discovery_tool_names
+    ]
+    core_tool_schemas = base_tool_schemas + discovery_tool_schemas
     tools = client.format_openai_tools(core_tool_schemas)  # 无 SKILL runtime 时的兜底工具 schema；实际对话每轮会动态构造。
     command_registry = build_command_registry()
 
@@ -145,6 +195,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 core_tool_schemas=core_tool_schemas,
                 workspace_tracker=workspace_tracker,
                 memory_runtime=memory_runtime,
+                capability_router=capability_router,
             )  # 结束上方的多行结构。
             if memory_runtime is not None:
                 rollover = await memory_runtime.on_turn_completed(
@@ -161,6 +212,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     finally:  # 执行无论是否异常都需要收尾的逻辑。
         if memory_runtime is not None:
             await memory_runtime.close()
+        if mcp_manager is not None:
+            await mcp_manager.close()
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
         workspace_tracker.close()  # 停止工作区文件监听线程。
         # 退出时关闭连接

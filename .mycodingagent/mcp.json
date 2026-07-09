@@ -1,0 +1,13 @@
+{
+    "servers": {
+      "github": {
+        "command": "npx",
+        "args": ["-y", "@modelcontextprotocol/server-github"],
+        "description": "GitHub repository, issue, pull request, and code search operations",
+        "tags": ["github", "git", "repo"],
+        "aliases": ["gh"],
+        "keywords": ["GitHub", "代码仓库", "PR", "issue"]
+      }
+    }
+  }
+

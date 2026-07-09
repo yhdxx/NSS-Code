@@ -70,6 +70,7 @@ def build_recoverable_context(
     content: str,
     reproducible: bool,
     token_count: int,
+    metadata: dict[str, Any] | None = None,
 ) -> RecoverableContextObject:
     context_id = uuid4().hex
     content_type = infer_content_type(content)
@@ -89,7 +90,7 @@ def build_recoverable_context(
         source_tool=tool_name,
         content_type=content_type,
         content_length=len(content),
-        metadata={"arguments_json": arguments_json},
+        metadata={"arguments_json": arguments_json, **(metadata or {})},
     )
 
 

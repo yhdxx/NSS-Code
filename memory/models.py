@@ -98,9 +98,11 @@ class ToolInvocationMetadata:
     kind: str
     context_id: str = ""
     invocation_kind: str = ""
+    intent: str = ""
     args_preview: str = ""
     args_hash: str = ""
     short_summary: str = ""
+    metadata: dict[str, Any] = field(default_factory=dict)
     keywords: list[str] = field(default_factory=list)
     related_files: list[str] = field(default_factory=list)
     reference_paths: list[str] = field(default_factory=list)

@@ -5,8 +5,8 @@
 ## 1. 项目总览
 
 - 项目：`myCodingAgent`
-- 定位：基于 LLM 的命令行编码智能体，在 Docker 沙箱中执行文件读写、搜索、Shell 命令，并通过 Skill 系统扩展领域工作流。
-- 核心链路：`__main__.py` 启动 CLI -> `client.py` 调用模型 -> `tools/` 执行工具 -> `memory/` 管理长上下文 -> `skills/` 动态检索并暴露专业能力。
+- 定位：基于 LLM 的命令行编码智能体，在 Docker 沙箱中执行文件读写、搜索、Shell 命令，并通过 Skill 系统和 MCP Discovery 扩展领域工作流。
+- 核心链路：`__main__.py` 启动 CLI -> `capabilities/` 做能力推荐 -> `runtime_context.py` 注入当前轮能力信息 -> `client.py` 调用模型 -> `tools/` 执行核心/Discovery 工具 -> `memory/` 管理长上下文 -> `skills/` 动态检索并暴露专业能力 -> `mcp_client/` 按需发现 MCP metadata。
 - 当前索引范围：Python/TypeScript/JavaScript 代码文件；Markdown、JSON、CSS、模板等资源在 Skill 资产章节按目录归纳。
 - 生成依据：README 项目说明、核心源码定向阅读、AST/正则提取的类与函数索引。
 
@@ -25,8 +25,18 @@ myCodingAgent
 │   ├── execute_tool_call()：解析并执行工具调用
 │   └── format/pretty/helper 函数：工具 schema、参数、输出展示
 ├── 配置与状态层：config.py / cache.py / workspace_identity.py / session_switch.py
+├── Capability Router：capabilities/
+│   ├── CapabilityRouter：融合 Skill 推荐与 MCP Server 推荐
+│   ├── LexicalServerSignal：server 级关键词/别名/缩写/同义词/多语言匹配
+│   └── CapabilityResult：写入 RuntimeContext 的推荐 payload
+├── MCP Client：mcp_client/
+│   ├── MCPConfigLoader：读取用户级、项目级和环境变量指定的 mcp.json
+│   ├── MCPClientManager：建立真实 MCP stdio 连接并执行 list/call/read/get 协议调用
+│   └── MCPMetadataCache：缓存 server/tool/resource/prompt summary
 ├── 命令系统：commands/
 ├── 工具系统：tools/
+│   ├── mcp_discovery.py：稳定 Discovery Tool，不生成 per-server 动态 schema
+│   └── mcp_execution.py：稳定 MCP Execution Tool，统一 approval hook 与 intent metadata
 ├── 记忆系统：memory/
 ├── Skill 系统：skills/
 ├── 测试：tests/
@@ -417,6 +427,158 @@ myCodingAgent
   - `class WriteFile extends Tool` L20
     - `__init__(self, file_cache, file_history, file_state_cache, workspace_tracker...)` L31
     - `async execute(self, params)` L46
+
+### 3.x `capabilities/` - Capability Router 与多信号能力推荐。
+
+#### `capabilities/__init__.py`
+- 职责：导出 `CapabilityRouter` 和 `CapabilityResult`。
+
+#### `capabilities/models.py`
+- 职责：定义能力推荐结果的数据结构，供 RuntimeContext 注入。
+- 类：
+  - `class CapabilityRecommendation`
+    - `to_payload(self)`：输出模型可读的推荐项 payload
+  - `class CapabilityResult`
+    - `to_runtime_payload(self)`：输出 RuntimeContext 的 `capabilities` 字段
+
+#### `capabilities/retrieval.py`
+- 职责：server 级检索信号，第一阶段实现关键词/别名/缩写/同义词/多语言 keyword 检索。
+- 类：
+  - `class ServerRetrievalScore`
+  - `class LexicalServerSignal`
+    - `score(self, query, servers)`：计算 MCP Server 与用户请求的词法相关性
+- 模块函数：
+  - `_tokens(text)`：中英文 token 化
+  - `_weighted_terms(server)`：生成加权检索字段
+
+#### `capabilities/router.py`
+- 职责：统一能力发现入口；融合现有 Skill Runtime 与 MCP Server Retriever，输出推荐而非限制。
+- 类：
+  - `class CapabilityRouterConfig`
+  - `class CapabilityRouter`
+    - `route(self, prompt)`：生成当前轮 `CapabilityResult`
+    - `record_mcp_server_use(self, server, *reward)`：记录 MCP Server LRFU 使用信号
+    - `build_tools_for_prompt(self, prompt, core_tool_schemas)`：复用现有 Skill Runtime 生成本轮工具 schema
+    - `_skill_recommendations(self, prompt)`：从现有 Skill Runtime 检索 Skill 推荐
+    - `_mcp_recommendations(self, prompt)`：从 MCP metadata + LRFU 生成 server 推荐
+
+### 3.x `mcp_client/` - MCP 配置、真实连接与 metadata cache。
+
+#### `mcp_client/__init__.py`
+- 职责：导出 MCP Client 子系统核心类型。
+
+#### `mcp_client/config.py`
+- 职责：读取 MCP Server 配置与权限分类配置，不与 Capability Router 混合。
+- 类：
+  - `class MCPPermissionConfig`
+    - 字段：`read_tools` / `write_tools` / `dangerous_tools` / `readonly_by_default`
+  - `class MCPServerConfig`
+    - `searchable_terms(self)`：汇总 name/description/tags/aliases/abbreviations/synonyms/keywords
+  - `class MCPConfigLoader`
+    - `load(self)`：按用户级、项目级、环境变量指定路径合并配置
+    - `config_paths(self)`：返回配置读取顺序
+    - `_load_path(self, path)`：解析单个 JSON 配置文件
+- 模块函数：
+  - `_server_config_from_dict(name, data)`：字典转 `MCPServerConfig`
+  - `_string_tuple(value)`：标准化字符串列表字段
+  - `_permission_config(value)`：标准化单 server 的 MCP 权限分类配置
+
+#### `mcp_client/models.py`
+- 职责：定义 MCP metadata 与执行结果的数据模型。
+- 类：
+  - `class MCPItemSummary`
+    - `to_payload(self)`：输出 tool/resource/prompt summary
+  - `class MCPServerSummary`
+    - `to_payload(self)`：输出 server summary
+  - `class MCPExecutionResult`
+    - `to_payload(self)`：输出 MCP 调用结果，包含 `server`、`operation`、`name`、`content_text`、`content_type`、`metadata`
+
+#### `mcp_client/cache.py`
+- 职责：缓存 server/tool/resource/prompt summary，不缓存正文或 tool output。
+- 类：
+  - `class MCPMetadataEntry`
+    - `summary(self)`：生成 `MCPServerSummary`
+  - `class MCPMetadataCache`
+    - `sync_configs(self, configs)`：用当前配置同步 cache server 集合
+    - `get(self, server)`：读取单个缓存项
+    - `servers(self)`：列出 server summary
+    - `update_discovery(self, server, *tools, *resources, *prompts, *connected, *error)`：更新 discovery metadata
+    - `mark_error(self, server, error)`：记录连接或 discovery 错误
+
+#### `mcp_client/manager.py`
+- 职责：真实 MCP 协议实现边界；负责连接、discovery、tool call、resource read 与 prompt get。
+- 类：
+  - `class MCPClientManager`
+    - `initialize(self)`：加载配置
+    - `reload_config(self)`：重新读取配置并同步 cache
+    - `close(self)`：关闭已建立的 MCP session
+    - `server_count(self)` / `connected_count(self)`：返回规模统计
+    - `list_servers(self)`：返回已配置 server summary
+    - `refresh_server(self, server)`：建立连接并执行 tools/resources/prompts list
+    - `list_tools(self, server)` / `list_resources(self, server)` / `list_prompts(self, server)`：返回 discovery metadata
+    - `call_tool(self, server, tool, arguments)`：执行 MCP `tools/call` 并规范化结果
+    - `read_resource(self, server, uri)`：执行 MCP `resources/read` 并规范化结果
+    - `get_prompt(self, server, prompt, arguments)`：执行 MCP `prompts/get` 并规范化结果
+    - `_ensure_discovered(self, server)`：缓存未命中时触发 discovery
+    - `_ensure_session(self, server)`：使用 `mcp` SDK 建立 stdio MCP session；为 npx 类 server 默认提供 `/tmp/mycodingagent-npm-cache`，并在初始化失败时清理半打开的 session/stdio context
+    - `_close_session(self, server)`：关闭指定 server session
+    - `_list_tools_from_session(self, server)` / `_list_resources_from_session(self, server)` / `_list_prompts_from_session(self, server)`：协议 list 调用
+- 模块函数：
+  - `_item_summary(item)`：MCP SDK 对象转轻量 summary
+
+#### `mcp_client/policy.py`
+- 职责：对 MCP tool 名称做 read/write/dangerous/unknown 风险分类，供 approval hook 展示和决策。
+- 类：
+  - `class MCPApprovalRequest`
+  - `class MCPApprovalDecision`
+  - `class MCPToolPermissionPolicy`
+    - `classify(self, *server_config, *tool_name)`：结合配置列表与名称前缀推断风险
+    - `requires_approval(self, risk)`：判断风险类型是否需要确认
+
+#### `mcp_client/hooks.py`
+- 职责：定义 MCP tool 调用审批 hook。
+- 常量：
+  - `USER_DENIED_MESSAGE = "用户拒绝你的工具调用"`
+- 类：
+  - `class MCPToolApprovalHook`
+    - `approve(self, request)`：默认允许，用于测试或非交互环境
+  - `class CLIApprovalHook`
+    - `approve(self, request)`：在 CLI 中展示 server/tool/risk/intent/arguments，并等待用户确认
+
+#### `mcp_client/execution.py`
+- 职责：把 MCP SDK 返回对象规范化为 `MCPExecutionResult`。
+- 模块函数：
+  - `normalize_mcp_result(*server, *operation, *name, *result)`：提取 structured/text/non-text 内容
+  - `_content_metadata(item)`：非文本 MCP content 的 metadata 提取
+
+#### `tools/mcp_discovery.py`
+- 职责：向模型暴露稳定 Discovery Tool；新增 MCP Server 不新增 schema；全部列表/搜索接口统一 `offset` + `limit` 分页。
+- 类：
+  - `class ListServersTool`
+  - `class SearchServersTool`
+  - `class ListToolsTool` / `class SearchToolsTool`
+  - `class ListResourcesTool` / `class SearchResourcesTool`
+  - `class ListPromptsTool` / `class SearchPromptsTool`
+  - `_ServerItemsTool` / `_ServerItemSearchTool`
+- 模块函数：
+  - `register_mcp_discovery_tools(registry, *manager, *router)`：注册八个稳定 discovery tools
+  - `_search_items(query, items)`：在 metadata summary 上做本地搜索
+  - `_paginate(items, *offset, *limit, *item_key)`：统一分页 payload
+  - `_json_result(payload, *is_error)`：统一 JSON 工具输出
+
+#### `tools/mcp_execution.py`
+- 职责：向模型暴露稳定 MCP 执行工具；不生成 per-server/per-tool 动态 schema。
+- 类：
+  - `class CallMCPToolTool`
+    - `execute(self, params)`：要求短 `intent`，统一经过 approval hook，允许后调用 `MCPClientManager.call_tool`
+  - `class ReadMCPResourceTool`
+    - `execute(self, params)`：要求短 `intent`，读取指定 MCP resource
+  - `class GetMCPPromptTool`
+    - `execute(self, params)`：要求短 `intent`，获取指定 MCP prompt
+- 模块函数：
+  - `register_mcp_execution_tools(registry, *manager, *policy, *approval_hook)`：注册 `call_tool` / `read_resource` / `get_prompt`
+  - `_compact_intent(value)`：压缩工具调用意图
+  - `_json_result(payload, *is_error)`：统一 JSON 工具输出
 
 ### 3.4 `memory/` - 长上下文虚拟化、会话持久化和恢复。
 

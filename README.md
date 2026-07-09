@@ -12,11 +12,47 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - **配置层**：`config.py` 将项目所有可配置项统一为数据类，通过环境变量驱动，涵盖 API、客户端行为、记忆管理、沙箱、Docker、Skill 和向量检索等维度。
 - **模型交互层**：`client.py` 封装与 DeepSeek API 的通信，包括系统提示词注入、流式响应解析、工具调用的循环执行和结果回传。
 - **工具层**：`tools/` 提供六大核心基础工具（文件读写、内容搜索、通配符匹配、Shell 命令执行）以及记忆相关工具，所有文件操作限定在沙箱工作区内。
+- **Capability Router 层**：`capabilities/` 在每轮模型调用前统一做能力发现，融合本地 Skill 与 MCP Server 推荐，并将推荐信息注入 Runtime Context。
+- **MCP Client 层**：`mcp_client/` 读取真实 MCP Server 配置，按需建立 MCP stdio 连接，发现 tools/resources/prompts metadata，并通过稳定 Discovery/Execution Tool 暴露给模型。
 - **Skill 系统层**：`skills/` 实现开发者 Skill 的发现、注册、向量检索、路由选择和调用执行，是项目的核心扩展机制。详见下方"Skill 管理模块设计"。
 - **记忆管理层**：`memory/` 实现上下文预算控制、检查点快照、会话回滚和可恢复上下文，保证长对话中的状态一致性和 token 高效利用。详见下方"上下文虚拟化管理系统设计"。
 - **命令系统层**：`commands/` 提供 `/resume`、`/delete` 等会话管理命令，支持交互式选择和跨工作目录操作。
 - **终端交互层**：`cli_input.py` 实现带 ANSI 转义序列处理、退格删除、方向键选择补全的交互式输入体验。
 - **基础设施层**：`cache.py` 提供线程安全的文件内容缓存，`workspace_identity.py` 实现工作区指纹识别，`session_switch.py` 协调会话保存与切换。
+
+---
+
+## Capability Router 与 MCP Discovery
+
+Capability Router 是模型调用前的统一能力发现入口。它不替代 Skill Router，而是把现有 Skill Runtime 作为一个检索子模块，同时接入 MCP Server Retriever，最终生成轻量的能力推荐并写入当前轮 Runtime Context。推荐结果不是限制：即使某个 MCP Server 没被推荐，模型仍可通过 `list_servers` 和 `search_servers` 主动探索。
+
+MCP Client 与 Capability Router 解耦。`mcp_client/` 负责 MCP 协议侧的配置加载、连接管理、metadata discovery 和真实协议调用；`capabilities/` 只负责能力检索、排序、合并和 Runtime Context payload。当前实现支持真实 MCP Server 配置读取、真实 stdio 连接、`tools/list`、`resources/list`、`prompts/list`、metadata cache、`tools/call`、`resources/read` 和 `prompts/get`。
+
+MCP 配置采用多层 JSON：
+
+```json
+{
+  "servers": {
+    "github": {
+      "command": "npx",
+      "args": ["-y", "@modelcontextprotocol/server-github"],
+      "env": {"GITHUB_PERSONAL_ACCESS_TOKEN": "..."},
+      "description": "GitHub repository and issue operations",
+      "tags": ["git", "github", "repo"],
+      "aliases": ["gh"],
+      "abbreviations": ["gh"],
+      "synonyms": ["repository", "pull request", "issue"],
+      "keywords": ["github", "代码仓库", "PR", "issue"]
+    }
+  }
+}
+```
+
+配置加载顺序是用户级 `~/.config/myCodingAgent/mcp.json`、项目级 `.mycodingagent/mcp.json`、环境变量 `MYCODINGAGENT_MCP_CONFIG` 指向的文件；后加载的同名 server 覆盖前者。Discovery Tool schema 固定为 `list_servers`、`search_servers`、`list_tools`、`search_tools`、`list_resources`、`search_resources`、`list_prompts`、`search_prompts`，并统一使用 `offset` + `limit` 分页；新增 MCP Server 不会增加新的工具 schema。
+
+第二阶段执行接口固定为 `call_tool`、`read_resource`、`get_prompt`。`read_resource` 与 `get_prompt` 按只读能力直接开放；`call_tool` 无论工具名风险分类如何，都会先经过 approval hook 请求用户确认，用户拒绝时返回 `用户拒绝你的工具调用`。所有工具 schema 都会暴露短 `intent` 字段，模型每次工具调用都应填写该字段；当上下文切换到虚拟化模式时，历史工具输出 metadata 优先使用该 intent，而不是把完整调用参数拼进摘要。
+
+当前实现已用 GitHub MCP server 做过真实 stdio discovery 验证：在临时配置中通过 `npx -y @modelcontextprotocol/server-github` 启动 server，可成功返回 26 个 GitHub tool summary。由于本地环境没有 `GITHUB_PERSONAL_ACCESS_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`，该验证只覆盖 discovery，不覆盖真实 GitHub API 写入调用；真实 MCP execution 路径由测试中的 FastMCP stdio server 覆盖。
 
 ---
 

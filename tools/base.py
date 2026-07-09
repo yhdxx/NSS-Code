@@ -75,6 +75,16 @@ class Tool(ABC):  # 定义用于封装相关状态和行为的类。
     def get_schema(self) -> dict[str, Any]:  # 定义函数，封装可复用逻辑。
         schema = self.params_model.model_json_schema()  # 保存配置值或中间计算结果。
         schema.pop("title", None)  # 执行当前步骤的业务逻辑。
+        properties = schema.setdefault("properties", {})
+        if isinstance(properties, dict) and "intent" not in properties:
+            properties["intent"] = {
+                "type": "string",
+                "description": "Short intent for this tool call; used as compact metadata when context is virtualized.",
+                "maxLength": 160,
+            }
+        required = schema.setdefault("required", [])
+        if isinstance(required, list) and "intent" not in required:
+            required.append("intent")
         return {  # 返回当前函数的处理结果。
             "name": self.name,  # 提供上方表达式需要的文本内容。
             "description": self.description,  # 提供上方表达式需要的文本内容。

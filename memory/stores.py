@@ -112,9 +112,11 @@ class SQLiteMemoryStore:
                     kind TEXT NOT NULL,
                     context_id TEXT NOT NULL,
                     invocation_kind TEXT NOT NULL,
+                    intent TEXT NOT NULL DEFAULT '',
                     args_preview TEXT NOT NULL,
                     args_hash TEXT NOT NULL,
                     short_summary TEXT NOT NULL,
+                    metadata_json TEXT NOT NULL DEFAULT '{}',
                     keywords_json TEXT NOT NULL DEFAULT '[]',
                     related_files_json TEXT NOT NULL DEFAULT '[]',
                     reference_paths_json TEXT NOT NULL DEFAULT '[]',
@@ -250,6 +252,8 @@ class SQLiteMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_root ON sessions(workspace_root)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_fingerprint ON sessions(workspace_fingerprint)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed_at ON sessions(last_accessed_at)")
+            self._ensure_column(conn, "tool_invocation_metadata", "intent", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "tool_invocation_metadata", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
 
     def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
         columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
@@ -372,11 +376,11 @@ class SQLiteMemoryStore:
                     INSERT OR REPLACE INTO tool_invocation_metadata(
                         metadata_id, session_id, turn_id, turn_index, call_index,
                         tool_call_id, tool_name, kind, context_id, invocation_kind,
-                        args_preview, args_hash, short_summary, keywords_json,
+                        intent, args_preview, args_hash, short_summary, metadata_json, keywords_json,
                         related_files_json, reference_paths_json, content_type,
                         content_length, token_count, reproducible, is_error, created_at
                     )
-                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                     """,
                     [
                         (
@@ -390,9 +394,11 @@ class SQLiteMemoryStore:
                             metadata.kind,
                             metadata.context_id,
                             metadata.invocation_kind,
+                            metadata.intent,
                             metadata.args_preview,
                             metadata.args_hash,
                             metadata.short_summary,
+                            json.dumps(metadata.metadata, ensure_ascii=False, default=str),
                             json.dumps(metadata.keywords, ensure_ascii=False),
                             json.dumps(metadata.related_files, ensure_ascii=False),
                             json.dumps(metadata.reference_paths, ensure_ascii=False),
@@ -532,6 +538,8 @@ class SQLiteMemoryStore:
                         metadata.tool_name,
                         metadata.short_summary,
                         metadata.args_preview,
+                        metadata.intent,
+                        json.dumps(metadata.metadata, ensure_ascii=False, default=str),
                         " ".join(metadata.keywords),
                         " ".join(metadata.related_files),
                         " ".join(metadata.reference_paths),
@@ -1130,9 +1138,11 @@ def tool_metadata_from_row(row: sqlite3.Row) -> ToolInvocationMetadata:
         kind=row["kind"],
         context_id=row["context_id"],
         invocation_kind=row["invocation_kind"],
+        intent=row["intent"],
         args_preview=row["args_preview"],
         args_hash=row["args_hash"],
         short_summary=row["short_summary"],
+        metadata=json.loads(row["metadata_json"] or "{}"),
         keywords=json.loads(row["keywords_json"] or "[]"),
         related_files=json.loads(row["related_files_json"] or "[]"),
         reference_paths=json.loads(row["reference_paths_json"] or "[]"),

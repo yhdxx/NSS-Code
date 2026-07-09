@@ -1269,6 +1269,63 @@ def test_context_switches_to_virtualized_when_raw_miss_cost_is_higher(tmp_path):
     assert output_id in rendered[3]["content"]
 
 
+def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"app.py","intent":"读取入口文件"}',
+        output="print('inline')",
+        metadata={"intent": "读取入口文件", "mcp_server": "fake"},
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "inspect app"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {
+                        "name": "ReadFile",
+                        "arguments": '{"file_path":"app.py","intent":"读取入口文件"}',
+                    },
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "print('inline')",
+            "metadata": {
+                "output_id": output_id,
+                "tool_name": "ReadFile",
+                "intent": "读取入口文件",
+                "mcp_server": "fake",
+            },
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+    runtime.save_messages_now(session_id, messages)
+    runtime.force_context_virtualized(session_id)
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=[*messages, {"role": "user", "content": "next"}],
+        tools=[],
+        current_prompt="next",
+        current_turn_start=len(messages),
+    )
+
+    tool_content = rendered[3]["content"]
+    assert "Historical tool output virtualized" in tool_content
+    assert '"intent": "读取入口文件"' in tool_content
+    assert '"mcp_server": "fake"' in tool_content
+
+
 def test_context_switch_prints_mode_transition_notice(tmp_path, capsys):
     compressor = ContextCompressor(context_window=1200)
     runtime = MemoryRuntime(

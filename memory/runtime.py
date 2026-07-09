@@ -379,6 +379,7 @@ class MemoryRuntime:
         tool_name: str,
         arguments: str,
         output: str,
+        metadata: dict[str, Any] | None = None,
     ) -> str:
         reproducible = is_reproducible_tool(tool_name, output)
         context = build_recoverable_context(
@@ -389,6 +390,7 @@ class MemoryRuntime:
             content=output,
             reproducible=reproducible,
             token_count=estimate_tokens(output),
+            metadata=metadata,
         )
         output_id = context.id
         record = ToolOutputRecord(
@@ -728,6 +730,7 @@ class MemoryRuntime:
             kind="current_summary",
             context_id=context_id,
             invocation_kind="revision" if previous else "initial",
+            intent=truncate_one_line(summary, 160),
             args_preview=truncate_one_line(json.dumps({"focus": focus, "reason": reason}, ensure_ascii=False), 500),
             args_hash=stable_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
             short_summary=truncate_one_line(summary, 500),
@@ -1177,6 +1180,7 @@ def historical_tool_content(metadata: ToolInvocationMetadata | None, message: di
             "kind": metadata.kind,
             "invocation_kind": metadata.invocation_kind,
             "tool_call_id": metadata.tool_call_id,
+            "intent": metadata.intent,
             "args_preview": metadata.args_preview,
             "args_hash": metadata.args_hash,
             "reference_paths": metadata.reference_paths[:8],
@@ -1198,6 +1202,7 @@ def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any
         "tool_call_id": metadata.tool_call_id,
         "tool_name": metadata.tool_name,
         "kind": metadata.kind,
+        "intent": metadata.intent,
         "args_preview": metadata.args_preview,
         "args_hash": metadata.args_hash,
         "short_summary": metadata.short_summary,
@@ -1216,6 +1221,8 @@ def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any
         payload["reference_paths"] = metadata.reference_paths[:12]
     if metadata.invocation_kind:
         payload["invocation_kind"] = metadata.invocation_kind
+    if metadata.metadata:
+        payload["metadata"] = metadata.metadata
     return payload
 
 
@@ -1361,6 +1368,12 @@ def build_tool_invocation_metadata(
     metadata_dict = metadata if isinstance(metadata, dict) else {}
     context_id = str(metadata_dict.get("output_id") or metadata_dict.get("context_id") or "")
     kind = "skill" if is_skill_related_tool(tool_name) else "non_skill"
+    intent = extract_tool_intent(tool_name, arguments, metadata_dict)
+    extra_metadata = {
+        key: value
+        for key, value in metadata_dict.items()
+        if key not in {"output_id", "context_id", "tool_name", "intent", "reproducible"}
+    }
     return ToolInvocationMetadata(
         metadata_id=stable_id(session_id, turn_id, tool_call_id, context_id, tool_name),
         session_id=session_id,
@@ -1372,10 +1385,12 @@ def build_tool_invocation_metadata(
         kind=kind,
         context_id="" if kind == "skill" else context_id,
         invocation_kind=skill_invocation_kind(tool_name) if kind == "skill" else "tool_output",
+        intent=intent,
         args_preview=truncate_one_line(arguments, 500),
         args_hash=stable_hash(arguments),
-        short_summary=tool_short_summary(tool_name, arguments, content, context_id),
-        keywords=extract_keywords_from_text(" ".join([tool_name, arguments, content]))[:12],
+        short_summary=tool_short_summary(tool_name, arguments, content, context_id, intent=intent),
+        metadata=extra_metadata,
+        keywords=extract_keywords_from_text(" ".join([tool_name, intent, arguments, content]))[:12],
         related_files=extract_related_files_from_text(" ".join([arguments, content]))[:12],
         reference_paths=extract_reference_paths(arguments, content)[:12] if kind == "skill" else [],
         content_type=infer_prompt_content_type(content),
@@ -1408,6 +1423,28 @@ def truncate_one_line(text: str, max_chars: int) -> str:
     return one_line[: max(0, max_chars - 1)] + "…"
 
 
+def parse_arguments_object(arguments: str) -> dict[str, Any]:
+    try:
+        parsed = json.loads(arguments) if arguments else {}
+    except json.JSONDecodeError:
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def extract_tool_intent(tool_name: str, arguments: str, metadata: dict[str, Any]) -> str:
+    explicit = metadata.get("intent")
+    if explicit:
+        return truncate_one_line(str(explicit), 160)
+    parsed = parse_arguments_object(arguments)
+    if parsed.get("intent"):
+        return truncate_one_line(str(parsed["intent"]), 160)
+    for key in ("instruction", "query", "command", "file_path", "path", "server", "tool", "uri", "prompt"):
+        value = parsed.get(key)
+        if value:
+            return truncate_one_line(f"{tool_name}: {value}", 160)
+    return truncate_one_line(f"Call {tool_name}", 160)
+
+
 def extract_keywords_from_text(text: str) -> list[str]:
     words = re.findall(r"[A-Za-z_][A-Za-z0-9_]{2,}", text[:4000])
     stop = {"true", "false", "null", "none", "content", "output", "error", "tool"}
@@ -1437,18 +1474,16 @@ def dedupe_keep_order(values: list[str]) -> list[str]:
     return result
 
 
-def tool_short_summary(tool_name: str, arguments: str, content: str, context_id: str) -> str:
+def tool_short_summary(tool_name: str, arguments: str, content: str, context_id: str, *, intent: str = "") -> str:
     target = ""
-    try:
-        parsed = json.loads(arguments) if arguments else {}
-    except json.JSONDecodeError:
-        parsed = {}
-    if isinstance(parsed, dict):
-        for key in ("file_path", "path", "command", "query", "skill_name", "reference_path"):
-            if parsed.get(key):
-                target = str(parsed[key])
-                break
+    parsed = parse_arguments_object(arguments)
+    for key in ("file_path", "path", "command", "query", "skill_name", "reference_path", "server", "tool", "uri", "prompt"):
+        if parsed.get(key):
+            target = str(parsed[key])
+            break
     parts = [f"{tool_name} output"]
+    if intent:
+        parts.append(f"intent={intent}")
     if target:
         parts.append(f"for {target}")
     if context_id:

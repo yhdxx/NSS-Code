@@ -37,6 +37,7 @@ class RuntimeContext:
     tool_outputs_virtualized: bool = True
     workspace_changes: WorkspaceChanges = field(default_factory=WorkspaceChanges)
     context_budget: ContextBudgetState | None = None
+    capabilities: dict[str, Any] | None = None
     task_snapshot: str | None = None
     recovery_hint: str | None = RECOVERY_HINT
     metadata: RuntimeContextMetadata = field(default_factory=RuntimeContextMetadata)
@@ -65,11 +66,13 @@ class RuntimeContextBuilder:
         *,
         workspace_tracker: Any | None = None,
         context_budget: ContextBudgetState | None = None,
+        capabilities: Any | None = None,
         task_snapshot: str | None = None,
         recovery_hint: str | None = RECOVERY_HINT,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_budget = context_budget
+        self.capabilities = capabilities
         self.task_snapshot = task_snapshot
         self.recovery_hint = recovery_hint
 
@@ -77,6 +80,7 @@ class RuntimeContextBuilder:
         return RuntimeContext(
             workspace_changes=self._workspace_changes(),
             context_budget=self.context_budget,
+            capabilities=self._capability_payload(),
             task_snapshot=self.task_snapshot or None,
             recovery_hint=self.recovery_hint,
         )
@@ -89,6 +93,16 @@ class RuntimeContextBuilder:
             return WorkspaceChanges()
         changed_paths, omitted = consume()
         return WorkspaceChanges(paths=tuple(str(path) for path in changed_paths), omitted=int(omitted or 0))
+
+    def _capability_payload(self) -> dict[str, Any] | None:
+        if self.capabilities is None:
+            return None
+        to_runtime_payload = getattr(self.capabilities, "to_runtime_payload", None)
+        if callable(to_runtime_payload):
+            payload = to_runtime_payload()
+        else:
+            payload = self.capabilities
+        return payload if isinstance(payload, dict) else None
 
 
 class PromptRenderer:

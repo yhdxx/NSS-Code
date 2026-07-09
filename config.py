@@ -98,6 +98,14 @@ def _default_memory_db_path() -> Path:
     return Path.home() / ".local" / "state" / "myCodingAgent" / "sessions.sqlite3"
 
 
+def _default_mcp_user_config_path() -> Path:
+    return Path.home() / ".config" / "myCodingAgent" / "mcp.json"
+
+
+def _default_mcp_project_config_path() -> Path:
+    return Path(os.getenv("MYCODINGAGENT_SANDBOX_ROOT", os.getcwd())).expanduser() / ".mycodingagent" / "mcp.json"
+
+
 def _dedupe_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
     seen: set[str] = set()
     result: list[Path] = []
@@ -359,6 +367,20 @@ class MilvusConfig:
 
 
 @dataclass(frozen=True)
+class MCPConfig:
+    enabled: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_MCP_ENABLED", True))
+    project_config_path: Path = field(
+        default_factory=lambda: _env_path("MYCODINGAGENT_MCP_PROJECT_CONFIG", _default_mcp_project_config_path())
+        or _default_mcp_project_config_path()
+    )
+    user_config_path: Path = field(
+        default_factory=lambda: _env_path("MYCODINGAGENT_MCP_USER_CONFIG", _default_mcp_user_config_path())
+        or _default_mcp_user_config_path()
+    )
+    env_config_var: str = "MYCODINGAGENT_MCP_CONFIG"
+
+
+@dataclass(frozen=True)
 class AppConfig:
     api: ApiConfig = field(default_factory=ApiConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
@@ -368,6 +390,7 @@ class AppConfig:
     skills: SkillConfig = field(default_factory=SkillConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     milvus: MilvusConfig = field(default_factory=MilvusConfig)
+    mcp: MCPConfig = field(default_factory=MCPConfig)
 
 
 CONFIG = AppConfig()
