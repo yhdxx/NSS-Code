@@ -9,6 +9,7 @@ import re
 import sys
 import threading
 from dataclasses import asdict, dataclass
+from enum import Enum
 from time import time
 from typing import Any, Callable
 from uuid import uuid4
@@ -43,6 +44,21 @@ class MemoryWriteTask:
     callback: Callable[[], None]
 
 
+class ContextMode(str, Enum):
+    RAW = "raw"
+    VIRTUALIZED = "virtualized"
+
+
+@dataclass(frozen=True)
+class ContextRenderDecision:
+    mode: ContextMode
+    raw_tokens: int
+    raw_uncached_tokens: int
+    virtualized_tokens: int
+    usage_ratio: float
+    switched: bool = False
+
+
 class MemoryRuntime:
     def __init__(
         self,
@@ -53,7 +69,11 @@ class MemoryRuntime:
         workspace_root: str | None = None,
     ) -> None:
         self.model = model or CONFIG.api.model
-        context_window = CONFIG.memory.context_window_for(self.model)
+        context_window = (
+            compressor.context_window
+            if compressor is not None
+            else CONFIG.memory.context_window_for(self.model)
+        )
         self.store = store or SQLiteMemoryStore(CONFIG.memory.db_path)
         self.compressor = compressor or ContextCompressor(context_window=context_window)
         self.budget_manager = PromptBudgetManager(
@@ -77,6 +97,8 @@ class MemoryRuntime:
         self.latest_snapshot_id: str = ""
         self._tool_output_refs: dict[str, ToolOutputRef] = {}
         self._context_metadata_refs: dict[str, RecoverableContextObject] = {}
+        self._context_modes: dict[str, ContextMode] = {}
+        self._last_raw_rendered_messages: dict[str, list[dict[str, Any]]] = {}
         self._message_versions: dict[str, int] = {}
         self._message_write_lock = threading.Lock()
         self._write_queue: asyncio.Queue | None = None
@@ -168,6 +190,20 @@ class MemoryRuntime:
         self.current_session_id = None
         self._current_turn_summaries.clear()
         self._current_turn_summary_calls = 0
+
+    def context_mode(self, session_id: str | None = None) -> ContextMode:
+        key = session_id or self.current_session_id or ""
+        if not key:
+            return ContextMode.RAW
+        return self._context_modes.get(key, ContextMode.RAW)
+
+    def is_context_virtualized(self, session_id: str | None = None) -> bool:
+        return self.context_mode(session_id) == ContextMode.VIRTUALIZED
+
+    def force_context_virtualized(self, session_id: str | None = None) -> None:
+        key = session_id or self.current_session_id or ""
+        if key:
+            self._context_modes[key] = ContextMode.VIRTUALIZED
 
     def save_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None:
         snapshot = copy.deepcopy(messages)
@@ -308,6 +344,9 @@ class MemoryRuntime:
         deleted = self.store.delete_session(session_id)
         if deleted and self.current_session_id == session_id:
             self.current_session_id = None
+        if deleted:
+            self._context_modes.pop(session_id, None)
+            self._last_raw_rendered_messages.pop(session_id, None)
         return deleted
 
     def delete_sessions(self, session_ids: list[str]) -> int:
@@ -441,10 +480,30 @@ class MemoryRuntime:
         tools: list[dict[str, Any]] | None = None,
         current_prompt: str = "",
     ) -> str:
+        """Return inline output or an existing-tool recovery preview.
+
+        This is deliberately an extension of the existing tool-output path:
+        small outputs remain unchanged, large outputs keep a preview and point
+        the model at already registered recovery tools.
+        """
         threshold = CONFIG.memory.context_preview_threshold_tokens
         snapshot = self.prompt_budget_snapshot(messages, tools=tools, current_prompt=current_prompt)
         output_tokens = estimate_tokens(output)
-        if output_tokens <= threshold and output_tokens <= snapshot.usable_tokens:
+        metadata = self.get_context_metadata(output_id)
+        if metadata is not None:
+            self.working_context.add(metadata)
+        if (
+            not self.is_context_virtualized()
+            and output_tokens <= threshold
+            and output_tokens <= snapshot.usable_tokens
+        ):
+            return output
+        if self.is_context_virtualized() and output_tokens <= threshold and output_tokens <= snapshot.usable_tokens:
+            # In virtualized mode keep tiny outputs inline; they are cheaper than a recovery reference.
+            return output
+        if output_tokens > snapshot.usable_tokens and snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio:
+            self.force_context_virtualized()
+        if not self.is_context_virtualized() and output_tokens <= threshold:
             metadata = self.get_context_metadata(output_id)
             if metadata is not None:
                 self.working_context.add(metadata)
@@ -470,7 +529,8 @@ class MemoryRuntime:
                 f"original_length: {ref.original_length}\n"
                 f"reproducible: {str(ref.reproducible).lower()}\n"
                 f"preview:\n{preview or ref.preview}\n"
-                "Use RecoverContext with context_id for full or partial recovery."
+                "Use existing tools RecoverContext(context_id, offset, limit) or "
+                "GetStoredToolOutput(output_id, offset, limit) for full or partial recovery."
             )
         budget_text = ("\n" + snapshot.to_prompt_text()) if snapshot is not None else ""
         return (
@@ -488,7 +548,8 @@ class MemoryRuntime:
             f"content_length: {metadata.content_length}"
             f"{budget_text}\n"
             f"preview:\n{preview}\n"
-            "Use RecoverContext with context_id, offset, and limit for full or partial recovery."
+            "Use existing tools RecoverContext(context_id, offset, limit) or "
+            "GetStoredToolOutput(output_id, offset, limit) for full or partial recovery."
         )
 
     def prepare_messages_for_model(
@@ -523,12 +584,13 @@ class MemoryRuntime:
         summary_text: str = "",
         persist_snapshot: bool = True,
     ) -> list[dict[str, Any]]:
+        raw_rendered = sanitize_messages_for_model(messages)
         historical_messages, current_messages = split_historical_and_current(messages, current_turn_start)
         historical_turns = self.store.load_historical_turns(session_id) or build_historical_turns(
             session_id,
             historical_messages,
         )
-        rendered = render_virtualized_messages(
+        virtualized_rendered = render_virtualized_messages(
             system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
             historical_messages=historical_messages,
             session_id=session_id,
@@ -536,9 +598,22 @@ class MemoryRuntime:
             current_messages=current_messages,
             current_summaries=self._current_turn_summaries,
         )
+        decision = self._select_context_render(
+            session_id=session_id,
+            raw_messages=raw_rendered,
+            virtualized_messages=virtualized_rendered,
+            tools=tools,
+            current_prompt=current_prompt,
+        )
+        rendered = virtualized_rendered if decision.mode == ContextMode.VIRTUALIZED else raw_rendered
         snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
-        if CONFIG.memory.output_context_compression and snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio:
-            print(format_virtualization_report(snapshot), flush=True)
+        if (
+            CONFIG.memory.output_context_compression
+            and decision.mode == ContextMode.VIRTUALIZED
+            and snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio
+        ):
+            print(format_virtualization_report(snapshot, decision=decision), flush=True)
+        self._last_raw_rendered_messages[session_id] = copy.deepcopy(raw_rendered)
         if not persist_snapshot:
             return sanitize_messages_for_model(rendered)
         snapshot_id = uuid4().hex
@@ -554,6 +629,57 @@ class MemoryRuntime:
             ),
         )
         return sanitize_messages_for_model(rendered)
+
+    def _select_context_render(
+        self,
+        *,
+        session_id: str,
+        raw_messages: list[dict[str, Any]],
+        virtualized_messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]],
+        current_prompt: str,
+    ) -> ContextRenderDecision:
+        raw_snapshot = self.prompt_budget_snapshot(raw_messages, tools=tools, current_prompt=current_prompt)
+        virtualized_snapshot = self.prompt_budget_snapshot(
+            virtualized_messages,
+            tools=tools,
+            current_prompt=current_prompt,
+        )
+        raw_uncached_tokens = estimate_raw_uncached_tokens(
+            self._last_raw_rendered_messages.get(session_id),
+            raw_messages,
+        )
+        mode = self.context_mode(session_id)
+        switched = False
+        if mode == ContextMode.RAW and self._should_switch_to_virtualized(
+            raw_snapshot=raw_snapshot,
+            raw_uncached_tokens=raw_uncached_tokens,
+            virtualized_tokens=virtualized_snapshot.current_tokens,
+        ):
+            mode = ContextMode.VIRTUALIZED
+            switched = True
+            self._context_modes[session_id] = mode
+        return ContextRenderDecision(
+            mode=mode,
+            raw_tokens=raw_snapshot.current_tokens,
+            raw_uncached_tokens=raw_uncached_tokens,
+            virtualized_tokens=virtualized_snapshot.current_tokens,
+            usage_ratio=raw_snapshot.usage_ratio,
+            switched=switched,
+        )
+
+    def _should_switch_to_virtualized(
+        self,
+        *,
+        raw_snapshot: PromptBudgetSnapshot,
+        raw_uncached_tokens: int,
+        virtualized_tokens: int,
+    ) -> bool:
+        if raw_snapshot.current_tokens >= raw_snapshot.context_window:
+            return True
+        if raw_snapshot.usage_ratio < CONFIG.memory.budget_soft_ratio:
+            return False
+        return raw_uncached_tokens > int(virtualized_tokens * 1.15)
 
     def summarize_current_turn_message(
         self,
@@ -885,15 +1011,46 @@ def format_compression_report(result: CompressionResult) -> str:
     )
 
 
-def format_virtualization_report(snapshot: PromptBudgetSnapshot) -> str:
-    return (
-        "[CONTEXT VIRTUALIZATION]\n"
-        f"  current_context_tokens: {snapshot.current_tokens}\n"
-        f"  context_window: {snapshot.context_window}\n"
-        f"  window_usage: {snapshot.usage_ratio:.2%}\n"
-        f"  stage: {snapshot.stage.value}\n"
-        f"  usable_tokens: {snapshot.usable_tokens}"
-    )
+def format_virtualization_report(
+    snapshot: PromptBudgetSnapshot,
+    *,
+    decision: ContextRenderDecision | None = None,
+) -> str:
+    lines = [
+        "[CONTEXT VIRTUALIZATION]",
+        f"  current_context_tokens: {snapshot.current_tokens}",
+        f"  context_window: {snapshot.context_window}",
+        f"  window_usage: {snapshot.usage_ratio:.2%}",
+        f"  stage: {snapshot.stage.value}",
+        f"  usable_tokens: {snapshot.usable_tokens}",
+    ]
+    if decision is not None:
+        lines.extend(
+            [
+                f"  mode: {decision.mode.value}",
+                f"  raw_context_tokens: {decision.raw_tokens}",
+                f"  raw_uncached_tokens: {decision.raw_uncached_tokens}",
+                f"  virtualized_context_tokens: {decision.virtualized_tokens}",
+                f"  switched: {str(decision.switched).lower()}",
+            ]
+        )
+    return "\n".join(lines)
+
+
+def estimate_raw_uncached_tokens(
+    previous_messages: list[dict[str, Any]] | None,
+    current_messages: list[dict[str, Any]],
+) -> int:
+    if not current_messages:
+        return 0
+    if not previous_messages:
+        return estimate_tokens(current_messages)
+    first_changed = min(len(previous_messages), len(current_messages))
+    for index, (previous, current) in enumerate(zip(previous_messages, current_messages)):
+        if previous != current:
+            first_changed = index
+            break
+    return estimate_tokens(current_messages[first_changed:])
 
 
 def split_historical_and_current(

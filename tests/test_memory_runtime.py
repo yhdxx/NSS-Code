@@ -30,7 +30,7 @@ from memory import ConversationSnapshot, MemoryRuntime, SQLiteMemoryStore, Snaps
 from memory.budget import BudgetStage, PromptBudgetSnapshot
 from memory.checkpoint import SNAPSHOT_FIELD_ORDER, TurnState, format_snapshot_prompt
 from memory.compressor import ContextCompressor, is_reproducible_tool
-from memory.runtime import format_compression_report
+from memory.runtime import ContextMode, estimate_raw_uncached_tokens, format_compression_report
 from memory.stores import session_preview
 from memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
 from session_switch import has_conversation_content, save_current_session_if_needed
@@ -998,6 +998,39 @@ def test_large_tool_output_becomes_recoverable_preview(tmp_path):
     assert f"context_id: {output_id}" in prompt_content
     assert "PROMPT BUDGET" in prompt_content
     assert len(prompt_content) < len(output)
+    assert runtime.context_mode(session_id) == ContextMode.RAW
+
+
+def test_raw_mode_large_tool_output_uses_preview_without_virtualizing_session(tmp_path):
+    compressor = ContextCompressor(context_window=20_000)
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=compressor,
+    )
+    session_id = runtime.start_session("test")
+    output = "abcdefg" * 20000
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="call_1",
+        tool_name="ReadFile",
+        arguments='{"file_path":"large.py"}',
+        output=output,
+    )
+
+    prompt_content = runtime.tool_output_prompt_content(
+        output_id=output_id,
+        output=output,
+        messages=[{"role": "user", "content": "inspect"}],
+        tools=[],
+        current_prompt="inspect",
+    )
+
+    assert runtime.context_mode(session_id) == ContextMode.RAW
+    assert "[Recoverable context stored]" in prompt_content
+    assert f"context_id: {output_id}" in prompt_content
+    assert "RecoverContext(context_id, offset, limit)" in prompt_content
+    assert "GetStoredToolOutput(output_id, offset, limit)" in prompt_content
+    assert len(prompt_content) < len(output)
 
 
 def test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_path):
@@ -1091,6 +1124,7 @@ def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_
         {"role": "assistant", "content": "done"},
     ]
     runtime.save_messages_now(session_id, messages)
+    runtime.force_context_virtualized(session_id)
 
     rendered = runtime.prepare_messages_for_model(
         session_id=session_id,
@@ -1113,6 +1147,166 @@ def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_
     assert "Skill output is omitted after the current turn" in rendered[3]["content"]
     assert "Historical tool output virtualized" in rendered[4]["content"]
     assert output_id in rendered[4]["content"]
+
+
+def test_short_session_keeps_raw_historical_tool_output(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"app.py"}',
+        output="print('inline')",
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "inspect app"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"app.py"}'},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "print('inline')",
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="next",
+        current_turn_start=len(messages) - 1,
+    )
+
+    assert runtime.context_mode(session_id) == ContextMode.RAW
+    assert rendered[3]["content"] == "print('inline')"
+    assert "Historical tool output virtualized" not in "\n".join(str(message.get("content", "")) for message in rendered)
+    assert "metadata" not in rendered[3]
+
+
+def test_context_switches_to_virtualized_when_raw_miss_cost_is_higher(tmp_path):
+    compressor = ContextCompressor(context_window=1200)
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=compressor,
+    )
+    session_id = runtime.start_session("test")
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"large.py"}',
+        output="z" * 6000,
+    )
+    stable_prefix = [{"role": "system", "content": "system"}]
+    previous = [
+        *stable_prefix,
+        {"role": "user", "content": "inspect large"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"large.py"}'},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "z" * 6000,
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+    current = [
+        *stable_prefix,
+        {"role": "user", "content": "inspect large changed"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"large.py"}'},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "z" * 6000,
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+        {"role": "assistant", "content": "done"},
+        {"role": "user", "content": "next"},
+    ]
+    runtime._last_raw_rendered_messages[session_id] = previous
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=current,
+        tools=[],
+        current_prompt="next",
+        current_turn_start=len(current) - 1,
+    )
+
+    assert runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
+    assert "Historical tool output virtualized" in rendered[3]["content"]
+    assert output_id in rendered[3]["content"]
+
+
+def test_context_virtualized_mode_is_one_way(tmp_path):
+    compressor = ContextCompressor(context_window=900)
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=compressor,
+    )
+    session_id = runtime.start_session("test")
+    runtime.force_context_virtualized(session_id)
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "small"},
+        ],
+        tools=[],
+        current_prompt="small",
+        current_turn_start=1,
+    )
+
+    assert runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
+    assert rendered[0]["role"] == "system"
+
+
+def test_raw_uncached_tokens_start_at_first_changed_message():
+    previous = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "same"},
+        {"role": "assistant", "content": "old"},
+    ]
+    current = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "same"},
+        {"role": "assistant", "content": "new"},
+        {"role": "user", "content": "tail"},
+    ]
+
+    assert estimate_raw_uncached_tokens(previous, current) == estimate_raw_uncached_tokens(None, current[2:])
 
 
 def test_summary_stage_keeps_recent_context(tmp_path):

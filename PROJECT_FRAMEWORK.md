@@ -106,8 +106,8 @@ myCodingAgent
   - `hard_wrap_ansi(text, columns)` L348
   - `character_width(char)` L376
 
-#### `client.py` (990 行)
-- 职责：模型交互层：封装 OpenAI 兼容 Chat Completions、流式响应、工具调用循环、工具结果回填、上下文压缩接入、RuntimeContext 当前轮渲染、PromptDebug 与 token 汇总输出。
+#### `client.py` (992 行)
+- 职责：模型交互层：封装 OpenAI 兼容 Chat Completions、流式响应、工具调用循环、工具结果回填、双阶段上下文接入、RuntimeContext 当前轮渲染、PromptDebug 与 token 汇总输出。
 - 类：
   - `class PendingToolCall` L44
   - `class PromptDebugSnapshot` L51
@@ -139,15 +139,16 @@ myCodingAgent
     - `save_session_state(sync)` L644：局部函数，保存原始会话消息，不持久化 RuntimeContext 渲染包装
     - `end_skill_turn()` L657：局部函数，结束本轮 Skill 缓存事务
     - `print_turn_token_summary()` L665：局部函数，根据 ROUND_TOKEN / CONVERSATION_TOKEN 控制终端 token 汇总输出
-  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L878
-  - `async summarize_engineering_state(client, model, messages)` L894
-  - `truncate_tool_output(output)` L930
-  - `build_turn_temporary_system_messages(workspace_tracker)` L937：兼容旧接口，返回空列表
-  - `with_workspace_change_notice(messages, workspace_tracker)` L941：兼容旧接口，不再插入 system
-  - `with_turn_temporary_system_messages(messages, temporary_system_messages)` L945：兼容旧接口
-  - `workspace_change_notice_content(workspace_tracker)` L955：兼容旧接口，返回空字符串
-  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L959
-  - `async main()` L971
+    - 工具输出写回策略 L841：非 Skill 工具输出统一走 `MemoryRuntime.tool_output_prompt_content()`；RAW 模式小输出完整保留，大输出转为预览并提示现有恢复工具
+  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L880
+  - `async summarize_engineering_state(client, model, messages)` L896
+  - `truncate_tool_output(output)` L932
+  - `build_turn_temporary_system_messages(workspace_tracker)` L939：兼容旧接口，返回空列表
+  - `with_workspace_change_notice(messages, workspace_tracker)` L943：兼容旧接口，不再插入 system
+  - `with_turn_temporary_system_messages(messages, temporary_system_messages)` L947：兼容旧接口
+  - `workspace_change_notice_content(workspace_tracker)` L957：兼容旧接口，返回空字符串
+  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L961
+  - `async main()` L973
 
 #### `runtime_context.py` (156 行)
 - 职责：Runtime Context 数据模型与当前轮 Prompt 渲染层；将运行态信息包装到当前轮 user message 的非持久化模型视图中。
@@ -534,94 +535,102 @@ myCodingAgent
   - `class SessionState` L182：包含 `token_usage` 会话累计统计
   - `class SessionListItem` L197
 
-#### `memory/runtime.py` (1360 行)
+#### `memory/runtime.py` (1504 行)
 - 类：
-  - `class MemoryWriteTask` L41
-  - `class MemoryRuntime` L46
-    - `__init__(self, *store, *compressor, *model, *workspace_root)` L47
-    - `start_async_writer(self)` L91
-    - `async _run_writer(self)` L101
-    - `async drain(self)` L114
-    - `async close(self)` L118
-    - `_enqueue_write(self, description, callback)` L131
-    - `_record_writer_error(self, description, exc)` L141
-    - `start_session(self, model)` L145
-    - `get_current_session_id(self)` L164
-    - `clear_current_session_id(self)` L167
-    - `save_messages(self, session_id, messages)` L172
-    - `save_messages_now(self, session_id, messages)` L181
-    - `_next_message_version(self, session_id)` L196
-    - `_save_messages_if_current(self, session_id, messages, historical_turns, version)` L201
-    - `load_session(self, session_id)` L214
-    - `record_token_usage(self, *session_id, *prompt_tokens, *prompt_cache_hit_tokens, *prompt_cache_miss_tokens, *completion_tokens, *total_tokens, *model, *prompt_hash, *tools_hash, *metadata)` L221
-    - `load_token_usage_summary(self, session_id)` L261
-    - `fork_session(self, source_session_id, *model, *messages)` L264
-    - `touch_session(self, session_id)` L304
-    - `delete_session(self, session_id)` L307
-    - `delete_sessions(self, session_ids)` L313
-    - `cleanup_expired_sessions(self)` L320
-    - `list_sessions(self, *limit, *include_all)` L326
-    - `list_migrated_workspace_sessions(self, *limit)` L331
-    - `save_tool_output(self, *session_id, *tool_call_id, *tool_name, *arguments, *output)` L335
-    - `get_tool_output(self, output_id)` L383
-    - `get_context_metadata(self, context_id)` L386
-    - `load_context(self, context_id)` L389
-    - `load_partial_context(self, context_id, *offset, *limit)` L392
-    - `search_context_metadata(self, session_id, query, *limit)` L395
-    - `prompt_budget_snapshot(self, messages, *tools, *current_prompt, *extra_tokens)` L420
-    - `tool_output_prompt_content(self, *output_id, *output, *messages, *tools, *current_prompt)` L435
-    - `context_reference_text(self, context_id, *preview, *snapshot)` L454
-  - `prepare_messages_for_model(self, *session_id, *messages, *tools, *current_prompt, *summary_tex...)` L494
-  - `render_messages_for_model(self, *session_id, *messages, *tools, *current_prompt, *current_tur...)` L515：只返回历史/当前轮净化消息，不再注入动态 system
-    - `summarize_current_turn_message(self, *message_id, *summary, *reason, *focus, *context_id)` L562
-    - `save_lrfu_snapshot(self, session_id, skill_runtime)` L620
-    - `save_file_state_snapshot(self, session_id, file_state_cache)` L632
-    - `async on_turn_completed(self, *messages, *skill_runtime, *file_state_cache, *workspace_trac...)` L644
-    - `async _perform_rollover(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L713
-    - `create_checkpoint(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L748
-    - `rollover_to_new_session(self, *session_id, *snapshot, *system_prompt_source)` L765
-    - `restore_historical_session_snapshot(self, session_id)` L778
-    - `async await_pending_rollover(self)` L781
-    - `_checkpoint_runtime_state(self, *skill_runtime, *file_state_cache, *workspace_tracker)` L791
-    - `load_lrfu_snapshot(self, session_id, skill_runtime)` L816
-    - `load_file_state_snapshot(self, session_id, file_state_cache, workspace_tracker)` L827
-    - `save_short_term(self, content, metadata)` L846
-    - `save_long_term(self, content, metadata)` L859
-    - `recall_short_term(self, query)` L862
-    - `recall_long_term(self, query)` L865
-    - `compress_context(self, messages)` L868
-    - `should_compress_context(self, messages)` L871
+  - `class MemoryWriteTask` L42
+  - `class ContextMode` L47：上下文渲染模式，`RAW` 为短会话默认模式，`VIRTUALIZED` 为长会话虚拟化模式
+  - `class ContextRenderDecision` L53：记录本轮 raw/virtualized token 成本、raw 未命中成本和是否发生切换
+  - `class MemoryRuntime` L62
+    - `__init__(self, *store, *compressor, *model, *workspace_root)` L63
+    - `start_async_writer(self)` L113
+    - `async _run_writer(self)` L123
+    - `async drain(self)` L136
+    - `async close(self)` L140
+    - `_enqueue_write(self, description, callback)` L153
+    - `_record_writer_error(self, description, exc)` L163
+    - `start_session(self, model)` L167
+    - `get_current_session_id(self)` L186
+    - `clear_current_session_id(self)` L189
+    - `context_mode(self, session_id)` L194：查询当前会话 RAW / VIRTUALIZED 模式
+    - `is_context_virtualized(self, session_id)` L200：供 client 决定是否包装当前工具输出
+    - `force_context_virtualized(self, session_id)` L203：单向切换到虚拟化模式
+    - `save_messages(self, session_id, messages)` L208
+    - `save_messages_now(self, session_id, messages)` L217
+    - `_next_message_version(self, session_id)` L232
+    - `_save_messages_if_current(self, session_id, messages, historical_turns, version)` L237
+    - `load_session(self, session_id)` L250
+    - `record_token_usage(self, *session_id, *prompt_tokens, *prompt_cache_hit_tokens, *prompt_cache_miss_tokens, *completion_tokens, *total_tokens, *model, *prompt_hash, *tools_hash, *metadata)` L257
+    - `load_token_usage_summary(self, session_id)` L297
+    - `fork_session(self, source_session_id, *model, *messages)` L300
+    - `touch_session(self, session_id)` L340
+    - `delete_session(self, session_id)` L343
+    - `delete_sessions(self, session_ids)` L352
+    - `cleanup_expired_sessions(self)` L359
+    - `list_sessions(self, *limit, *include_all)` L365
+    - `list_migrated_workspace_sessions(self, *limit)` L370
+    - `save_tool_output(self, *session_id, *tool_call_id, *tool_name, *arguments, *output)` L374
+    - `get_tool_output(self, output_id)` L422
+    - `get_context_metadata(self, context_id)` L425
+    - `load_context(self, context_id)` L428
+    - `load_partial_context(self, context_id, *offset, *limit)` L431
+    - `search_context_metadata(self, session_id, query, *limit)` L434
+    - `prompt_budget_snapshot(self, messages, *tools, *current_prompt, *extra_tokens)` L459
+    - `tool_output_prompt_content(self, *output_id, *output, *messages, *tools, *current_prompt)` L474
+    - `context_reference_text(self, context_id, *preview, *snapshot)` L509
+    - `prepare_messages_for_model(self, *session_id, *messages, *tools, *current_prompt, *summary_tex...)` L549
+    - `render_messages_for_model(self, *session_id, *messages, *tools, *current_prompt, *current_tur...)` L570：同时派生 RAW 与 VIRTUALIZED 视图，按成本决策返回其一
+    - `_select_context_render(self, *session_id, *raw_messages, *virtualized_messages, *tools, *current_prompt)` L627
+    - `_should_switch_to_virtualized(self, *raw_snapshot, *raw_uncached_tokens, *virtualized_tokens)` L665
+    - `summarize_current_turn_message(self, *message_id, *summary, *reason, *focus, *context_id)` L678
+    - `save_lrfu_snapshot(self, session_id, skill_runtime)` L736
+    - `save_file_state_snapshot(self, session_id, file_state_cache)` L748
+    - `async on_turn_completed(self, *messages, *skill_runtime, *file_state_cache, *workspace_trac...)` L760
+    - `async _perform_rollover(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L829
+    - `create_checkpoint(self, *session_id, *messages, *runtime_state, *trigger_reason, *usa...)` L864
+    - `rollover_to_new_session(self, *session_id, *snapshot, *system_prompt_source)` L881
+    - `restore_historical_session_snapshot(self, session_id)` L894
+    - `async await_pending_rollover(self)` L897
+    - `_checkpoint_runtime_state(self, *skill_runtime, *file_state_cache, *workspace_tracker)` L907
+    - `load_lrfu_snapshot(self, session_id, skill_runtime)` L932
+    - `load_file_state_snapshot(self, session_id, file_state_cache, workspace_tracker)` L943
+    - `save_short_term(self, content, metadata)` L962
+    - `save_long_term(self, content, metadata)` L975
+    - `recall_short_term(self, query)` L978
+    - `recall_long_term(self, query)` L981
+    - `compress_context(self, messages)` L984
+    - `should_compress_context(self, messages)` L987
 - 模块函数：
-  - `format_compression_report(result)` L875
-  - `format_virtualization_report(snapshot)` L892
-  - `split_historical_and_current(messages, current_turn_start)` L903
-  - `insert_budget_notice(messages, notice)` L911：旧兼容函数，主路径不再使用
-  - `format_budget_notice(snapshot)` L918：旧兼容格式化函数，主路径改为 `ContextBudgetState`
-  - `render_virtualized_messages(*system_messages, *historical_messages, *session_id, *historical_tu...)` L938：不再插入 `CURRENT TASK STATE SNAPSHOT` system message
-  - `render_historical_topology(session_id, messages, turns)` L961
-  - `render_historical_assistant_message(message)` L989
-  - `render_historical_tool_message(message, metadata)` L998
-  - `historical_tool_content(metadata, message)` L1011
-  - `tool_metadata_prompt_dict(metadata)` L1037
-  - `apply_current_summaries(messages, summaries)` L1066
-  - `sanitize_messages_for_model(messages)` L1100
-  - `build_historical_turns(session_id, messages)` L1108
-  - `build_tool_invocation_metadata(*session_id, *turn_id, *turn_index, *call_index, *tool_call_id, *to...)` L1190
-  - `message_content_text(message)` L1233
-  - `stable_hash(text)` L1240
-  - `stable_id()` L1244
-  - `truncate_one_line(text, max_chars)` L1248
-  - `extract_keywords_from_text(text)` L1255
-  - `extract_related_files_from_text(text)` L1261
-  - `extract_reference_paths(arguments, content)` L1267
-  - `dedupe_keep_order(values)` L1272
-  - `tool_short_summary(tool_name, arguments, content, context_id)` L1284
-  - `skill_invocation_kind(tool_name)` L1307
-  - `infer_prompt_content_type(content)` L1319
-  - `is_error_text(text)` L1332
-  - `file_state_paths(snapshot)` L1336
-  - `has_pending_tool_call(messages)` L1345
-  - `snapshot_dict(value)` L1352
+  - `format_compression_report(result)` L991
+  - `format_virtualization_report(snapshot, *decision)` L1008
+  - `estimate_raw_uncached_tokens(previous_messages, current_messages)` L1034：从首个变化 message 到尾部估算 prefix cache 未命中成本
+  - `split_historical_and_current(messages, current_turn_start)` L1050
+  - `insert_budget_notice(messages, notice)` L1062：旧兼容函数，主路径不再使用
+  - `format_budget_notice(snapshot)` L1069：旧兼容格式化函数，主路径改为 `ContextBudgetState`
+  - `render_virtualized_messages(*system_messages, *historical_messages, *session_id, *historical_tu...)` L1089：虚拟化历史工具输出，保留当前轮可见内容
+  - `render_historical_topology(session_id, messages, turns)` L1105
+  - `render_historical_assistant_message(message)` L1133
+  - `render_historical_tool_message(message, metadata)` L1142
+  - `historical_tool_content(metadata, message)` L1155
+  - `tool_metadata_prompt_dict(metadata)` L1181
+  - `apply_current_summaries(messages, summaries)` L1210
+  - `sanitize_messages_for_model(messages)` L1244
+  - `build_historical_turns(session_id, messages)` L1252
+  - `build_tool_invocation_metadata(*session_id, *turn_id, *turn_index, *call_index, *tool_call_id, *to...)` L1334
+  - `message_content_text(message)` L1377
+  - `stable_hash(text)` L1384
+  - `stable_id()` L1388
+  - `truncate_one_line(text, max_chars)` L1392
+  - `extract_keywords_from_text(text)` L1399
+  - `extract_related_files_from_text(text)` L1405
+  - `extract_reference_paths(arguments, content)` L1411
+  - `dedupe_keep_order(values)` L1416
+  - `tool_short_summary(tool_name, arguments, content, context_id)` L1428
+  - `skill_invocation_kind(tool_name)` L1451
+  - `infer_prompt_content_type(content)` L1463
+  - `is_error_text(text)` L1476
+  - `file_state_paths(snapshot)` L1480
+  - `has_pending_tool_call(messages)` L1489
+  - `snapshot_dict(value)` L1496
 
 #### `memory/stores.py` (1176 行)
 - 类：
@@ -3153,7 +3162,9 @@ client.ask_deepseek()
 ├── print_turn_token_summary() 根据 ROUND_TOKEN / CONVERSATION_TOKEN 打印本轮与会话 token 汇总；开关只影响终端输出，不影响持久化
 ├── 如果存在 tool_calls: execute_tool_call()
 │   └── ToolRegistry.execute() -> 具体工具 run()，可多轮 Search/Recover 历史证据
-├── MemoryRuntime.save_tool_output() 保存可恢复工具输出
+├── MemoryRuntime.save_tool_output() 始终保存可恢复工具输出元数据与原文
+├── RAW 模式：当前非 Skill 小工具输出完整进入 message；超过阈值的大输出保留预览并提示现有 RecoverContext/GetStoredToolOutput 恢复完整内容
+├── VIRTUALIZED 模式：调用 tool_output_prompt_content() 生成引用/预览，并复用相同恢复工具
 ├── 持久化历史只保存原始 user query；RenderedPrompt/RuntimeContext 不写入历史
 ├── 循环直到模型认为证据充足并 finish_reason=stop，或达到 MAX_TOOL_ROUNDS
 └── print_turn_token_summary() 输出本轮与会话累计 token
@@ -3164,7 +3175,11 @@ client.ask_deepseek()
 ```text
 MemoryRuntime
 ├── PromptBudgetManager 估算 token 压力阶段
-├── ContextCompressor 截断/指针化工具输出
+├── ContextMode 默认 RAW，短会话发送净化后的原始 messages，不虚拟化历史工具输出
+├── render_messages_for_model() 同时派生 raw_view 与 virtualized_view
+├── estimate_raw_uncached_tokens() 估算从首个变化 message 到尾部的 prefix cache miss 成本
+├── 当 raw usage 达到 soft ratio 且 raw_uncached_tokens > virtualized_tokens * 1.15 时，单向切换到 VIRTUALIZED
+├── VIRTUALIZED 模式复用 render_virtualized_messages() 指针化历史工具输出
 ├── WorkingContext 保存 RecoverableContextObject
 ├── CheckpointManager 生成 ConversationSnapshot
 ├── SQLiteMemoryStore.session_token_usage 持久化 TokenUsageRecord
