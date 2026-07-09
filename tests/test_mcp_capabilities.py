@@ -98,7 +98,8 @@ def test_runtime_context_includes_capability_payload(tmp_path):
     assert runtime_context.capabilities["mcp_server_total_count"] == 1
     assert '"recommendations_are_restrictions": false' in rendered.runtime_context_json
     assert '"mcp_tool_intent_required": true' in rendered.runtime_context_json
-    assert '"mcp_tool_calls_require_approval": true' in rendered.runtime_context_json
+    assert '"mcp_read_tool_calls_auto_allowed": true' in rendered.runtime_context_json
+    assert '"mcp_write_tool_calls_require_approval": true' in rendered.runtime_context_json
     assert '"mcp_approval_required_for_non_read": true' in rendered.runtime_context_json
 
 
@@ -293,6 +294,10 @@ if __name__ == "__main__":
 
 
 def test_mcp_execution_tools_call_real_stdio_server_and_include_intent(tmp_path):
+    class FailOnApprovalHook(MCPToolApprovalHook):
+        async def approve(self, request):
+            raise AssertionError("read MCP tools should not require approval")
+
     server_script = tmp_path / "fake_mcp_server.py"
     server_script.write_text(
         """
@@ -331,7 +336,7 @@ if __name__ == "__main__":
             registry,
             manager=manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=MCPToolApprovalHook(),
+            approval_hook=FailOnApprovalHook(),
         )
         call_tool = registry.get("call_tool")
         read_resource = registry.get("read_resource")
@@ -356,7 +361,7 @@ if __name__ == "__main__":
     assert call_result.is_error is False
     assert call_payload["intent"] == "检查 fake 状态"
     assert call_payload["risk"] == "read"
-    assert call_payload["approval"] == "auto-approved"
+    assert call_payload["approval"] == "auto_allowed_read"
     assert "ok" in call_payload["content_text"]
     assert resource_result.is_error is False
     assert resource_payload["mcp_resource"] == "fake://status"

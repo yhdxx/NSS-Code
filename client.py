@@ -641,7 +641,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -查询、列举或确认当前可用 SKILL/技能/能力时，必须使用 Get_all_tool、search_tool 或 Get_tool_by_name；
                      不要用 Bash、Glob、ReadFile 直接查看 skills 目录、SQLite 数据库或 .skill_runtime
                     -每一次工具调用都必须提供简短 intent 字段，用一句话说明本次调用意图；intent 应短小稳定，用于历史工具输出虚拟化后的 metadata，而不是长篇推理。
-                    -MCP discovery 工具统一使用 offset/limit 分页；MCP call_tool 总是经 hook 请求用户确认，若用户拒绝则按工具结果继续处理。
+                    -当缺少用户账号、用户名、仓库名、组织名、权限范围等无法从工具可靠确定的信息时，必须调用 ask_user 询问；可以用 choice 给出可选项；禁止从本地路径、Linux 用户名、项目名或历史猜测推断用户身份。
+                    -MCP discovery 工具统一使用 offset/limit 分页；MCP call_tool 的 read 风险工具默认放行，write/dangerous/unknown 风险工具经 hook 请求用户确认，若用户拒绝则按工具结果继续处理。
 
                     ***Work Context Sufficiency Protocol***
                     Before producing the final answer, evaluate whether the current Working Context is sufficient to answer correctly.

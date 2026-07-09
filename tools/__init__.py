@@ -65,6 +65,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     workspace_tracker: Any = None,
     memory_runtime: MemoryRuntime | None = None,
 ) -> ToolRegistry:
+    from tools.ask_user import AskUser
     from tools.bash import Bash  # 导入当前模块需要的依赖。
     from tools.edit_file import EditFile  # 导入当前模块需要的依赖。
     from tools.file_state_cache import FileStateCache  # 导入当前模块需要的依赖。
@@ -86,6 +87,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     sandbox_root = get_sandbox_root()  # 保存配置值或中间计算结果。
 
     registry = ToolRegistry()  # 保存配置值或中间计算结果。
+    registry.register(AskUser())
     registry.register(  # 执行当前步骤的业务逻辑。
         ReadFile(  # 执行当前步骤的业务逻辑。
             file_cache=file_cache,  # 保存配置值或中间计算结果。

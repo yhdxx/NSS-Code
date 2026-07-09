@@ -35,6 +35,7 @@ myCodingAgent
 │   └── MCPMetadataCache：缓存 server/tool/resource/prompt summary
 ├── 命令系统：commands/
 ├── 工具系统：tools/
+│   ├── ask_user.py：模型缺少用户信息时向终端用户提问
 │   ├── mcp_discovery.py：稳定 Discovery Tool，不生成 per-server 动态 schema
 │   └── mcp_execution.py：稳定 MCP Execution Tool，统一 approval hook 与 intent metadata
 ├── 记忆系统：memory/
@@ -566,11 +567,19 @@ myCodingAgent
   - `_paginate(items, *offset, *limit, *item_key)`：统一分页 payload
   - `_json_result(payload, *is_error)`：统一 JSON 工具输出
 
+#### `tools/ask_user.py`
+- 职责：当模型缺少无法可靠推断的用户信息时，在终端向用户提问并把用户输入返回模型。
+- 类：
+  - `class AskUserParams`
+    - 字段：`query`、`choice`、`intent`
+  - `class AskUser`
+    - `execute(self, params)`：打印 `[User Input Required]`、intent、query 和可选 choice，读取 `input("Answer: ")` 并返回用户输入
+
 #### `tools/mcp_execution.py`
 - 职责：向模型暴露稳定 MCP 执行工具；不生成 per-server/per-tool 动态 schema。
 - 类：
   - `class CallMCPToolTool`
-    - `execute(self, params)`：要求短 `intent`，统一经过 approval hook，允许后调用 `MCPClientManager.call_tool`
+    - `execute(self, params)`：要求短 `intent`；read 风险默认放行；write/dangerous/unknown 风险经过 approval hook，允许后调用 `MCPClientManager.call_tool`
   - `class ReadMCPResourceTool`
     - `execute(self, params)`：要求短 `intent`，读取指定 MCP resource
   - `class GetMCPPromptTool`

@@ -11,7 +11,7 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - **入口层**：`__main__.py` 负责启动全流程——打印欢迎界面、检查 Docker 镜像、初始化各子系统、进入交互循环并协调模型对话。
 - **配置层**：`config.py` 将项目所有可配置项统一为数据类，通过环境变量驱动，涵盖 API、客户端行为、记忆管理、沙箱、Docker、Skill 和向量检索等维度。
 - **模型交互层**：`client.py` 封装与 DeepSeek API 的通信，包括系统提示词注入、流式响应解析、工具调用的循环执行和结果回传。
-- **工具层**：`tools/` 提供六大核心基础工具（文件读写、内容搜索、通配符匹配、Shell 命令执行）以及记忆相关工具，所有文件操作限定在沙箱工作区内。
+- **工具层**：`tools/` 提供核心基础工具（文件读写、内容搜索、通配符匹配、Shell 命令执行、用户询问）以及记忆相关工具，所有文件操作限定在沙箱工作区内。
 - **Capability Router 层**：`capabilities/` 在每轮模型调用前统一做能力发现，融合本地 Skill 与 MCP Server 推荐，并将推荐信息注入 Runtime Context。
 - **MCP Client 层**：`mcp_client/` 读取真实 MCP Server 配置，按需建立 MCP stdio 连接，发现 tools/resources/prompts metadata，并通过稳定 Discovery/Execution Tool 暴露给模型。
 - **Skill 系统层**：`skills/` 实现开发者 Skill 的发现、注册、向量检索、路由选择和调用执行，是项目的核心扩展机制。详见下方"Skill 管理模块设计"。
@@ -50,7 +50,9 @@ MCP 配置采用多层 JSON：
 
 配置加载顺序是用户级 `~/.config/myCodingAgent/mcp.json`、项目级 `.mycodingagent/mcp.json`、环境变量 `MYCODINGAGENT_MCP_CONFIG` 指向的文件；后加载的同名 server 覆盖前者。Discovery Tool schema 固定为 `list_servers`、`search_servers`、`list_tools`、`search_tools`、`list_resources`、`search_resources`、`list_prompts`、`search_prompts`，并统一使用 `offset` + `limit` 分页；新增 MCP Server 不会增加新的工具 schema。
 
-第二阶段执行接口固定为 `call_tool`、`read_resource`、`get_prompt`。`read_resource` 与 `get_prompt` 按只读能力直接开放；`call_tool` 无论工具名风险分类如何，都会先经过 approval hook 请求用户确认，用户拒绝时返回 `用户拒绝你的工具调用`。所有工具 schema 都会暴露短 `intent` 字段，模型每次工具调用都应填写该字段；当上下文切换到虚拟化模式时，历史工具输出 metadata 优先使用该 intent，而不是把完整调用参数拼进摘要。
+第二阶段执行接口固定为 `call_tool`、`read_resource`、`get_prompt`。`read_resource` 与 `get_prompt` 按只读能力直接开放；`call_tool` 会先按工具名和配置分类，`search/get/list/read/fetch/query/inspect` 等只读风险默认放行，`create/update/push/merge/delete` 等写入、危险或未知风险才经过 approval hook 请求用户确认，用户拒绝时返回 `用户拒绝你的工具调用`。所有工具 schema 都会暴露短 `intent` 字段，模型每次工具调用都应填写该字段；当上下文切换到虚拟化模式时，历史工具输出 metadata 优先使用该 intent，而不是把完整调用参数拼进摘要。
+
+当模型缺少用户账号、用户名、仓库范围等无法从工具可靠确定的信息时，可以调用 `ask_user` 询问终端用户。`ask_user` 参数为 `query`、可选 `choice` 和 `intent`：`choice` 为空时只展示问题；`choice` 非空时展示 `query` 加换行后的选项文本，并把用户输入原样作为工具结果返回模型。
 
 当前实现已用 GitHub MCP server 做过真实 stdio discovery 验证：在临时配置中通过 `npx -y @modelcontextprotocol/server-github` 启动 server，可成功返回 26 个 GitHub tool summary。由于本地环境没有 `GITHUB_PERSONAL_ACCESS_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`，该验证只覆盖 discovery，不覆盖真实 GitHub API 写入调用；真实 MCP execution 路径由测试中的 FastMCP stdio server 覆盖。
 

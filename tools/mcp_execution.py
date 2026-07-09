@@ -60,18 +60,20 @@ class CallMCPToolTool(Tool):
             return ToolResult(output="MCP tool calls require a short intent.", is_error=True)
         config = self._manager.server_configs.get(params.server)
         risk = self._policy.classify(server_config=config, tool_name=params.tool)
-        decision = await self._approval_hook.approve(
-            MCPApprovalRequest(
-                server=params.server,
-                tool=params.tool,
-                risk=risk,
-                intent=intent,
-                arguments=params.arguments,
+        approval = "auto_allowed_read"
+        if self._policy.requires_approval(risk):
+            decision = await self._approval_hook.approve(
+                MCPApprovalRequest(
+                    server=params.server,
+                    tool=params.tool,
+                    risk=risk,
+                    intent=intent,
+                    arguments=params.arguments,
+                )
             )
-        )
-        if not decision.allowed:
-            return ToolResult(output=USER_DENIED_MESSAGE, is_error=True)
-        approval = decision.reason or "user_allowed"
+            if not decision.allowed:
+                return ToolResult(output=USER_DENIED_MESSAGE, is_error=True)
+            approval = decision.reason or "user_allowed"
         result = await self._manager.call_tool(params.server, params.tool, params.arguments)
         payload = result.to_payload()
         payload["intent"] = intent
