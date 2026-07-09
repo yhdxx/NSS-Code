@@ -44,11 +44,11 @@ class CapabilityRouter:
             connected = 0
         else:
             total = self.mcp_manager.server_count()
-            connected = self.mcp_manager.connected_count()
+            connected = self.mcp_manager.available_count()
         return CapabilityResult(
             recommendations=tuple(recommendations[: self.config.top_n]),
             mcp_server_total_count=total,
-            mcp_connected_count=connected,
+            mcp_available_count=connected,
             discovery_tools_available=self.mcp_manager is not None,
         )
 
@@ -108,7 +108,7 @@ class CapabilityRouter:
                 reasons=item.reasons or ("lexical match",),
                 metadata={
                     "tags": item.server.tags,
-                    "connected": item.server.connected,
+                    "available": item.server.available,
                     "tools_count": item.server.tools_count,
                     "resources_count": item.server.resources_count,
                     "prompts_count": item.server.prompts_count,
@@ -132,7 +132,7 @@ class CapabilityRouter:
                     description=server.description,
                     score=lrfu_score,
                     reasons=("recently used MCP server",),
-                    metadata={"tags": server.tags, "connected": server.connected},
+                    metadata={"tags": server.tags, "available": server.available},
                 )
                 continue
             by_name[server.name] = CapabilityRecommendation(

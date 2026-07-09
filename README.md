@@ -50,6 +50,8 @@ MCP 配置采用多层 JSON：
 
 配置加载顺序是用户级 `~/.config/myCodingAgent/mcp.json`、项目级 `.mycodingagent/mcp.json`、环境变量 `MYCODINGAGENT_MCP_CONFIG` 指向的文件；后加载的同名 server 覆盖前者。Discovery Tool schema 固定为 `list_servers`、`search_servers`、`list_tools`、`search_tools`、`list_resources`、`search_resources`、`list_prompts`、`search_prompts`，并统一使用 `offset` + `limit` 分页；新增 MCP Server 不会增加新的工具 schema。
 
+`list_servers` 返回的是 server 可用性状态 `available`，不再向模型暴露易误导的 `connected` 字段。初始化时所有已配置 server 都视为可用；当连接、discovery 或执行失败时，runtime 将该 server 标记为 `available=false` 并记录 `error`。模型仍可通过 `list_tools`、`list_resources` 或 `list_prompts` 主动探测不可用 server：探测成功会立即把 `available` 恢复为 `true`，探测失败则保持不可用且不影响后台重连。runtime 每完成 `RECONNECT_MCP_SERVER_STEP` 个用户轮后会异步重连不可用 server，默认值为 `10`，也可用 `MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP` 覆盖。
+
 第二阶段执行接口固定为 `call_tool`、`read_resource`、`get_prompt`。`read_resource` 与 `get_prompt` 按只读能力直接开放；`call_tool` 会先按工具名和配置分类，`search/get/list/read/fetch/query/inspect` 等只读风险默认放行，`create/update/push/merge/delete` 等写入、危险或未知风险才经过 approval hook 请求用户确认，用户拒绝时返回 `用户拒绝你的工具调用`。所有工具 schema 都会暴露短 `intent` 字段，模型每次工具调用都应填写该字段；当上下文切换到虚拟化模式时，历史工具输出 metadata 优先使用该 intent，而不是把完整调用参数拼进摘要。
 
 当模型缺少用户账号、用户名、仓库范围等无法从工具可靠确定的信息时，可以调用 `ask_user` 询问终端用户。`ask_user` 参数为 `query`、可选 `choice` 和 `intent`：`choice` 为空时只展示问题；`choice` 非空时展示 `query` 加换行后的选项文本，并把用户输入原样作为工具结果返回模型。
@@ -216,7 +218,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 `WorkingContext` 管理当前轮的活跃对象池，支持添加、逐出、归档和清空操作。当对象从 WORKING 迁移到 EXTERNAL 时，同时写入 `recoverable_contexts` 表（存储完整对象）和 `session_tool_outputs` 表（存储原始输出）。
 
-**恢复接口**：模型通过 `RecoverContext(context_id, offset, limit)` 工具按需获取被指针化的输出内容。恢复时无需加载全文，可以通过 offset 和 limit 参数分段读取，进一步节省上下文。系统还提供 `GetStoredToolOutput` 作为备选恢复路径，以及 `SearchRecoverableContext` 按关键词搜索可恢复对象。
+**恢复接口**：模型通过 `RecoverContext(context_id, offset, limit)` 工具按需获取被指针化的输出内容。恢复时无需加载全文，可以通过 offset 和 limit 参数分段读取，进一步节省上下文。系统还提供 `GetStoredToolOutput` 作为备选恢复路径，以及 `SearchRecoverableContext` 按关键词搜索可恢复对象。恢复工具只用于当前工作上下文中不可见的历史/虚拟化证据；如果工具结果或事实已经在当前对话中可见，模型应直接基于可见内容回答，不能再调用恢复工具。`context_id` / `output_id` 必须来自可见的恢复引用或搜索结果，禁止根据工具名、参数、offset 或记忆猜测 ID。
 
 ### 增量检查点与会话快照（`checkpoint.py`）
 
@@ -259,7 +261,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 **第三步：模型的主动摘要能力**。模型可以通过 `SummarizeCurrentTurnMessage` 工具主动将当前轮中某条过大的工具输出替换为紧凑摘要。摘要存储在 `_current_turn_summaries` 字典中，由 `apply_current_summaries` 在渲染时注入。这一机制让模型拥有了"自主管理上下文预算"的能力——当它发现某条输出虽然有用但细节不必全部保留时，可以主动压缩它，为后续推理腾出空间。
 
-**关键特征**：当前轮的工具输出即使被指针化，其 `ToolOutputRef` 引用块仍然出现在上下文窗口中（模型可以看到摘要、关键词和恢复指引），模型可以立即调用 `RecoverContext` 恢复所需部分，无需额外的搜索步骤。
+**关键特征**：当前轮的工具输出即使被指针化，其 `ToolOutputRef` 引用块仍然出现在上下文窗口中（模型可以看到摘要、关键词和恢复指引），模型可以用引用块里的明确 `context_id` 调用 `RecoverContext` 恢复所需部分，无需额外搜索。若原始工具输出或足够回答的预览已经可见，则模型不应调用恢复工具。
 
 #### 历史轮的处理策略
 
@@ -277,7 +279,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 - **模型 answer**：以 `{"role": "assistant", "content": turn.assistant_content}` 形式完整原文注入。模型的文本回复是推理链条的节点，丢失任何一个节点都会导致推理断裂。
 
-- **工具输出**：完全从上下文中移除。所有历史工具调用的原始输出文本不进入模型上下文，取而代之的是一段集中式的 `HISTORICAL TOOL INDEX` 系统消息。这段消息以紧凑的 JSON 格式逐条列出每个历史工具调用的元数据——工具名、参数预览、输出摘要、关键词、关联文件、context_id、恢复指引等。模型只能看到工具调用的"指纹"而非"身体"，需要通过 `RecoverContext(context_id, offset, limit)` 按需从 SQLite 存储中恢复。
+- **工具输出**：完全从上下文中移除。所有历史工具调用的原始输出文本不进入模型上下文，取而代之的是一段集中式的 `HISTORICAL TOOL INDEX` 系统消息。这段消息以紧凑的 JSON 格式逐条列出每个历史工具调用的元数据——工具名、参数预览、输出摘要、关键词、关联文件、context_id、恢复指引等。模型只能看到工具调用的"指纹"而非"身体"；只有当这些元数据不足以回答且确实需要原始细节时，才通过 `RecoverContext(context_id, offset, limit)` 按需从 SQLite 存储中恢复。
 
 #### 两种策略的设计逻辑
 

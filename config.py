@@ -378,6 +378,15 @@ class MCPConfig:
         or _default_mcp_user_config_path()
     )
     env_config_var: str = "MYCODINGAGENT_MCP_CONFIG"
+    reconnect_server_step: int = field(
+        default_factory=lambda: max(
+            1,
+            _env_int(
+                "RECONNECT_MCP_SERVER_STEP",
+                _env_int("MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP", 10),
+            ),
+        )
+    )
 
 
 @dataclass(frozen=True)

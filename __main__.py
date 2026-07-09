@@ -134,6 +134,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
+    mcp_user_rounds = 0
 
     try:  # 开始可能抛出异常的保护代码块。
         while True:  # 在条件满足时持续循环。
@@ -209,6 +210,10 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 )
                 if rollover.performed and rollover.new_messages is not None:
                     messages = rollover.new_messages
+            if mcp_manager is not None:
+                mcp_user_rounds += 1
+                if mcp_user_rounds % CONFIG.mcp.reconnect_server_step == 0:
+                    mcp_manager.schedule_reconnect_unavailable_servers()
     finally:  # 执行无论是否异常都需要收尾的逻辑。
         if memory_runtime is not None:
             await memory_runtime.close()

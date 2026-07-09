@@ -25,6 +25,7 @@ class MCPClientManager:
         self.server_configs: dict[str, MCPServerConfig] = {}
         self._sessions: dict[str, Any] = {}
         self._session_contexts: dict[str, Any] = {}
+        self._reconnect_task: asyncio.Task | None = None
 
     async def initialize(self) -> None:
         self.reload_config()
@@ -34,6 +35,10 @@ class MCPClientManager:
         self.metadata_cache.sync_configs(self.server_configs)
 
     async def close(self) -> None:
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            self._reconnect_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._reconnect_task
         for server in list(self._sessions):
             await self._close_session(server)
 
@@ -41,7 +46,10 @@ class MCPClientManager:
         return len(self.server_configs)
 
     def connected_count(self) -> int:
-        return sum(1 for server in self.metadata_cache.servers() if server.connected)
+        return self.available_count()
+
+    def available_count(self) -> int:
+        return sum(1 for server in self.metadata_cache.servers() if server.available)
 
     def list_servers(self) -> list[MCPServerSummary]:
         return self.metadata_cache.servers()
@@ -63,7 +71,7 @@ class MCPClientManager:
                 error="",
             )
         except Exception as exc:
-            self.metadata_cache.mark_error(server, str(exc))
+            await self._mark_server_unavailable(server, str(exc))
         entry = self.metadata_cache.get(server)
         return entry.summary() if entry is not None else None
 
@@ -72,6 +80,8 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
             return {"error": f"MCP server not found: {server}", "tools": []}
+        if not summary.available and summary.error:
+            return {"error": f"MCP server unavailable: {summary.error}", "server": summary.to_payload(), "tools": []}
         return {"server": summary.to_payload(), "tools": [item.to_payload() for item in entry.tools]}
 
     async def list_resources(self, server: str) -> dict[str, Any]:
@@ -79,6 +89,8 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
             return {"error": f"MCP server not found: {server}", "resources": []}
+        if not summary.available and summary.error:
+            return {"error": f"MCP server unavailable: {summary.error}", "server": summary.to_payload(), "resources": []}
         return {"server": summary.to_payload(), "resources": [item.to_payload() for item in entry.resources]}
 
     async def list_prompts(self, server: str) -> dict[str, Any]:
@@ -86,37 +98,70 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
             return {"error": f"MCP server not found: {server}", "prompts": []}
+        if not summary.available and summary.error:
+            return {"error": f"MCP server unavailable: {summary.error}", "server": summary.to_payload(), "prompts": []}
         return {"server": summary.to_payload(), "prompts": [item.to_payload() for item in entry.prompts]}
 
     async def call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
         if server not in self.server_configs:
             return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP server not found: {server}", content_type="error")
-        session = await self._ensure_session(server)
+        unavailable = self._unavailable_result(server, operation="tool", name=tool)
+        if unavailable is not None:
+            return unavailable
         try:
+            session = await self._ensure_session(server)
             result = await session.call_tool(tool, arguments or {})
         except Exception as exc:
+            await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP tool call failed: {exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="tool", name=tool, result=result)
 
     async def read_resource(self, server: str, uri: str) -> MCPExecutionResult:
         if server not in self.server_configs:
             return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP server not found: {server}", content_type="error")
-        session = await self._ensure_session(server)
+        unavailable = self._unavailable_result(server, operation="resource", name=uri)
+        if unavailable is not None:
+            return unavailable
         try:
+            session = await self._ensure_session(server)
             result = await session.read_resource(uri)
         except Exception as exc:
+            await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP resource read failed: {exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="resource", name=uri, result=result)
 
     async def get_prompt(self, server: str, prompt: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
         if server not in self.server_configs:
             return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"MCP server not found: {server}", content_type="error")
-        session = await self._ensure_session(server)
+        unavailable = self._unavailable_result(server, operation="prompt", name=prompt)
+        if unavailable is not None:
+            return unavailable
         try:
+            session = await self._ensure_session(server)
             result = await session.get_prompt(prompt, arguments or {})
         except Exception as exc:
+            await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"MCP prompt get failed: {exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="prompt", name=prompt, result=result)
+
+    def unavailable_servers(self) -> list[str]:
+        return self.metadata_cache.unavailable_servers()
+
+    def schedule_reconnect_unavailable_servers(self) -> asyncio.Task | None:
+        if not self.unavailable_servers():
+            return None
+        if self._reconnect_task is not None and not self._reconnect_task.done():
+            return self._reconnect_task
+        self._reconnect_task = asyncio.create_task(self.reconnect_unavailable_servers())
+        return self._reconnect_task
+
+    async def reconnect_unavailable_servers(self) -> list[MCPServerSummary]:
+        restored: list[MCPServerSummary] = []
+        for server in self.unavailable_servers():
+            summary = await self.refresh_server(server)
+            if summary is not None and summary.available:
+                restored.append(summary)
+        return restored
 
     async def _ensure_discovered(self, server: str) -> MCPServerSummary | None:
         entry = self.metadata_cache.get(server)
@@ -169,6 +214,24 @@ class MCPClientManager:
             await session_context.__aexit__(None, None, None)
         with contextlib.suppress(Exception):
             await stdio_context.__aexit__(None, None, None)
+
+    async def _mark_server_unavailable(self, server: str, error: str) -> None:
+        await self._close_session(server)
+        self.metadata_cache.mark_error(server, error)
+
+    def _unavailable_result(self, server: str, *, operation: str, name: str) -> MCPExecutionResult | None:
+        entry = self.metadata_cache.get(server)
+        if entry is None or entry.available:
+            return None
+        error = entry.error or "server is marked unavailable"
+        return MCPExecutionResult(
+            server=server,
+            operation=operation,
+            name=name,
+            is_error=True,
+            content_text=f"MCP server unavailable: {error}",
+            content_type="error",
+        )
 
     async def _list_tools_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)

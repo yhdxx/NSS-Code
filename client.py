@@ -647,6 +647,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     ***Work Context Sufficiency Protocol***
                     Before producing the final answer, evaluate whether the current Working Context is sufficient to answer correctly.
                     Only recover additional context when unavailable historical information may influence correctness. Do not perform recovery as a formality for simple questions, general reasoning, translation, summarization, or answers that are already fully supported by the visible context.
+                    If a user asks for a tool result or fact that is already visible in the current conversation, answer from the visible context directly; do not call GetStoredToolOutput, RecoverContext, SearchRecoverableContext, SearchSessionHistory, or GetRecentConversationTurns.
+                    Never invent output_id/context_id values from tool names, arguments, offsets, or memory. Use recovery by id only when an exact id is visible in a recoverable reference or search result.
                     Evidence First Rule: never infer facts that could be verified by available historical context. If historical tool outputs, previously read file contents, command outputs, test results, prior decisions, constraints, or virtualized context may affect the answer, recover the relevant evidence before answering.
                     Historical tool outputs may have been virtualized. Recover additional context only if required for correctness.
                     Use the most appropriate recovery tool according to the current task:

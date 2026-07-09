@@ -26,7 +26,7 @@ class CapabilityRecommendation:
 class CapabilityResult:
     recommendations: tuple[CapabilityRecommendation, ...] = ()
     mcp_server_total_count: int = 0
-    mcp_connected_count: int = 0
+    mcp_available_count: int = 0
     discovery_tools_available: bool = False
     note: str = (
         "Capability recommendations are not restrictions. "
@@ -36,7 +36,7 @@ class CapabilityResult:
     def to_runtime_payload(self) -> dict[str, Any]:
         return {
             "mcp_server_total_count": self.mcp_server_total_count,
-            "mcp_connected_count": self.mcp_connected_count,
+            "mcp_available_count": self.mcp_available_count,
             "discovery_tools_available": self.discovery_tools_available,
             "mcp_discovery_pagination": {"default_limit": 20, "max_limit": 100},
             "mcp_tool_execution_available": self.discovery_tools_available,

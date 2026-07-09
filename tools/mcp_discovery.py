@@ -76,7 +76,12 @@ class _ServerItemSearchTool(_ServerItemsTool):
 
 class ListServersTool(Tool):
     name = "list_servers"
-    description = "List configured MCP servers with metadata and connection/discovery status. Supports offset/limit pagination."
+    description = (
+        "List configured MCP servers with metadata and availability state. This does not connect "
+        "servers or prove they are currently connected. available=true means the server is usable "
+        "or has not failed yet; use list_tools/list_resources/list_prompts to probe discovery. "
+        "Supports offset/limit pagination."
+    )
     params_model = PaginationParams
     category = "read"
     is_concurrency_safe = True

@@ -14,6 +14,7 @@ class MCPMetadataEntry:
     resources: list[MCPItemSummary] = field(default_factory=list)
     prompts: list[MCPItemSummary] = field(default_factory=list)
     connected: bool = False
+    available: bool = True
     error: str = ""
     updated_at: float = 0.0
 
@@ -26,7 +27,7 @@ class MCPMetadataEntry:
             abbreviations=self.config.abbreviations,
             synonyms=self.config.synonyms,
             keywords=self.config.keywords,
-            connected=self.connected,
+            available=self.available,
             error=self.error,
             tools_count=len(self.tools),
             resources_count=len(self.resources),
@@ -76,6 +77,7 @@ class MCPMetadataCache:
             entry.prompts = prompts
         entry.connected = connected
         entry.error = error
+        entry.available = not error
         entry.updated_at = time.time()
 
     def mark_error(self, server: str, error: str) -> None:
@@ -83,5 +85,21 @@ class MCPMetadataCache:
         if entry is None:
             return
         entry.connected = False
+        entry.available = False
         entry.error = error
         entry.updated_at = time.time()
+
+    def mark_available(self, server: str) -> None:
+        entry = self._entries.get(server)
+        if entry is None:
+            return
+        entry.available = True
+        entry.error = ""
+        entry.updated_at = time.time()
+
+    def unavailable_servers(self) -> list[str]:
+        return [
+            entry.config.name
+            for entry in sorted(self._entries.values(), key=lambda item: item.config.name)
+            if not entry.available
+        ]

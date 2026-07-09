@@ -348,25 +348,31 @@ myCodingAgent
   - `_include_matches(relative_path, include_pattern)` L90
 
 #### `tools/memory_lookup.py` (387 行)
+- 职责：提供历史/虚拟化上下文的精确恢复与检索工具；只用于当前工作上下文不可见的证据。若工具输出或事实已在当前对话可见，模型应直接回答，不应调用恢复工具；`context_id` / `output_id` 必须来自可见恢复引用或搜索结果，禁止根据工具名、参数或 offset 猜测。
 - 类：
   - `class GetStoredToolOutputParams extends BaseModel` L15
   - `class GetStoredToolOutput extends Tool` L21
+    - 工具语义：按明确 `output_id` 读取存储的工具输出；仅用于当前不可见证据
     - `__init__(self, memory_runtime)` L33
     - `async execute(self, params)` L36
   - `class RecoverContextParams extends BaseModel` L46
   - `class RecoverContext extends Tool` L52
+    - 工具语义：按明确 `context_id` 分段恢复隐藏上下文；禁止恢复当前已可见内容
     - `__init__(self, memory_runtime)` L65
     - `async execute(self, params)` L68
   - `class SearchRecoverableContextParams extends BaseModel` L78
   - `class SearchRecoverableContext extends Tool` L83
+    - 工具语义：搜索隐藏历史/虚拟化上下文 metadata；不用于复述当前轮或最近对话中已可见的工具结果
     - `__init__(self, memory_runtime)` L94
     - `async execute(self, params)` L97
   - `class SearchSessionHistoryParams extends BaseModel` L112
   - `class SearchSessionHistory extends Tool` L118
+    - 工具语义：搜索当前上下文中不可见或不充分的历史用户请求、决策、约束或引用
     - `__init__(self, memory_runtime, *preview_chars)` L130
     - `async execute(self, params)` L134
   - `class GetRecentConversationTurnsParams extends BaseModel` L198
   - `class GetRecentConversationTurns extends Tool` L202
+    - 工具语义：仅当当前可见上下文不足以理解近期任务流时查看最近轮次结构
     - `__init__(self, memory_runtime)` L213
     - `async execute(self, params)` L216
   - `class SummarizeCurrentTurnMessageParams extends BaseModel` L239
@@ -490,7 +496,7 @@ myCodingAgent
   - `class MCPItemSummary`
     - `to_payload(self)`：输出 tool/resource/prompt summary
   - `class MCPServerSummary`
-    - `to_payload(self)`：输出 server summary
+    - `to_payload(self)`：输出 server summary；对模型暴露 `available` 可用性状态，不暴露内部连接字段
   - `class MCPExecutionResult`
     - `to_payload(self)`：输出 MCP 调用结果，包含 `server`、`operation`、`name`、`content_text`、`content_type`、`metadata`
 
@@ -503,8 +509,10 @@ myCodingAgent
     - `sync_configs(self, configs)`：用当前配置同步 cache server 集合
     - `get(self, server)`：读取单个缓存项
     - `servers(self)`：列出 server summary
-    - `update_discovery(self, server, *tools, *resources, *prompts, *connected, *error)`：更新 discovery metadata
-    - `mark_error(self, server, error)`：记录连接或 discovery 错误
+    - `update_discovery(self, server, *tools, *resources, *prompts, *connected, *error)`：更新 discovery metadata；无错误时同步恢复 `available=true`
+    - `mark_error(self, server, error)`：记录连接、discovery 或执行错误，并标记 `available=false`
+    - `mark_available(self, server)`：清除错误并恢复 server 可用
+    - `unavailable_servers(self)`：列出当前不可用 server 名称
 
 #### `mcp_client/manager.py`
 - 职责：真实 MCP 协议实现边界；负责连接、discovery、tool call、resource read 与 prompt get。
@@ -512,17 +520,22 @@ myCodingAgent
   - `class MCPClientManager`
     - `initialize(self)`：加载配置
     - `reload_config(self)`：重新读取配置并同步 cache
-    - `close(self)`：关闭已建立的 MCP session
-    - `server_count(self)` / `connected_count(self)`：返回规模统计
+    - `close(self)`：取消后台重连任务并关闭已建立的 MCP session
+    - `server_count(self)` / `available_count(self)`：返回配置 server 数与可用 server 数
     - `list_servers(self)`：返回已配置 server summary
-    - `refresh_server(self, server)`：建立连接并执行 tools/resources/prompts list
-    - `list_tools(self, server)` / `list_resources(self, server)` / `list_prompts(self, server)`：返回 discovery metadata
-    - `call_tool(self, server, tool, arguments)`：执行 MCP `tools/call` 并规范化结果
-    - `read_resource(self, server, uri)`：执行 MCP `resources/read` 并规范化结果
-    - `get_prompt(self, server, prompt, arguments)`：执行 MCP `prompts/get` 并规范化结果
+    - `refresh_server(self, server)`：建立连接并执行 tools/resources/prompts list；成功时恢复 `available=true`，失败时标记不可用
+    - `list_tools(self, server)` / `list_resources(self, server)` / `list_prompts(self, server)`：返回 discovery metadata；即使 server 当前不可用也会主动探测，探测成功即可恢复可用
+    - `call_tool(self, server, tool, arguments)`：执行 MCP `tools/call` 并规范化结果；不可用 server 不直接重连，等待 discovery 探测或后台重连
+    - `read_resource(self, server, uri)`：执行 MCP `resources/read` 并规范化结果；不可用 server 不直接重连
+    - `get_prompt(self, server, prompt, arguments)`：执行 MCP `prompts/get` 并规范化结果；不可用 server 不直接重连
+    - `unavailable_servers(self)`：列出不可用 server
+    - `schedule_reconnect_unavailable_servers(self)`：如果存在不可用 server，则创建后台重连任务
+    - `reconnect_unavailable_servers(self)`：异步重连不可用 server，成功则恢复可用
     - `_ensure_discovered(self, server)`：缓存未命中时触发 discovery
     - `_ensure_session(self, server)`：使用 `mcp` SDK 建立 stdio MCP session；为 npx 类 server 默认提供 `/tmp/mycodingagent-npm-cache`，并在初始化失败时清理半打开的 session/stdio context
     - `_close_session(self, server)`：关闭指定 server session
+    - `_mark_server_unavailable(self, server, error)`：关闭 session 并标记不可用
+    - `_unavailable_result(self, server, *operation, *name)`：为不可用 server 构造标准错误结果
     - `_list_tools_from_session(self, server)` / `_list_resources_from_session(self, server)` / `_list_prompts_from_session(self, server)`：协议 list 调用
 - 模块函数：
   - `_item_summary(item)`：MCP SDK 对象转轻量 summary

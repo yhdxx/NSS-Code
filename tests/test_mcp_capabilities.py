@@ -152,7 +152,7 @@ def test_mcp_metadata_cache_invalidates_when_server_config_changes(tmp_path):
     assert entry.updated_at == 0.0
 
 
-def test_mcp_discovery_retries_after_cached_error(tmp_path):
+def test_mcp_discovery_retries_unavailable_server_on_model_probe(tmp_path):
     config = tmp_path / "mcp.json"
     config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
     manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
@@ -176,7 +176,77 @@ def test_mcp_discovery_retries_after_cached_error(tmp_path):
     result = asyncio.run(manager.list_tools("github"))
 
     assert calls == 1
+    assert result["server"]["available"] is True
     assert result["tools"][0]["name"] == "fresh_tool"
+
+
+def test_mcp_discovery_keeps_server_unavailable_after_failed_model_probe(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    manager.metadata_cache.mark_error("github", "temporary failure")
+    calls = 0
+
+    async def fake_refresh(server):
+        nonlocal calls
+        calls += 1
+        manager.metadata_cache.mark_error(server, "still unavailable")
+        return manager.metadata_cache.get(server).summary()
+
+    manager.refresh_server = fake_refresh
+    result = asyncio.run(manager.list_tools("github"))
+
+    assert calls == 1
+    assert result["error"] == "MCP server unavailable: still unavailable"
+    assert result["server"]["available"] is False
+    assert result["tools"] == []
+
+
+def test_mcp_reconnect_unavailable_servers_restores_available_state(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    manager.metadata_cache.mark_error("github", "temporary failure")
+    calls = 0
+
+    async def fake_refresh(server):
+        nonlocal calls
+        calls += 1
+        manager.metadata_cache.update_discovery(
+            server,
+            tools=[MCPItemSummary(name="fresh_tool")],
+            connected=True,
+            error="",
+        )
+        return manager.metadata_cache.get(server).summary()
+
+    manager.refresh_server = fake_refresh
+    restored = asyncio.run(manager.reconnect_unavailable_servers())
+    result = asyncio.run(manager.list_tools("github"))
+
+    assert calls == 1
+    assert [item.name for item in restored] == ["github"]
+    assert result["server"]["available"] is True
+    assert result["tools"][0]["name"] == "fresh_tool"
+
+
+def test_mcp_execution_does_not_probe_unavailable_server(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    manager.metadata_cache.mark_error("github", "temporary failure")
+
+    async def fail_if_called(server):
+        raise AssertionError("execution should not reconnect unavailable servers directly")
+
+    manager._ensure_session = fail_if_called
+    result = asyncio.run(manager.call_tool("github", "get_status", {}))
+
+    assert result.is_error is True
+    assert result.content_text == "MCP server unavailable: temporary failure"
 
 
 def test_search_tools_uses_cached_discovery_metadata(tmp_path):
@@ -287,7 +357,8 @@ if __name__ == "__main__":
 
     tools, resources, prompts = asyncio.run(scenario())
 
-    assert tools["server"]["connected"] is True
+    assert tools["server"]["available"] is True
+    assert "connected" not in tools["server"]
     assert [item["name"] for item in tools["tools"]] == ["create_issue"]
     assert [item["name"] for item in resources["resources"]] == ["fake://status"]
     assert [item["name"] for item in prompts["prompts"]] == ["review_prompt"]

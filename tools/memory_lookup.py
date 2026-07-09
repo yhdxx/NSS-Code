@@ -13,7 +13,7 @@ if TYPE_CHECKING:
 
 
 class GetStoredToolOutputParams(BaseModel):
-    output_id: str = Field(description="The output_id or context_id shown in a recoverable tool output reference.")
+    output_id: str = Field(description="Exact output_id/context_id from a visible recoverable reference or search result. Do not guess.")
     offset: int = Field(default=0, ge=0, description="Character offset to start reading from.")
     limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return.")
 
@@ -21,10 +21,11 @@ class GetStoredToolOutputParams(BaseModel):
 class GetStoredToolOutput(Tool):
     name = "GetStoredToolOutput"
     description = (
-        "Read full or partial stored tool output by output_id. Use this when exact historical "
-        "tool output, file content, command output, test result, or other virtualized context "
-        "may affect correctness and the output_id is known. Do not assume unavailable information; "
-        "recover evidence first when it may affect the answer."
+        "Read full or partial stored tool output by exact output_id. Use only when the needed "
+        "evidence is not visible in the current working context and a concrete output_id/context_id "
+        "is already visible from a recoverable reference or search result. Do not use this for "
+        "tool outputs already visible in the current conversation, and do not invent ids from "
+        "tool names, offsets, or arguments."
     )
     params_model = GetStoredToolOutputParams
     category = "read"
@@ -44,7 +45,7 @@ class GetStoredToolOutput(Tool):
 
 
 class RecoverContextParams(BaseModel):
-    context_id: str = Field(description="The context_id shown in a recoverable context reference.")
+    context_id: str = Field(description="Exact context_id from a visible recoverable reference or search result. Do not guess.")
     offset: int = Field(default=0, ge=0, description="Character offset to start reading from.")
     limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return.")
 
@@ -52,11 +53,11 @@ class RecoverContextParams(BaseModel):
 class RecoverContext(Tool):
     name = "RecoverContext"
     description = (
-        "Recover full or partial stored context by context_id. Use this whenever your answer may "
-        "rely on a known historical tool output, file content, command output, test result, or "
-        "other virtualized context that is not currently visible. Do not assume unavailable "
-        "information; recover evidence first when it may affect correctness. Prefer partial "
-        "recovery with offset and limit when the prompt budget is tight."
+        "Recover full or partial stored context by exact context_id. Use only when your answer "
+        "depends on historical or virtualized evidence that is not currently visible and the "
+        "context_id is explicitly available. Do not use this for evidence already shown in the "
+        "current conversation. Prefer partial recovery with offset and limit when the prompt "
+        "budget is tight."
     )
     params_model = RecoverContextParams
     category = "read"
@@ -76,16 +77,18 @@ class RecoverContext(Tool):
 
 
 class SearchRecoverableContextParams(BaseModel):
-    query: str = Field(default="", description="Keywords to search in recoverable context metadata.")
+    query: str = Field(default="", description="Keywords for hidden historical/virtualized context metadata. Do not search for content already visible.")
     limit: int = Field(default=10, ge=1, le=50, description="Maximum number of metadata objects to return.")
 
 
 class SearchRecoverableContext(Tool):
     name = "SearchRecoverableContext"
     description = (
-        "Search stored recoverable contexts by topic, file path, command, error text, keyword, "
-        "or decision. Use this when your answer may depend on historical tool outputs or other "
-        "virtualized context, but you do not yet know the relevant context_id."
+        "Search stored recoverable context metadata by topic, file path, command, error text, "
+        "keyword, or decision. Use only when required evidence is missing from the current visible "
+        "conversation and may exist in historical or virtualized context, but you do not yet know "
+        "the relevant context_id. Do not use this to retrieve or restate a tool result that is "
+        "already visible in the current turn or recent conversation."
     )
     params_model = SearchRecoverableContextParams
     category = "read"
@@ -110,7 +113,7 @@ class SearchRecoverableContext(Tool):
 
 
 class SearchSessionHistoryParams(BaseModel):
-    query: str = Field(description="Keywords to search in the current session's uncompressed message history.")
+    query: str = Field(description="Keywords to search prior conversation turns that are not visible enough in the current context.")
     limit: int = Field(default=10, ge=1, le=50, description="Maximum number of matching messages to return.")
     include_system: bool = Field(default=False, description="Whether to include system messages in search results.")
 
@@ -118,10 +121,10 @@ class SearchSessionHistoryParams(BaseModel):
 class SearchSessionHistory(Tool):
     name = "SearchSessionHistory"
     description = (
-        "Search historical conversation turns. Use this when you need to locate prior user "
-        "requests, assistant decisions, constraints, or references to tool outputs before "
-        "answering. This does not return full historical tool outputs; use RecoverContext when "
-        "exact stored output is needed."
+        "Search prior conversation turns. Use this only when a needed prior user request, "
+        "assistant decision, constraint, or reference is not visible enough in the current working "
+        "context. This does not return full historical tool outputs; use RecoverContext only when "
+        "an exact stored output is hidden and a concrete context_id is available."
     )
     params_model = SearchSessionHistoryParams
     category = "read"
@@ -202,9 +205,10 @@ class GetRecentConversationTurnsParams(BaseModel):
 class GetRecentConversationTurns(Tool):
     name = "GetRecentConversationTurns"
     description = (
-        "Inspect recent conversation structure and visible turn summaries. Use this when you "
-        "need to understand recent task flow, prior decisions, or which historical outputs may "
-        "matter. Use RecoverContext only if exact hidden output is needed."
+        "Inspect recent conversation structure and turn summaries. Use this only when the current "
+        "visible context is insufficient to understand recent task flow, prior decisions, or which "
+        "historical hidden outputs may matter. Do not use it when the relevant recent tool output "
+        "or answer is already visible."
     )
     params_model = GetRecentConversationTurnsParams
     category = "read"

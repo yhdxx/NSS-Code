@@ -23,7 +23,7 @@ class MCPServerSummary:
     abbreviations: tuple[str, ...] = ()
     synonyms: tuple[str, ...] = ()
     keywords: tuple[str, ...] = ()
-    connected: bool = False
+    available: bool = True
     error: str = ""
     tools_count: int = 0
     resources_count: int = 0

@@ -216,14 +216,43 @@ def test_recovery_tool_descriptions_emphasize_evidence_without_fixed_order():
         "GetRecentConversationTurns": GetRecentConversationTurns.description,
     }
 
-    assert "Do not assume unavailable information" in descriptions["GetStoredToolOutput"]
-    assert "recover evidence first" in descriptions["RecoverContext"]
+    assert "Do not use this for tool outputs already visible" in descriptions["GetStoredToolOutput"]
+    assert "Do not use this for evidence already shown" in descriptions["RecoverContext"]
     assert "you do not yet know the relevant context_id" in descriptions["SearchRecoverableContext"]
-    assert "locate prior user requests" in descriptions["SearchSessionHistory"]
+    assert "needed prior user request" in descriptions["SearchSessionHistory"]
     assert "recent task flow" in descriptions["GetRecentConversationTurns"]
+    assert "already visible" in descriptions["SearchRecoverableContext"]
+    assert "current visible context is insufficient" in descriptions["GetRecentConversationTurns"]
     combined = "\n".join(descriptions.values())
     assert "GetRecentConversationTurns -> SearchSessionHistory" not in combined
     assert "SearchSessionHistory -> SearchRecoverableContext" not in combined
+
+
+def test_recovery_protocol_forbids_recovering_visible_context(monkeypatch):
+    async def scenario():
+        seen_messages = []
+
+        async def fake_stream_one_round(_client, _model, messages, _tools):
+            seen_messages.append(messages)
+            return "ok", [], None
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+
+        history = [{"role": "user", "content": "visible tool result"}]
+        await agent_client.ask_deepseek(
+            client=object(),
+            prompt="repeat visible result",
+            registry=object(),
+            tools=[],
+            messages=None,
+        )
+
+        system_prompt = seen_messages[0][0]["content"]
+        assert "answer from the visible context directly" in system_prompt
+        assert "do not call GetStoredToolOutput" in system_prompt
+        assert "Never invent output_id/context_id values" in system_prompt
+
+    asyncio.run(scenario())
 
 
 def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
