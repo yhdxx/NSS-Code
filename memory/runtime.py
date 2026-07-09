@@ -610,7 +610,7 @@ class MemoryRuntime:
         if (
             CONFIG.memory.output_context_compression
             and decision.mode == ContextMode.VIRTUALIZED
-            and snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio
+            and (decision.switched or snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio)
         ):
             print(format_virtualization_report(snapshot, decision=decision), flush=True)
         self._last_raw_rendered_messages[session_id] = copy.deepcopy(raw_rendered)
@@ -1016,8 +1016,9 @@ def format_virtualization_report(
     *,
     decision: ContextRenderDecision | None = None,
 ) -> str:
+    title = "[CONTEXT MODE SWITCH]" if decision is not None and decision.switched else "[CONTEXT VIRTUALIZATION]"
     lines = [
-        "[CONTEXT VIRTUALIZATION]",
+        title,
         f"  current_context_tokens: {snapshot.current_tokens}",
         f"  context_window: {snapshot.context_window}",
         f"  window_usage: {snapshot.usage_ratio:.2%}",
@@ -1028,6 +1029,11 @@ def format_virtualization_report(
         lines.extend(
             [
                 f"  mode: {decision.mode.value}",
+                *(
+                    ["  mode_transition: raw -> virtualized"]
+                    if decision.switched and decision.mode == ContextMode.VIRTUALIZED
+                    else []
+                ),
                 f"  raw_context_tokens: {decision.raw_tokens}",
                 f"  raw_uncached_tokens: {decision.raw_uncached_tokens}",
                 f"  virtualized_context_tokens: {decision.virtualized_tokens}",

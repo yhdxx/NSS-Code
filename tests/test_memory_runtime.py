@@ -1269,6 +1269,65 @@ def test_context_switches_to_virtualized_when_raw_miss_cost_is_higher(tmp_path):
     assert output_id in rendered[3]["content"]
 
 
+def test_context_switch_prints_mode_transition_notice(tmp_path, capsys):
+    compressor = ContextCompressor(context_window=1200)
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=compressor,
+    )
+    session_id = runtime.start_session("test")
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"large.py"}',
+        output="z" * 6000,
+    )
+    previous = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "inspect large"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"large.py"}'},
+                },
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "z" * 6000,
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+    current = [
+        {**previous[0]},
+        {"role": "user", "content": "inspect large changed"},
+        copy.deepcopy(previous[2]),
+        copy.deepcopy(previous[3]),
+        copy.deepcopy(previous[4]),
+        {"role": "user", "content": "next"},
+    ]
+    runtime._last_raw_rendered_messages[session_id] = previous
+
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=current,
+        tools=[],
+        current_prompt="next",
+        current_turn_start=len(current) - 1,
+    )
+
+    output = capsys.readouterr().out
+    assert "[CONTEXT MODE SWITCH]" in output
+    assert "mode_transition: raw -> virtualized" in output
+    assert "switched: true" in output
+
+
 def test_context_virtualized_mode_is_one_way(tmp_path):
     compressor = ContextCompressor(context_window=900)
     runtime = MemoryRuntime(

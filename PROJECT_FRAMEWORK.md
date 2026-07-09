@@ -601,7 +601,7 @@ myCodingAgent
     - `should_compress_context(self, messages)` L987
 - 模块函数：
   - `format_compression_report(result)` L991
-  - `format_virtualization_report(snapshot, *decision)` L1008
+  - `format_virtualization_report(snapshot, *decision)` L1008：发生 RAW -> VIRTUALIZED 时打印 `[CONTEXT MODE SWITCH]` 和切换成本指标
   - `estimate_raw_uncached_tokens(previous_messages, current_messages)` L1034：从首个变化 message 到尾部估算 prefix cache 未命中成本
   - `split_historical_and_current(messages, current_turn_start)` L1050
   - `insert_budget_notice(messages, notice)` L1062：旧兼容函数，主路径不再使用
@@ -3179,6 +3179,7 @@ MemoryRuntime
 ├── render_messages_for_model() 同时派生 raw_view 与 virtualized_view
 ├── estimate_raw_uncached_tokens() 估算从首个变化 message 到尾部的 prefix cache miss 成本
 ├── 当 raw usage 达到 soft ratio 且 raw_uncached_tokens > virtualized_tokens * 1.15 时，单向切换到 VIRTUALIZED
+├── 切换发生时打印 `[CONTEXT MODE SWITCH]`，包含 raw/virtualized token、raw_uncached_tokens 与 `mode_transition: raw -> virtualized`
 ├── VIRTUALIZED 模式复用 render_virtualized_messages() 指针化历史工具输出
 ├── WorkingContext 保存 RecoverableContextObject
 ├── CheckpointManager 生成 ConversationSnapshot
