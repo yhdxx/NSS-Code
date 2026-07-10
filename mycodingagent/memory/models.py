@@ -13,6 +13,41 @@ class MemoryScope(str, Enum):
     COMPRESSED_CONTEXT = "compressed_context"
 
 
+class ContextEpochStatus(str, Enum):
+    ACTIVE = "active"
+    PENDING_COMMIT = "pending_commit"
+    COMMITTED = "committed"
+
+
+@dataclass
+class ContextEpochState:
+    epoch_id: str
+    session_id: str
+    start_message_index: int
+    status: ContextEpochStatus = ContextEpochStatus.ACTIVE
+    end_message_index: int | None = None
+    trigger: str = ""
+    reason: str = ""
+    summary: str = ""
+    retain_context_ids: list[str] = field(default_factory=list)
+    active_files: list[str] = field(default_factory=list)
+    next_context_hint: str = ""
+    created_at: float = field(default_factory=time)
+    committed_at: float | None = None
+
+
+@dataclass(frozen=True)
+class HotContextBudgetSnapshot:
+    epoch_id: str
+    start_message_index: int
+    token_count: int
+    context_window: int
+    usage_ratio: float
+    warning: bool
+    force_commit: bool
+    pending_commit: bool
+
+
 @dataclass
 class MemoryEntry:
     content: str
@@ -193,6 +228,7 @@ class SessionState:
     workspace_label: str = ""
     workspace_fingerprint: str = ""
     token_usage: TokenUsageSummary = field(default_factory=TokenUsageSummary)
+    context_epoch: ContextEpochState | None = None
 
 
 @dataclass

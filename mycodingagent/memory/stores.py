@@ -9,6 +9,8 @@ from time import time
 from mycodingagent.memory.context_objects import ContextContentType, ContextLifecycleState, RecoverableContextObject
 from mycodingagent.memory.models import (
     CheckpointRecord,
+    ContextEpochState,
+    ContextEpochStatus,
     ConversationSnapshot,
     HistoricalTurn,
     HistoricalSessionRef,
@@ -169,6 +171,25 @@ class SQLiteMemoryStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS context_epochs (
+                    epoch_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    start_message_index INTEGER NOT NULL,
+                    end_message_index INTEGER,
+                    status TEXT NOT NULL,
+                    trigger TEXT NOT NULL DEFAULT '',
+                    reason TEXT NOT NULL DEFAULT '',
+                    summary TEXT NOT NULL DEFAULT '',
+                    retain_context_ids_json TEXT NOT NULL DEFAULT '[]',
+                    active_files_json TEXT NOT NULL DEFAULT '[]',
+                    next_context_hint TEXT NOT NULL DEFAULT '',
+                    created_at REAL NOT NULL,
+                    committed_at REAL
+                )
+                """
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS conversation_snapshots (
                     snapshot_id TEXT PRIMARY KEY,
                     snapshot_version TEXT NOT NULL,
@@ -245,6 +266,8 @@ class SQLiteMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_recoverable_contexts_session ON recoverable_contexts(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_recoverable_contexts_tool_call ON recoverable_contexts(tool_call_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_context_snapshots_session ON session_context_snapshots(session_id)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_context_epochs_session ON context_epochs(session_id, created_at)")
+            conn.execute("CREATE INDEX IF NOT EXISTS idx_context_epochs_status ON context_epochs(session_id, status)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_snapshots_session ON conversation_snapshots(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_deltas_session ON snapshot_deltas(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoint_records_session ON checkpoint_records(session_id)")
@@ -789,6 +812,75 @@ class SQLiteMemoryStore:
                 (compressed_json, now, now, session_id),
             )
 
+    def save_context_epoch(self, state: ContextEpochState) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO context_epochs(
+                    epoch_id, session_id, start_message_index, end_message_index,
+                    status, trigger, reason, summary, retain_context_ids_json,
+                    active_files_json, next_context_hint, created_at, committed_at
+                )
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    state.epoch_id,
+                    state.session_id,
+                    state.start_message_index,
+                    state.end_message_index,
+                    state.status.value,
+                    state.trigger,
+                    state.reason,
+                    state.summary,
+                    json.dumps(state.retain_context_ids, ensure_ascii=False),
+                    json.dumps(state.active_files, ensure_ascii=False),
+                    state.next_context_hint,
+                    state.created_at,
+                    state.committed_at,
+                ),
+            )
+
+    def load_active_context_epoch(self, session_id: str) -> ContextEpochState | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM context_epochs
+                WHERE session_id = ? AND status IN (?, ?)
+                ORDER BY created_at DESC
+                LIMIT 1
+                """,
+                (
+                    session_id,
+                    ContextEpochStatus.ACTIVE.value,
+                    ContextEpochStatus.PENDING_COMMIT.value,
+                ),
+            ).fetchone()
+        return context_epoch_from_row(row) if row is not None else None
+
+    def load_context_epochs(self, session_id: str) -> list[ContextEpochState]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT * FROM context_epochs
+                WHERE session_id = ?
+                ORDER BY created_at, epoch_id
+                """,
+                (session_id,),
+            ).fetchall()
+        return [context_epoch_from_row(row) for row in rows]
+
+    def has_committed_context_epoch(self, session_id: str) -> bool:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT 1 FROM context_epochs
+                WHERE session_id = ? AND status = ?
+                LIMIT 1
+                """,
+                (session_id, ContextEpochStatus.COMMITTED.value),
+            ).fetchone()
+        return row is not None
+
     def save_lrfu_snapshot(self, *, session_id: str, lrfu: dict) -> None:
         now = time()
         with self._connect() as conn:
@@ -845,6 +937,7 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM tool_invocation_metadata WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM recoverable_contexts WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_context_snapshots WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM context_epochs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM conversation_snapshots WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM snapshot_deltas WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM checkpoint_records WHERE session_id = ?", (session_id,))
@@ -868,6 +961,7 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM tool_invocation_metadata WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM recoverable_contexts WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_context_snapshots WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM context_epochs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM conversation_snapshots WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM snapshot_deltas WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM checkpoint_records WHERE session_id = ?", (session_id,))
@@ -906,6 +1000,7 @@ class SQLiteMemoryStore:
             workspace_label=row["workspace_label"],
             workspace_fingerprint=row["workspace_fingerprint"],
             token_usage=self.load_token_usage_summary(session_id),
+            context_epoch=self.load_active_context_epoch(session_id),
         )
 
     def save_conversation_snapshot(self, snapshot: ConversationSnapshot) -> None:
@@ -1152,6 +1247,24 @@ def tool_metadata_from_row(row: sqlite3.Row) -> ToolInvocationMetadata:
         reproducible=bool(row["reproducible"]),
         is_error=bool(row["is_error"]),
         created_at=float(row["created_at"]),
+    )
+
+
+def context_epoch_from_row(row: sqlite3.Row) -> ContextEpochState:
+    return ContextEpochState(
+        epoch_id=row["epoch_id"],
+        session_id=row["session_id"],
+        start_message_index=int(row["start_message_index"]),
+        end_message_index=int(row["end_message_index"]) if row["end_message_index"] is not None else None,
+        status=ContextEpochStatus(row["status"]),
+        trigger=row["trigger"],
+        reason=row["reason"],
+        summary=row["summary"],
+        retain_context_ids=json.loads(row["retain_context_ids_json"] or "[]"),
+        active_files=json.loads(row["active_files_json"] or "[]"),
+        next_context_hint=row["next_context_hint"],
+        created_at=float(row["created_at"]),
+        committed_at=float(row["committed_at"]) if row["committed_at"] is not None else None,
     )
 
 

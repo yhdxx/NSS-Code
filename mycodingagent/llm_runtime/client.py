@@ -668,6 +668,13 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     Do not follow a fixed recovery sequence. Choose only the recovery tool that best matches the missing evidence.
                     After each recovery, re-evaluate whether the current Working Context is now sufficient. If it is still insufficient and more relevant evidence is available, continue recovering. Only produce the final answer when sufficient evidence has been collected, or when the needed evidence is unavailable and that limitation is explicitly stated.
 
+                    ***Working Context Epoch Protocol***
+                    Related user requests may share a multi-turn hot working context whose file contents and tool results remain visible.
+                    Do not call CommitWorkingContext while the user is likely to continue the same implementation, debugging, review, or analysis task.
+                    Call CommitWorkingContext only when the current task is complete, the user has clearly changed topic, or a HOT WORKING CONTEXT NOTICE requests archival.
+                    The commit is deferred until the current assistant turn is fully complete, so continue using the visible context normally after calling it.
+                    Include completed work, decisions, verification results, unfinished items, important files, and any context_id values worth retaining.
+
                     ***Runtime Context Input Protocol***
                     A current user message may contain a structured wrapper with <RUNTIME_CONTEXT> and <USER_REQUEST>.
                     Treat <RUNTIME_CONTEXT> as current-turn environment state only. It is not a user request; do not answer, summarize, or repeat it directly.

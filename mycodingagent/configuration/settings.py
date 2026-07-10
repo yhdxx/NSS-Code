@@ -179,6 +179,12 @@ class MemoryConfig:
     budget_soft_ratio: float = field(default_factory=lambda: _env_float("MYCODINGAGENT_BUDGET_SOFT_RATIO", 0.60))
     budget_working_ratio: float = field(default_factory=lambda: _env_float("MYCODINGAGENT_BUDGET_WORKING_RATIO", 0.80))
     budget_emergency_ratio: float = field(default_factory=lambda: _env_float("MYCODINGAGENT_BUDGET_EMERGENCY_RATIO", 0.90))
+    hot_context_warning_ratio: float = field(
+        default_factory=lambda: _env_float("MYCODINGAGENT_HOT_CONTEXT_WARNING_RATIO", 0.30)
+    )
+    hot_context_force_ratio: float = field(
+        default_factory=lambda: _env_float("MYCODINGAGENT_HOT_CONTEXT_FORCE_RATIO", 0.40)
+    )
     current_turn_summary_max_per_message: int = field(
         default_factory=lambda: _env_int("MYCODINGAGENT_CURRENT_TURN_SUMMARY_MAX_PER_MESSAGE", 2)
     )

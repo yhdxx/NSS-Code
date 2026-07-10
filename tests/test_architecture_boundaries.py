@@ -122,6 +122,18 @@ def test_skill_tools_depend_on_contract_not_runtime():
     assert "skill_runtime.runtime import SkillRuntime" not in source
 
 
+def test_working_context_tool_depends_on_control_contract():
+    source = (PACKAGE_ROOT / "tool_runtime" / "memory_lookup.py").read_text(encoding="utf-8")
+    assert "memory.contracts import ContextEpochControl" in source
+    assert "def __init__(self, context_control: ContextEpochControl)" in source
+
+
+def test_context_epoch_manager_depends_on_store_protocol():
+    source = (PACKAGE_ROOT / "memory" / "context_epoch.py").read_text(encoding="utf-8")
+    assert "class ContextEpochStore(Protocol)" in source
+    assert "SQLiteMemoryStore" not in source
+
+
 def test_capability_discovery_does_not_import_mcp_implementation():
     source = "\n".join(
         path.read_text(encoding="utf-8")

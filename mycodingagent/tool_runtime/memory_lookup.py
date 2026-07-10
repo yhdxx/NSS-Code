@@ -6,6 +6,7 @@ from typing import TYPE_CHECKING, Any
 
 from pydantic import BaseModel, Field
 
+from mycodingagent.memory.contracts import ContextEpochControl
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
 if TYPE_CHECKING:
@@ -277,6 +278,63 @@ class SummarizeCurrentTurnMessage(Tool):
             "status": "ok",
             "metadata": asdict(metadata),
             "notice": "The current-turn message will be replaced by this summary on the next model call.",
+        }
+        return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+class CommitWorkingContextParams(BaseModel):
+    reason: str = Field(description="Why the current multi-turn task context is complete or should be archived.")
+    summary: str = Field(description="Dense summary of completed work, decisions, results, and unfinished items.")
+    retain_context_ids: list[str] = Field(
+        default_factory=list,
+        description="Visible context_id values that may still be needed after the working context is archived.",
+    )
+    active_files: list[str] = Field(
+        default_factory=list,
+        description="Important project files involved in this working context.",
+    )
+    next_context_hint: str = Field(
+        default="",
+        description="Optional guidance for the next working-context epoch.",
+    )
+
+
+class CommitWorkingContext(Tool):
+    name = "CommitWorkingContext"
+    description = (
+        "Close the current multi-turn working-context epoch after the current assistant turn completes. "
+        "Use this only when the current task is complete, the user changes topic, or the visible hot-context "
+        "notice requests a commit. Do not call it between closely related requests that still need the same "
+        "file contents or tool results. This tool schedules archival; it never hides messages during the "
+        "current tool-call chain."
+    )
+    params_model = CommitWorkingContextParams
+    category = "command"
+    is_concurrency_safe = False
+
+    def __init__(self, context_control: ContextEpochControl) -> None:
+        self._context_control = context_control
+
+    async def execute(self, params: CommitWorkingContextParams) -> ToolResult:
+        try:
+            state = self._context_control.request_context_epoch_commit(
+                reason=params.reason,
+                summary=params.summary,
+                retain_context_ids=params.retain_context_ids,
+                active_files=params.active_files,
+                next_context_hint=params.next_context_hint,
+                trigger="model",
+            )
+        except ValueError as exc:
+            return ToolResult(output=f"Error: {exc}", is_error=True)
+        payload = {
+            "status": state.status.value,
+            "epoch_id": state.epoch_id,
+            "start_message_index": state.start_message_index,
+            "trigger": state.trigger,
+            "retain_context_ids": state.retain_context_ids,
+            "active_files": state.active_files,
+            "notice": "The working context will be archived only after the current assistant turn completes.",
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
 

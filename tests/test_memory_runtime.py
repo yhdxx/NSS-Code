@@ -26,7 +26,13 @@ except ModuleNotFoundError:
 
 from mycodingagent.llm_runtime import client as agent_client
 from mycodingagent.configuration import CONFIG
-from mycodingagent.memory import ConversationSnapshot, MemoryRuntime, SQLiteMemoryStore, SnapshotDelta
+from mycodingagent.memory import (
+    ContextEpochStatus,
+    ConversationSnapshot,
+    MemoryRuntime,
+    SQLiteMemoryStore,
+    SnapshotDelta,
+)
 from mycodingagent.memory.budget import BudgetStage, PromptBudgetSnapshot
 from mycodingagent.memory.checkpoint import SNAPSHOT_FIELD_ORDER, TurnState, format_snapshot_prompt
 from mycodingagent.memory.compressor import ContextCompressor, is_reproducible_tool
@@ -43,6 +49,8 @@ from mycodingagent.llm_runtime.context import (
 )
 from mycodingagent.tool_runtime import create_default_registry
 from mycodingagent.tool_runtime.memory_lookup import (
+    CommitWorkingContext,
+    CommitWorkingContextParams,
     GetStoredToolOutput,
     GetStoredToolOutputParams,
     RecoverContext,
@@ -988,6 +996,7 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
     output_schema = next(schema for schema in schemas if schema["name"] == "GetStoredToolOutput")
 
     assert {
+        "CommitWorkingContext",
         "GetStoredToolOutput",
         "RecoverContext",
         "RestoreSession",
@@ -1930,3 +1939,258 @@ def test_recover_context_reports_missing_after_owner_session_delete(tmp_path):
 
     assert result.is_error
     assert "recoverable context not found" in result.output
+
+
+def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=100_000),
+    )
+    session_id = runtime.start_session("test")
+    runtime.force_context_virtualized(session_id)
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"app.py"}',
+        output="important implementation details",
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "query1 inspect implementation"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"app.py"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "important implementation details",
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+        {"role": "assistant", "content": "query1 answer"},
+    ]
+
+    first = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="query1 inspect implementation",
+        current_turn_start=1,
+    )
+    assert next(message for message in first if message.get("role") == "tool")["content"] == (
+        "important implementation details"
+    )
+
+    messages.extend(
+        [
+            {"role": "user", "content": "query2 modify that implementation"},
+            {"role": "assistant", "content": "query2 completed"},
+        ]
+    )
+    second = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="query2 modify that implementation",
+        current_turn_start=5,
+    )
+    assert next(message for message in second if message.get("role") == "tool")["content"] == (
+        "important implementation details"
+    )
+
+    runtime.request_context_epoch_commit(
+        reason="implementation task complete",
+        summary="Inspected and modified app.py.",
+        retain_context_ids=[output_id],
+        active_files=["app.py"],
+    )
+    next_epoch = runtime.finalize_pending_context_epoch(session_id=session_id, messages=messages)
+    assert next_epoch is not None
+    messages.append({"role": "user", "content": "query3 unrelated topic"})
+
+    third = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="query3 unrelated topic",
+        current_turn_start=len(messages) - 1,
+    )
+    historical_tool = next(message for message in third if message.get("role") == "tool")
+    assert "Historical tool output virtualized" in historical_tool["content"]
+    assert output_id in historical_tool["content"]
+
+
+def test_commit_working_context_tool_is_deferred_and_idempotent(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "complete task"},
+        {"role": "assistant", "content": "done"},
+    ]
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="complete task",
+        current_turn_start=1,
+    )
+    tool = CommitWorkingContext(runtime)
+    params = CommitWorkingContextParams(
+        reason="task complete",
+        summary="Completed the task and verified the result.",
+        active_files=["app.py", "app.py"],
+    )
+
+    first = asyncio.run(tool.execute(params))
+    second = asyncio.run(tool.execute(params))
+
+    assert not first.is_error
+    assert not second.is_error
+    pending = runtime.get_active_context_epoch(session_id)
+    assert pending is not None
+    assert pending.status == ContextEpochStatus.PENDING_COMMIT
+    assert pending.active_files == ["app.py"]
+    assert pending.end_message_index is None
+
+    runtime.finalize_pending_context_epoch(session_id=session_id, messages=messages)
+    epochs = runtime.store.load_context_epochs(session_id)
+    assert [epoch.status for epoch in epochs] == [
+        ContextEpochStatus.COMMITTED,
+        ContextEpochStatus.ACTIVE,
+    ]
+    assert epochs[0].end_message_index == len(messages)
+    assert epochs[1].start_message_index == len(messages)
+    assert runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
+
+    restored_runtime = MemoryRuntime(store=runtime.store)
+    restored_state = restored_runtime.load_session(session_id)
+    assert restored_state is not None
+    assert restored_runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
+    assert restored_state.context_epoch is not None
+    assert restored_state.context_epoch.epoch_id == epochs[1].epoch_id
+
+
+def test_hot_context_threshold_schedules_runtime_commit(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=1_000),
+    )
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "x" * 1_700},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="large task",
+        current_turn_start=1,
+    )
+
+    assert any("HOT WORKING CONTEXT NOTICE" in str(message.get("content", "")) for message in rendered)
+    pending = runtime.get_active_context_epoch(session_id)
+    assert pending is not None
+    assert pending.status == ContextEpochStatus.PENDING_COMMIT
+    assert pending.trigger == "runtime"
+
+
+def test_hot_context_warning_does_not_schedule_commit(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=1_000),
+    )
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "x" * 1_200},
+        {"role": "assistant", "content": "done"},
+    ]
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="warning task",
+        current_turn_start=1,
+    )
+
+    assert any("HOT WORKING CONTEXT NOTICE" in str(message.get("content", "")) for message in rendered)
+    state = runtime.get_active_context_epoch(session_id)
+    assert state is not None
+    assert state.status == ContextEpochStatus.ACTIVE
+    snapshot = runtime.hot_context_budget_snapshot(session_id=session_id, messages=messages, current_turn_start=1)
+    assert snapshot.warning
+    assert not snapshot.force_commit
+
+
+def test_pending_context_epoch_is_finalized_on_safe_session_resume(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+    runtime = MemoryRuntime(store=store)
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "finish work"},
+        {"role": "assistant", "content": "completed"},
+    ]
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="finish work",
+        current_turn_start=1,
+    )
+    runtime.request_context_epoch_commit(
+        reason="task complete",
+        summary="Finished and verified the task.",
+    )
+    runtime.save_messages_now(session_id, messages)
+
+    restored_runtime = MemoryRuntime(store=store)
+    restored_state = restored_runtime.load_session(session_id)
+
+    assert restored_state is not None
+    assert restored_state.context_epoch is not None
+    assert restored_state.context_epoch.status == ContextEpochStatus.ACTIVE
+    assert restored_state.context_epoch.start_message_index == len(messages)
+    assert restored_runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
+    assert [epoch.status for epoch in store.load_context_epochs(session_id)] == [
+        ContextEpochStatus.COMMITTED,
+        ContextEpochStatus.ACTIVE,
+    ]
+
+
+def test_legacy_session_migration_keeps_last_complete_turn_hot(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+    session_id = "legacy-session"
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "first task"},
+        {"role": "assistant", "content": "first answer"},
+        {"role": "user", "content": "last task"},
+        {"role": "assistant", "content": "last answer"},
+    ]
+    store.ensure_session(session_id=session_id, model="test")
+    store.save_messages(session_id=session_id, messages=messages)
+    runtime = MemoryRuntime(store=store)
+
+    state = runtime.load_session(session_id)
+
+    assert state is not None
+    epoch = runtime.get_active_context_epoch(session_id)
+    assert epoch is not None
+    assert epoch.start_message_index == 3
+    restored = MemoryRuntime(store=store).load_session(session_id)
+    assert restored is not None
+    assert restored.context_epoch is not None
+    assert restored.context_epoch.epoch_id == epoch.epoch_id

@@ -19,10 +19,21 @@ from mycodingagent.memory.budget import PromptBudgetManager, PromptBudgetSnapsho
 from mycodingagent.memory.checkpoint import CheckpointManager, RolloverResult, TurnState
 from mycodingagent.memory.compressor import ContextCompressor, ToolOutputRef, is_reproducible_tool
 from mycodingagent.memory.context_objects import RecoverableContextObject, build_recoverable_context
+from mycodingagent.memory.context_epoch import (
+    ContextEpochManager,
+    automatic_context_epoch_summary,
+    collect_context_epoch_files,
+    format_context_epoch_commit_report,
+    format_hot_context_notice,
+    last_user_message_index,
+)
 from mycodingagent.memory.models import (
     CompressionResult,
+    ContextEpochState,
+    ContextEpochStatus,
     ConversationSnapshot,
     HistoricalTurn,
+    HotContextBudgetSnapshot,
     MemoryEntry,
     MemoryQuery,
     MemoryScope,
@@ -98,6 +109,12 @@ class MemoryRuntime:
         self._tool_output_refs: dict[str, ToolOutputRef] = {}
         self._context_metadata_refs: dict[str, RecoverableContextObject] = {}
         self._context_modes: dict[str, ContextMode] = {}
+        self.context_epoch_manager = ContextEpochManager(
+            store=self.store,
+            context_window=context_window,
+            warning_ratio=CONFIG.memory.hot_context_warning_ratio,
+            force_ratio=CONFIG.memory.hot_context_force_ratio,
+        )
         self._last_raw_rendered_messages: dict[str, list[dict[str, Any]]] = {}
         self._message_versions: dict[str, int] = {}
         self._message_write_lock = threading.Lock()
@@ -191,6 +208,81 @@ class MemoryRuntime:
         self._current_turn_summaries.clear()
         self._current_turn_summary_calls = 0
 
+    def get_active_context_epoch(self, session_id: str | None = None) -> ContextEpochState | None:
+        key = session_id or self.current_session_id or ""
+        return self.context_epoch_manager.get(key) if key else None
+
+    def ensure_context_epoch(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        current_turn_start: int | None = None,
+    ) -> ContextEpochState:
+        return self.context_epoch_manager.ensure(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=current_turn_start,
+        )
+
+    def request_context_epoch_commit(
+        self,
+        *,
+        reason: str,
+        summary: str,
+        retain_context_ids: list[str] | None = None,
+        active_files: list[str] | None = None,
+        next_context_hint: str = "",
+        trigger: str = "model",
+        session_id: str | None = None,
+    ) -> ContextEpochState:
+        target_session_id = session_id or self.current_session_id or ""
+        if not target_session_id:
+            raise ValueError("no active memory session")
+        return self.context_epoch_manager.request_commit(
+            session_id=target_session_id,
+            reason=reason,
+            summary=summary,
+            retain_context_ids=retain_context_ids,
+            active_files=active_files,
+            next_context_hint=next_context_hint,
+            trigger=trigger,
+        )
+
+    def finalize_pending_context_epoch(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> ContextEpochState | None:
+        result = self.context_epoch_manager.finalize(
+            session_id=session_id,
+            end_message_index=len(messages),
+            pending_tool_call=has_pending_tool_call(messages),
+        )
+        if result is None:
+            return None
+        committed, next_state = result
+        self.force_context_virtualized(session_id)
+        self._current_turn_summaries.clear()
+        self._current_turn_summary_calls = 0
+        if CONFIG.memory.output_context_compression:
+            print(format_context_epoch_commit_report(committed, next_state), flush=True)
+        return next_state
+
+    def hot_context_budget_snapshot(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        current_turn_start: int | None = None,
+    ) -> HotContextBudgetSnapshot:
+        return self.context_epoch_manager.snapshot(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=current_turn_start,
+        )
+
     def context_mode(self, session_id: str | None = None) -> ContextMode:
         key = session_id or self.current_session_id or ""
         if not key:
@@ -252,6 +344,16 @@ class MemoryRuntime:
         if state is not None:
             self.store.touch_session(session_id)
             self.current_session_id = session_id
+            epoch = state.context_epoch or self.ensure_context_epoch(
+                session_id=session_id,
+                messages=state.messages,
+            )
+            self.context_epoch_manager.remember(epoch)
+            if self.store.has_committed_context_epoch(session_id):
+                self.force_context_virtualized(session_id)
+            if epoch.status == ContextEpochStatus.PENDING_COMMIT and not has_pending_tool_call(state.messages):
+                epoch = self.finalize_pending_context_epoch(session_id=session_id, messages=state.messages) or epoch
+            state.context_epoch = epoch
         return state
 
     def record_token_usage(
@@ -320,6 +422,15 @@ class MemoryRuntime:
             workspace_fingerprint=self.workspace_fingerprint,
         )
         self.save_messages_now(fork_session_id, fork_messages)
+        source_epoch = source_state.context_epoch
+        self.context_epoch_manager.create(
+            session_id=fork_session_id,
+            start_message_index=(
+                min(source_epoch.start_message_index, len(fork_messages))
+                if source_epoch is not None
+                else (last_user_message_index(fork_messages) or len(fork_messages))
+            ),
+        )
         if model_name != self.model:
             self.store.ensure_session(
                 session_id=fork_session_id,
@@ -346,6 +457,7 @@ class MemoryRuntime:
             self.current_session_id = None
         if deleted:
             self._context_modes.pop(session_id, None)
+            self.context_epoch_manager.delete(session_id)
             self._last_raw_rendered_messages.pop(session_id, None)
         return deleted
 
@@ -587,7 +699,15 @@ class MemoryRuntime:
         persist_snapshot: bool = True,
     ) -> list[dict[str, Any]]:
         raw_rendered = sanitize_messages_for_model(messages)
-        historical_messages, current_messages = split_historical_and_current(messages, current_turn_start)
+        epoch = self.ensure_context_epoch(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=current_turn_start,
+        )
+        historical_messages, current_messages = split_historical_and_current(
+            messages,
+            epoch.start_message_index,
+        )
         historical_turns = self.store.load_historical_turns(session_id) or build_historical_turns(
             session_id,
             historical_messages,
@@ -608,6 +728,26 @@ class MemoryRuntime:
             current_prompt=current_prompt,
         )
         rendered = virtualized_rendered if decision.mode == ContextMode.VIRTUALIZED else raw_rendered
+        hot_snapshot = self.hot_context_budget_snapshot(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=current_turn_start,
+        )
+        if hot_snapshot.force_commit and not hot_snapshot.pending_commit:
+            epoch = self.request_context_epoch_commit(
+                reason="hot working context reached the forced commit threshold",
+                summary=automatic_context_epoch_summary(messages, epoch.start_message_index),
+                active_files=collect_context_epoch_files(messages, epoch.start_message_index),
+                trigger="runtime",
+                session_id=session_id,
+            )
+            hot_snapshot = self.hot_context_budget_snapshot(
+                session_id=session_id,
+                messages=messages,
+                current_turn_start=current_turn_start,
+            )
+        if hot_snapshot.warning:
+            rendered = insert_budget_notice(rendered, format_hot_context_notice(hot_snapshot))
         snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
         if (
             CONFIG.memory.output_context_compression
@@ -786,6 +926,7 @@ class MemoryRuntime:
             self.save_lrfu_snapshot(session_id, skill_runtime)
             self.save_file_state_snapshot(session_id, file_state_cache)
             await self.drain()
+            self.finalize_pending_context_epoch(session_id=session_id, messages=messages)
             virtualized_messages = self.render_messages_for_model(
                 session_id=session_id,
                 messages=messages,
