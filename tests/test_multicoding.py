@@ -7,30 +7,31 @@ from pathlib import Path
 
 import pytest
 
-from commands import CommandContext
-from config import MultiCodingConfig
-from multi_agent.controller import MultiCodingController
-from multi_agent.hooks import CollectingRuntimeEventHook, StaticArchitectureApprovalHook
-from multi_agent.models import AgentResult, AgentRole, WorkItem, WorkflowResult, WorkflowStatus
-from multi_agent.orchestrator import (
+from mycodingagent.commands import CommandContext
+from mycodingagent.configuration import MultiCodingConfig
+from mycodingagent.multi_agent.orchestration.controller import MultiCodingController
+from mycodingagent.multi_agent.infrastructure.events import CollectingRuntimeEventHook, StaticArchitectureApprovalHook
+from mycodingagent.multi_agent.domain.models import AgentResult, AgentRole, WorkItem, WorkflowResult, WorkflowStatus
+from mycodingagent.multi_agent.infrastructure.run_journal import JsonRunJournal
+from mycodingagent.multi_agent.orchestration.orchestrator import (
     MultiCodingOrchestrator,
     architecture_approval_required,
     path_scopes_overlap,
     select_runnable_batch,
 )
-from multi_agent.permissions import (
+from mycodingagent.multi_agent.infrastructure.permissions import (
     READ_ONLY_TOOLS,
     ToolAccessPolicy,
     ToolPermissionError,
     is_validation_command,
 )
-from tools import ToolRegistry
-from tools.read_file import ReadFile
-from tools.write_file import WriteFile
+from mycodingagent.tool_runtime import ToolRegistry
+from mycodingagent.tool_runtime.read_file import ReadFile
+from mycodingagent.tool_runtime.write_file import WriteFile
 
 
 def load_app_main():
-    path = Path(__file__).resolve().parents[1] / "__main__.py"
+    path = Path(__file__).resolve().parents[1] / "mycodingagent" / "app" / "main.py"
     spec = importlib.util.spec_from_file_location("mycodingagent_entrypoint", path)
     assert spec is not None and spec.loader is not None
     module = importlib.util.module_from_spec(spec)
@@ -145,6 +146,18 @@ class FakeRunner:
         raise AssertionError(f"unexpected request: {request.role} {system[:80]}")
 
 
+class AuditOnlyRunner(FakeRunner):
+    async def run(self, request):
+        if "main routing agent" in request.system_prompt:
+            self.calls.append(request)
+            return AgentResult(
+                text='{"query":"inspect coupling","mode":"audit_only","reason":"read-only review"}'
+            )
+        if request.role == AgentRole.EXECUTOR:
+            raise AssertionError("audit-only workflow must not invoke an executor")
+        return await super().run(request)
+
+
 def test_controller_persistent_enable_disable_and_run():
     controller = MultiCodingController(FakeOrchestrator(), MultiCodingConfig())
     controller.enable()
@@ -229,10 +242,6 @@ def test_orchestrator_runs_planned_workflow_and_updates_framework(tmp_path):
     runner = FakeRunner(tmp_path)
     events = CollectingRuntimeEventHook()
     orchestrator = MultiCodingOrchestrator(
-        api_client=None,
-        registry=ToolRegistry(),
-        tools=[],
-        core_tool_schemas=[],
         workspace_root=tmp_path,
         config=MultiCodingConfig(
             audit_parallelism=2,
@@ -243,6 +252,7 @@ def test_orchestrator_runs_planned_workflow_and_updates_framework(tmp_path):
         event_hook=events,
         approval_hook=StaticArchitectureApprovalHook(True),
         runner=runner,
+        default_model="test-model",
     )
 
     result, messages = asyncio.run(orchestrator.run("Implement feature", []))
@@ -256,10 +266,43 @@ def test_orchestrator_runs_planned_workflow_and_updates_framework(tmp_path):
     assert messages[-2]["role"] == "user"
     assert messages[-1]["role"] == "assistant"
     assert any(event.phase == "complete" for event in events.events)
+    assert len(result.execution_reports) == 2
+
+
+def test_audit_only_workflow_never_executes_or_changes_project(tmp_path):
+    runner = AuditOnlyRunner(tmp_path)
+    events = CollectingRuntimeEventHook()
+    journal = JsonRunJournal(tmp_path / "run-records")
+    orchestrator = MultiCodingOrchestrator(
+        workspace_root=tmp_path,
+        config=MultiCodingConfig(
+            audit_parallelism=2,
+            execution_parallelism=2,
+            max_repair_rounds=1,
+            max_agent_tool_rounds=5,
+        ),
+        event_hook=events,
+        approval_hook=StaticArchitectureApprovalHook(True),
+        runner=runner,
+        run_journal=journal,
+        default_model="test-model",
+    )
+
+    result, _messages = asyncio.run(orchestrator.run("Check whether modules are decoupled", []))
+
+    assert result.status == WorkflowStatus.COMPLETED
+    assert result.work_items == ()
+    assert result.changed_files == ()
+    assert not any(call.role == AgentRole.EXECUTOR for call in runner.calls)
+    assert not (tmp_path / "PROJECT_FRAMEWORK.md").exists()
+    record = journal.latest()
+    assert record is not None
+    assert record["mode"] == "audit_only"
+    assert record["execution_reports"] == []
 
 
 def test_architecture_approval_required_for_structural_changes():
-    from multi_agent.models import ArchitectureProposal
+    from mycodingagent.multi_agent.domain.models import ArchitectureProposal
 
     assert architecture_approval_required(
         ArchitectureProposal(summary="split module", module_changes=("split service",))

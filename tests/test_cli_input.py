@@ -3,7 +3,7 @@ from __future__ import annotations
 import codecs
 import os
 
-from cli_input import (
+from mycodingagent.terminal_ui.input import (
     InteractivePrompt,
     clamp_selection,
     format_command_argument_usage_panel,
@@ -16,7 +16,7 @@ from cli_input import (
     strip_readline_markers,
     visible_width,
 )
-from commands import CommandRegistry, CommandResult, CommandSpec
+from mycodingagent.commands import CommandRegistry, CommandResult, CommandSpec
 
 
 async def noop_handler(context, arguments):
@@ -293,7 +293,7 @@ def test_render_clears_relative_lines_and_returns_cursor_to_input(monkeypatch):
     writes = []
     monkeypatch.setattr("sys.stdout.write", lambda text: writes.append(text))
     monkeypatch.setattr("sys.stdout.flush", lambda: None)
-    monkeypatch.setattr("cli_input.terminal_width", lambda: 80)
+    monkeypatch.setattr("mycodingagent.terminal_ui.input.terminal_width", lambda: 80)
 
     prompt._render()
     prompt.buffer = "/r"
@@ -320,20 +320,23 @@ def test_prompt_strips_readline_markers_and_counts_visible_width():
 
 
 def test_visible_width_uses_wcwidth_when_available(monkeypatch):
-    monkeypatch.setattr("cli_input.wcswidth", lambda text: 2 if text == "👨‍👩‍👧‍👦" else len(text))
+    monkeypatch.setattr(
+        "mycodingagent.terminal_ui.input.wcswidth",
+        lambda text: 2 if text == "👨‍👩‍👧‍👦" else len(text),
+    )
 
     assert visible_width("👨‍👩‍👧‍👦") == 2
 
 
 def test_hard_wrap_avoids_soft_wrap_and_last_column(monkeypatch):
-    monkeypatch.setattr("cli_input.terminal_width", lambda: 10)
+    monkeypatch.setattr("mycodingagent.terminal_ui.input.terminal_width", lambda: 10)
 
     assert safe_render_columns() == 9
     assert hard_wrap_ansi("1234567890", safe_render_columns()) == ["123456789", "0"]
 
 
 def test_render_screen_tracks_input_cursor_after_hard_wrap(monkeypatch):
-    monkeypatch.setattr("cli_input.terminal_width", lambda: 10)
+    monkeypatch.setattr("mycodingagent.terminal_ui.input.terminal_width", lambda: 10)
 
     screen = render_screen(["User: 12345", "hint"], safe_render_columns())
 
@@ -357,7 +360,7 @@ def test_render_uses_crlf_in_raw_mode(monkeypatch):
     writes = []
     monkeypatch.setattr("sys.stdout.write", lambda text: writes.append(text))
     monkeypatch.setattr("sys.stdout.flush", lambda: None)
-    monkeypatch.setattr("cli_input.terminal_width", lambda: 80)
+    monkeypatch.setattr("mycodingagent.terminal_ui.input.terminal_width", lambda: 80)
 
     prompt._render()
 

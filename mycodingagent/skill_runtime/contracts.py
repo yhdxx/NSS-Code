@@ -1,0 +1,42 @@
+from __future__ import annotations
+
+from typing import Any, Protocol
+
+
+class SkillService(Protocol):
+    async def search_skill_schemas(
+        self,
+        *,
+        query: str,
+        max_results: int,
+        tool_names: list[str],
+    ) -> dict[str, Any]: ...
+
+    async def list_skill_tools(self) -> dict[str, Any]: ...
+
+    async def get_tool_schema_by_name(self, tool_name: str) -> dict[str, Any]: ...
+
+    async def search_skill_references(
+        self,
+        *,
+        query: str,
+        skill_name: str,
+        max_results: int,
+    ) -> dict[str, Any]: ...
+
+    async def get_skill_reference(
+        self,
+        *,
+        skill_name: str,
+        reference_path: str,
+    ) -> dict[str, Any]: ...
+
+    def get_record(self, tool_name: str) -> Any | None: ...
+
+    def record_skill_invocation(self, tool_name: str) -> None: ...
+
+    def list_references_for_skill(self, tool_name: str) -> list[dict[str, Any]]: ...
+
+
+class ToolRegistrar(Protocol):
+    def register(self, tool: Any) -> None: ...

@@ -6,20 +6,22 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 
 ## 项目框架
 
-项目采用分层架构，由以下核心子系统协同工作：
+核心运行时代码统一位于 `mycodingagent/`，根目录 `__main__.py` 仅负责调用应用入口。目录按职责命名，跨模块通过 Protocol 和组合根注入依赖：
 
-- **入口层**：`__main__.py` 负责启动全流程——打印欢迎界面、检查 Docker 镜像、初始化各子系统、进入交互循环并协调模型对话。
-- **配置层**：`config.py` 将项目所有可配置项统一为数据类，通过环境变量驱动，涵盖 API、客户端行为、记忆管理、沙箱、Docker、Skill 和向量检索等维度。
-- **模型交互层**：`client.py` 封装与 DeepSeek API 的通信，包括系统提示词注入、流式响应解析、工具调用的循环执行和结果回传。
-- **多智能体编排层**：`multi_agent/` 实现 `/multicoding` 持续模式，负责主路由、只读规划与项目审计、架构优化审批、路径隔离执行、验证和有限次数修复。
-- **工具层**：`tools/` 提供核心基础工具（文件读写、内容搜索、通配符匹配、Shell 命令执行、用户询问）以及记忆相关工具，所有文件操作限定在沙箱工作区内。
-- **Capability Router 层**：`capabilities/` 在每轮模型调用前统一做能力发现，融合本地 Skill 与 MCP Server 推荐，并将推荐信息注入 Runtime Context。
-- **MCP Client 层**：`mcp_client/` 读取真实 MCP Server 配置，按需建立 MCP stdio 连接，发现 tools/resources/prompts metadata，并通过稳定 Discovery/Execution Tool 暴露给模型。
-- **Skill 系统层**：`skills/` 实现开发者 Skill 的发现、注册、向量检索、路由选择和调用执行，是项目的核心扩展机制。详见下方"Skill 管理模块设计"。
-- **记忆管理层**：`memory/` 实现上下文预算控制、检查点快照、会话回滚和可恢复上下文，保证长对话中的状态一致性和 token 高效利用。详见下方"上下文虚拟化管理系统设计"。
-- **命令系统层**：`commands/` 提供 `/multicoding`、`/resume`、`/fork`、`/clear`、`/delete` 等运行模式与会话管理命令。
-- **终端交互层**：`cli_input.py` 实现带 ANSI 转义序列处理、退格删除、方向键选择补全的交互式输入体验。
-- **基础设施层**：`cache.py` 提供线程安全的文件内容缓存，`workspace_identity.py` 实现工作区指纹识别，`session_switch.py` 协调会话保存与切换。
+- `mycodingagent/app/`：应用启动、依赖组装、资源生命周期和交互主循环。
+- `mycodingagent/configuration/`：环境变量和应用配置。
+- `mycodingagent/llm_runtime/`：模型请求、流式响应、工具循环、Prompt 上下文和 Token 统计。
+- `mycodingagent/terminal_ui/`：终端输入、历史展示、会话选择与确认。
+- `mycodingagent/commands/`：命令注册和 `/multicoding`、`/resume`、`/fork`、`/clear`、`/delete` 处理器。
+- `mycodingagent/workspace/`：工作区身份和文件缓存。
+- `mycodingagent/tool_runtime/`：工具契约、注册表及文件、Shell、记忆、MCP、Skill 工具适配器。
+- `mycodingagent/memory/`：会话、上下文预算、虚拟化、检查点和 SQLite 持久化。
+- `mycodingagent/capability_discovery/`：基于抽象 Skill/MCP 能力源的统一推荐。
+- `mycodingagent/mcp_integration/`：MCP 配置、连接、发现、执行和审批。
+- `mycodingagent/skill_runtime/`：Skill 发现、索引、检索、路由和缓存；`skills/` 仅保存插件资产。
+- `mycodingagent/multi_agent/`：领域契约、工作流编排、基础设施以及按角色拆分的子 Agent。
+
+多智能体请求分为 `direct`、`audit_only`、`implementation`。只读审计不会创建 Executor 或修改项目；每次运行写入用户状态目录，并可通过 `get_multicoding_run` 查询。
 
 ---
 
@@ -27,7 +29,7 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 
 Capability Router 是模型调用前的统一能力发现入口。它不替代 Skill Router，而是把现有 Skill Runtime 作为一个检索子模块，同时接入 MCP Server Retriever，最终生成轻量的能力推荐并写入当前轮 Runtime Context。推荐结果不是限制：即使某个 MCP Server 没被推荐，模型仍可通过 `list_servers` 和 `search_servers` 主动探索。
 
-MCP Client 与 Capability Router 解耦。`mcp_client/` 负责 MCP 协议侧的配置加载、连接管理、metadata discovery 和真实协议调用；`capabilities/` 只负责能力检索、排序、合并和 Runtime Context payload。当前实现支持真实 MCP Server 配置读取、真实 stdio 连接、`tools/list`、`resources/list`、`prompts/list`、metadata cache、`tools/call`、`resources/read` 和 `prompts/get`。
+MCP Client 与 Capability Router 解耦。`mycodingagent/mcp_integration/` 负责 MCP 协议侧的配置加载、连接管理、metadata discovery 和真实协议调用；`mycodingagent/capability_discovery/` 只负责能力检索、排序、合并和 Runtime Context payload。当前实现支持真实 MCP Server 配置读取、真实 stdio 连接、`tools/list`、`resources/list`、`prompts/list`、metadata cache、`tools/call`、`resources/read` 和 `prompts/get`。
 
 MCP 配置采用多层 JSON：
 
@@ -321,11 +323,11 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。输入首先经过命令系统匹配；普通输入在 `/multicoding` 开启时交由多智能体编排器处理，否则进入原有模型交互循环。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、MCP、Skill 文件监听、工作区变更追踪和 API 连接。
 
-### 配置模块（`config.py`）
+### 配置模块（`mycodingagent/configuration/settings.py`）
 
 将所有配置抽象为不可变数据类，按功能域划分为八个子配置：`ApiConfig`（API 密钥、基础地址、模型名）、`ClientConfig`（工具循环上限、输出截断长度、`DEBUG`/`MYCODINGAGENT_DEBUG` 调试开关，以及 `STEP_TOKEN` / `ROUND_TOKEN` / `CONVERSATION_TOKEN` 终端 token 输出开关）、`MemoryConfig`（上下文预算比例、会话过期天数、检查点参数）、`SandboxConfig`（沙箱根目录、跳过目录）、`DockerConfig`（镜像名、资源限制、超时）、`SkillConfig`（Skill 根目录、检索参数、路由权重、LRFU 缓存参数）、`EmbeddingConfig`（BGE 模型、向量维度）和 `MilvusConfig`（连接参数、索引类型、RRF 融合参数）。所有配置值均支持通过环境变量覆盖，在模块加载时生成全局单例 `CONFIG`。
 
-### 模型交互模块（`client.py`）
+### 模型交互模块（`mycodingagent/llm_runtime/client.py`）
 
 实现 H-Agent 的完整对话循环。`ask_deepseek` 函数是核心，首次调用时注入详尽的系统提示词，涵盖角色定义、行为准则、操作安全规范、工具使用指南、Git 安全协议和输出风格要求。若 Skill 运行时存在，还会追加能力选择策略和 Skill 检索指引。
 
@@ -333,7 +335,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 工具执行时对错误进行去重检测，重复失败会附加提示避免死循环。Skill 相关工具调用不持久化到长期记忆，以减少上下文膨胀。还实现了工作区文件外部变更通知——当用户修改了模型已读过的文件时，自动在下一轮消息中插入环境通知。
 
-### 核心工具（`tools/`）
+### 核心工具（`mycodingagent/tool_runtime/`）
 
 工具基类 `Tool` 定义了名称、描述、参数模型和异步执行接口，子类通过实现 `execute` 方法提供具体功能。`ToolRegistry` 管理所有已注册工具，支持启用/禁用和按协议输出 schema。
 
@@ -380,7 +382,7 @@ MYCODINGAGENT_MULTICODING_VALIDATOR_MODEL
 
 内置 `/resume` 命令列出当前工作目录下的历史会话，支持方向键交互选择、跨工作目录恢复确认和会话 ID 直接恢复。恢复后加载完整消息历史、LRFU 快照和文件状态快照。`/delete` 命令支持交互式选择删除、按会话 ID 删除和 `--expired` 批量清理过期会话。
 
-### 终端交互（`cli_input.py`）
+### 终端交互（`mycodingagent/terminal_ui/input.py`）
 
 `InteractivePrompt` 在非交互式终端（管道/重定向）下退化为普通 `input()` 调用。在交互式终端中，使用 `tty.setraw` 进入原始模式，逐字符处理键盘输入——支持退格删除、Ctrl+C 中断、Ctrl+D 退出、回车提交，以及 ANSI 转义序列的方向键导航。渲染层处理 ANSI 颜色的可见宽度计算（依赖 `wcwidth`）、多行文本自动换行和光标定位。命令建议下拉菜单支持动态刷新而不会造成终端闪烁。
 

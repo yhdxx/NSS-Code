@@ -4,15 +4,15 @@ import asyncio
 import json
 import sys
 
-from capabilities import CapabilityRouter
-from mcp_client.hooks import MCPToolApprovalHook, USER_DENIED_MESSAGE
-from mcp_client import MCPClientManager, MCPConfigLoader
-from mcp_client.models import MCPItemSummary
-from mcp_client.policy import MCPApprovalDecision, MCPToolPermissionPolicy
-from runtime_context import PromptRenderer, RuntimeContextBuilder
-from tools import ToolRegistry
-from tools.mcp_discovery import register_mcp_discovery_tools
-from tools.mcp_execution import register_mcp_execution_tools
+from mycodingagent.capability_discovery import CapabilityRouter
+from mycodingagent.mcp_integration.hooks import MCPToolApprovalHook, USER_DENIED_MESSAGE
+from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
+from mycodingagent.mcp_integration.models import MCPItemSummary
+from mycodingagent.mcp_integration.policy import MCPApprovalDecision, MCPToolPermissionPolicy
+from mycodingagent.llm_runtime.context import PromptRenderer, RuntimeContextBuilder
+from mycodingagent.tool_runtime import ToolRegistry
+from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
+from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
 
 
 def test_mcp_config_loader_merges_user_project_and_env(tmp_path, monkeypatch):

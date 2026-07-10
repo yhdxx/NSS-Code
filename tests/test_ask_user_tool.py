@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 
-from tools.ask_user import AskUser
+from mycodingagent.tool_runtime.ask_user import AskUser
 
 
 def test_ask_user_returns_terminal_input(monkeypatch, capsys):

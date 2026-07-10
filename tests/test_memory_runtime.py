@@ -24,25 +24,25 @@ except ModuleNotFoundError:
     openai_stub.APITimeoutError = Exception
     sys.modules["openai"] = openai_stub
 
-import client as agent_client
-from config import CONFIG
-from memory import ConversationSnapshot, MemoryRuntime, SQLiteMemoryStore, SnapshotDelta
-from memory.budget import BudgetStage, PromptBudgetSnapshot
-from memory.checkpoint import SNAPSHOT_FIELD_ORDER, TurnState, format_snapshot_prompt
-from memory.compressor import ContextCompressor, is_reproducible_tool
-from memory.runtime import ContextMode, estimate_raw_uncached_tokens, format_compression_report
-from memory.stores import session_preview
-from memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
-from session_switch import has_conversation_content, save_current_session_if_needed
-from skills.session_skill_cache import SessionSkillCache
-from runtime_context import (
+from mycodingagent.llm_runtime import client as agent_client
+from mycodingagent.configuration import CONFIG
+from mycodingagent.memory import ConversationSnapshot, MemoryRuntime, SQLiteMemoryStore, SnapshotDelta
+from mycodingagent.memory.budget import BudgetStage, PromptBudgetSnapshot
+from mycodingagent.memory.checkpoint import SNAPSHOT_FIELD_ORDER, TurnState, format_snapshot_prompt
+from mycodingagent.memory.compressor import ContextCompressor, is_reproducible_tool
+from mycodingagent.memory.runtime import ContextMode, estimate_raw_uncached_tokens, format_compression_report
+from mycodingagent.memory.stores import session_preview
+from mycodingagent.memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
+from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
+from mycodingagent.skill_runtime.session_skill_cache import SessionSkillCache
+from mycodingagent.llm_runtime.context import (
     PromptRenderer,
     RuntimeContextBuilder,
     extract_user_request_from_rendered_prompt,
     is_rendered_runtime_prompt,
 )
-from tools import create_default_registry
-from tools.memory_lookup import (
+from mycodingagent.tool_runtime import create_default_registry
+from mycodingagent.tool_runtime.memory_lookup import (
     GetStoredToolOutput,
     GetStoredToolOutputParams,
     RecoverContext,
@@ -54,7 +54,7 @@ from tools.memory_lookup import (
     SearchSessionHistory,
     SearchSessionHistoryParams,
 )
-from tools.memory_lookup import GetRecentConversationTurns
+from mycodingagent.tool_runtime.memory_lookup import GetRecentConversationTurns
 
 
 class FileStateCacheStub:

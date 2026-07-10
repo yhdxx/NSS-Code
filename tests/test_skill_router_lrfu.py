@@ -4,10 +4,10 @@ import tempfile
 import unittest
 from pathlib import Path
 
-from skills.lrfu_cache import LRFUCache, LRFUCandidate
-from skills.models import SearchResult, SkillRecord
-from skills.router import SkillRouter, SkillRouterConfig
-from skills.user_skill_cache import UserSkillCache
+from mycodingagent.relevance.lrfu import LRFUCache, LRFUCandidate
+from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
+from mycodingagent.skill_runtime.router import SkillRouter, SkillRouterConfig
+from mycodingagent.skill_runtime.user_skill_cache import UserSkillCache
 
 
 def _record(name: str) -> SkillRecord:

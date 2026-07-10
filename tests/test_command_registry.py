@@ -2,8 +2,8 @@ from __future__ import annotations
 
 import asyncio
 
-from commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
-from conversation_history import format_history_message
+from mycodingagent.commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
+from mycodingagent.terminal_ui.history import format_history_message
 
 
 async def noop_handler(context: CommandContext, arguments: str) -> CommandResult:
