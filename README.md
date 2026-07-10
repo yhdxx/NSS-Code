@@ -11,12 +11,13 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - **入口层**：`__main__.py` 负责启动全流程——打印欢迎界面、检查 Docker 镜像、初始化各子系统、进入交互循环并协调模型对话。
 - **配置层**：`config.py` 将项目所有可配置项统一为数据类，通过环境变量驱动，涵盖 API、客户端行为、记忆管理、沙箱、Docker、Skill 和向量检索等维度。
 - **模型交互层**：`client.py` 封装与 DeepSeek API 的通信，包括系统提示词注入、流式响应解析、工具调用的循环执行和结果回传。
+- **多智能体编排层**：`multi_agent/` 实现 `/multicoding` 持续模式，负责主路由、只读规划与项目审计、架构优化审批、路径隔离执行、验证和有限次数修复。
 - **工具层**：`tools/` 提供核心基础工具（文件读写、内容搜索、通配符匹配、Shell 命令执行、用户询问）以及记忆相关工具，所有文件操作限定在沙箱工作区内。
 - **Capability Router 层**：`capabilities/` 在每轮模型调用前统一做能力发现，融合本地 Skill 与 MCP Server 推荐，并将推荐信息注入 Runtime Context。
 - **MCP Client 层**：`mcp_client/` 读取真实 MCP Server 配置，按需建立 MCP stdio 连接，发现 tools/resources/prompts metadata，并通过稳定 Discovery/Execution Tool 暴露给模型。
 - **Skill 系统层**：`skills/` 实现开发者 Skill 的发现、注册、向量检索、路由选择和调用执行，是项目的核心扩展机制。详见下方"Skill 管理模块设计"。
 - **记忆管理层**：`memory/` 实现上下文预算控制、检查点快照、会话回滚和可恢复上下文，保证长对话中的状态一致性和 token 高效利用。详见下方"上下文虚拟化管理系统设计"。
-- **命令系统层**：`commands/` 提供 `/resume`、`/delete` 等会话管理命令，支持交互式选择和跨工作目录操作。
+- **命令系统层**：`commands/` 提供 `/multicoding`、`/resume`、`/fork`、`/clear`、`/delete` 等运行模式与会话管理命令。
 - **终端交互层**：`cli_input.py` 实现带 ANSI 转义序列处理、退格删除、方向键选择补全的交互式输入体验。
 - **基础设施层**：`cache.py` 提供线程安全的文件内容缓存，`workspace_identity.py` 实现工作区指纹识别，`session_switch.py` 协调会话保存与切换。
 
@@ -318,7 +319,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 启动时首先清理代理环境变量以避免干扰 API 连接，随后打印 ASCII 艺术欢迎界面，检查并确保 Docker 沙箱镜像可用。然后依次初始化文件状态缓存、工作区变更追踪器、记忆运行时、核心工具注册表和 Skill 运行时，并打印 Skill 索引同步报告。
 
-主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。输入首先经过命令系统匹配，若命中 `/resume` 或 `/delete` 则执行会话管理逻辑；否则将用户需求交由模型交互循环处理。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、Skill 文件监听、工作区变更追踪和 API 连接。
+主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。输入首先经过命令系统匹配；普通输入在 `/multicoding` 开启时交由多智能体编排器处理，否则进入原有模型交互循环。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、MCP、Skill 文件监听、工作区变更追踪和 API 连接。
 
 ### 配置模块（`config.py`）
 
@@ -349,6 +350,33 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 ### 命令系统（`commands/`）
 
 `CommandRegistry` 提供命令注册、前缀匹配、精确匹配和参数解析。`InteractivePrompt` 在用户输入 `/` 开头的内容时实时弹出候选命令列表，支持方向键选择、Tab 补全和用法面板展示。
+
+`/multicoding` 启用持续多智能体编码模式，后续普通输入会依次经过主智能体路由、并发项目审计、可选架构优化、执行和验证，直到执行 `/multicoding off`。可用命令：
+
+```text
+/multicoding
+/multicoding on
+/multicoding off
+/multicoding status
+/multicoding --help
+```
+
+规划、项目审计和项目优化智能体由运行时强制限制为只读工具。执行智能体只能修改规划任务声明的 `allowed_paths`，路径重叠的任务自动串行；验证智能体只能执行测试、构建和静态检查命令。架构优化涉及文件移动、模块拆分、公共接口或跨模块依赖变化时，会在修改前通过 CLI Hook 请求用户确认，拒绝后按“不改变架构”的约束重新规划。
+
+多智能体配置通过环境变量覆盖，默认审计并发数为 4、执行并发数为 3、最大修复轮数为 3：
+
+```text
+MYCODINGAGENT_MULTICODING_AUDIT_PARALLELISM
+MYCODINGAGENT_MULTICODING_EXECUTION_PARALLELISM
+MYCODINGAGENT_MULTICODING_MAX_REPAIR_ROUNDS
+MYCODINGAGENT_MULTICODING_MAX_AGENT_TOOL_ROUNDS
+MYCODINGAGENT_MULTICODING_MAIN_MODEL
+MYCODINGAGENT_MULTICODING_PLANNER_MODEL
+MYCODINGAGENT_MULTICODING_AUDITOR_MODEL
+MYCODINGAGENT_MULTICODING_OPTIMIZER_MODEL
+MYCODINGAGENT_MULTICODING_EXECUTOR_MODEL
+MYCODINGAGENT_MULTICODING_VALIDATOR_MODEL
+```
 
 内置 `/resume` 命令列出当前工作目录下的历史会话，支持方向键交互选择、跨工作目录恢复确认和会话 ID 直接恢复。恢复后加载完整消息历史、LRFU 快照和文件状态快照。`/delete` 命令支持交互式选择删除、按会话 ID 删除和 `--expired` 批量清理过期会话。
 

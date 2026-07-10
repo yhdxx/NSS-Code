@@ -142,6 +142,28 @@ class ClientConfig:
 
 
 @dataclass(frozen=True)
+class MultiCodingConfig:
+    audit_parallelism: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_MULTICODING_AUDIT_PARALLELISM", 4))
+    )
+    execution_parallelism: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_MULTICODING_EXECUTION_PARALLELISM", 3))
+    )
+    max_repair_rounds: int = field(
+        default_factory=lambda: max(0, _env_int("MYCODINGAGENT_MULTICODING_MAX_REPAIR_ROUNDS", 3))
+    )
+    max_agent_tool_rounds: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_MULTICODING_MAX_AGENT_TOOL_ROUNDS", 20))
+    )
+    main_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_MULTICODING_MAIN_MODEL", ""))
+    planner_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_MULTICODING_PLANNER_MODEL", ""))
+    auditor_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_MULTICODING_AUDITOR_MODEL", ""))
+    optimizer_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_MULTICODING_OPTIMIZER_MODEL", ""))
+    executor_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_MULTICODING_EXECUTOR_MODEL", ""))
+    validator_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_MULTICODING_VALIDATOR_MODEL", ""))
+
+
+@dataclass(frozen=True)
 class MemoryConfig:
     enabled: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_MEMORY_ENABLED", True))
     output_context_compression: bool = field(default_factory=lambda: _env_bool("OUTPUT_CONTEXT_COMPRESSION", True))
@@ -393,6 +415,7 @@ class MCPConfig:
 class AppConfig:
     api: ApiConfig = field(default_factory=ApiConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
+    multicoding: MultiCodingConfig = field(default_factory=MultiCodingConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)

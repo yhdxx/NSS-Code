@@ -39,6 +39,12 @@ from tools.workspace_change_tracker import WorkspaceChangeTracker  # 监听工�
 from mcp_client import MCPClientManager, MCPConfigLoader
 from mcp_client.hooks import CLIApprovalHook
 from mcp_client.policy import MCPToolPermissionPolicy
+from multi_agent import (
+    CLIArchitectureApprovalHook,
+    CLIRuntimeEventHook,
+    MultiCodingController,
+    MultiCodingOrchestrator,
+)
 import client  # 导入当前模块需要的依赖。
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
@@ -131,6 +137,21 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
     # 创建 OpenAI 客户端（复用连接）
     api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
+    multicoding_orchestrator = MultiCodingOrchestrator(
+        api_client=api_client,
+        registry=registry,
+        tools=tools,
+        core_tool_schemas=core_tool_schemas,
+        workspace_root=get_sandbox_root(),
+        skill_runtime=skill_runtime,
+        workspace_tracker=workspace_tracker,
+        memory_runtime=memory_runtime,
+        capability_router=capability_router,
+        config=CONFIG.multicoding,
+        event_hook=CLIRuntimeEventHook(),
+        approval_hook=CLIArchitectureApprovalHook(),
+    )
+    multicoding_controller = MultiCodingController(multicoding_orchestrator, CONFIG.multicoding)
 
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
@@ -165,6 +186,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     messages=messages,
                     file_state_cache=file_state_cache,
                     workspace_tracker=workspace_tracker,
+                    multicoding_controller=multicoding_controller,
                 ),
             )
             if command_result.handled:
@@ -186,18 +208,21 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
             # 携带历史消息进行对话，并获取更新后的消息列表
             # 注意：首次对话不传 messages（None），让 ask_deepseek 自动注入系统提示词 "H-Agent"
-            _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
-                api_client,
-                prompt,
-                registry,
-                tools,
-                messages or None,
-                skill_runtime=skill_runtime,
-                core_tool_schemas=core_tool_schemas,
-                workspace_tracker=workspace_tracker,
-                memory_runtime=memory_runtime,
-                capability_router=capability_router,
-            )  # 结束上方的多行结构。
+            if multicoding_controller.enabled:
+                _, messages = await multicoding_controller.run(prompt, messages or None)
+            else:
+                _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
+                    api_client,
+                    prompt,
+                    registry,
+                    tools,
+                    messages or None,
+                    skill_runtime=skill_runtime,
+                    core_tool_schemas=core_tool_schemas,
+                    workspace_tracker=workspace_tracker,
+                    memory_runtime=memory_runtime,
+                    capability_router=capability_router,
+                )  # 结束上方的多行结构。
             if memory_runtime is not None:
                 rollover = await memory_runtime.on_turn_completed(
                     messages=messages,
@@ -227,6 +252,28 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
 def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
+    registry.register(
+        CommandSpec(
+            name="/multicoding",
+            aliases=("multicoding", "多智能体"),
+            description="启用、关闭或查看持续多智能体编码模式",
+            usage="[on|off|status|--help]",
+            usages=(
+                ("", "启用持续多智能体编码模式"),
+                (" on", "启用持续多智能体编码模式"),
+                (" off", "关闭多智能体编码模式"),
+                (" status", "显示当前模式和并发配置"),
+                (" --help", "显示 /multicoding 的完整参数说明"),
+            ),
+            examples=(
+                "/multicoding",
+                "/multicoding on",
+                "/multicoding off",
+                "/multicoding status",
+            ),
+            handler=handle_multicoding_command,
+        )
+    )
     registry.register(
         CommandSpec(
             name="/resume",
@@ -314,6 +361,35 @@ def build_command_registry() -> CommandRegistry:
         )
     )
     return registry
+
+
+async def handle_multicoding_command(context: CommandContext, arguments: str) -> CommandResult:
+    controller = context.multicoding_controller
+    spec = build_command_registry().match("/multicoding")[0]
+    argument = arguments.strip().lower()
+    if argument in {"--help", "-h", "help"}:
+        print(spec.help_text(), flush=True)
+        return CommandResult()
+    if controller is None:
+        print("多智能体运行时未初始化。", flush=True)
+        return CommandResult()
+    if argument in {"", "on", "enable"}:
+        controller.enable()
+        print(f"多智能体模式已启用：{controller.status_text()}", flush=True)
+        return CommandResult()
+    if argument in {"off", "disable"}:
+        try:
+            controller.disable()
+        except RuntimeError as exc:
+            print(f"无法关闭多智能体模式：{exc}", flush=True)
+        else:
+            print(f"多智能体模式已关闭：{controller.status_text()}", flush=True)
+        return CommandResult()
+    if argument == "status":
+        print(controller.status_text(), flush=True)
+        return CommandResult()
+    print(spec.help_text(), flush=True)
+    return CommandResult()
 
 
 async def handle_resume_command(context: CommandContext, arguments: str) -> CommandResult:

@@ -6,7 +6,7 @@
 
 - 项目：`myCodingAgent`
 - 定位：基于 LLM 的命令行编码智能体，在 Docker 沙箱中执行文件读写、搜索、Shell 命令，并通过 Skill 系统和 MCP Discovery 扩展领域工作流。
-- 核心链路：`__main__.py` 启动 CLI -> `capabilities/` 做能力推荐 -> `runtime_context.py` 注入当前轮能力信息 -> `client.py` 调用模型 -> `tools/` 执行核心/Discovery 工具 -> `memory/` 管理长上下文 -> `skills/` 动态检索并暴露专业能力 -> `mcp_client/` 按需发现 MCP metadata。
+- 核心链路：`__main__.py` 启动 CLI -> `/multicoding` 可切换 `multi_agent/` 多智能体编排 -> `capabilities/` 做能力推荐 -> `runtime_context.py` 注入当前轮能力信息 -> `client.py` 调用模型 -> `tools/` 执行核心/Discovery 工具 -> `memory/` 管理长上下文 -> `skills/` 动态检索并暴露专业能力 -> `mcp_client/` 按需发现 MCP metadata。
 - 当前索引范围：Python/TypeScript/JavaScript 代码文件；Markdown、JSON、CSS、模板等资源在 Skill 资产章节按目录归纳。
 - 生成依据：README 项目说明、核心源码定向阅读、AST/正则提取的类与函数索引。
 
@@ -16,14 +16,20 @@
 myCodingAgent
 ├── 入口层：__main__.py
 │   ├── main()：初始化 Docker、工具、Skill、Memory、命令系统并进入交互循环
-│   ├── build_command_registry()：注册 /resume、/fork、/clear 与 /delete
-│   └── handle_*_command()：会话恢复、分叉、清空、删除、选择与确认
+│   ├── build_command_registry()：注册 /multicoding、/resume、/fork、/clear 与 /delete
+│   └── handle_*_command()：多智能体模式切换、会话恢复、分叉、清空、删除、选择与确认
 ├── 模型交互层：client.py
 │   ├── ask_deepseek()：单轮用户请求的模型-工具循环
 │   ├── PromptDebug / TokenUsage：DEBUG=true 时输出 prompt 分区哈希；STEP_TOKEN / ROUND_TOKEN / CONVERSATION_TOKEN 控制终端 token 输出
-│   ├── stream_chat_completion()：流式读取模型响应
+│   ├── stream_one_round()：流式读取模型响应；支持隐藏内部智能体输出
 │   ├── execute_tool_call()：解析并执行工具调用
 │   └── format/pretty/helper 函数：工具 schema、参数、输出展示
+├── 多智能体编排：multi_agent/
+│   ├── MultiCodingController：维护持续模式、运行状态和最近一次结果
+│   ├── MultiCodingOrchestrator：主路由、并发审计、优化审批、路径分区执行、验证与修复循环
+│   ├── AgentRunner + ToolAccessPolicy：执行隔离角色并强制只读/写路径/验证命令权限
+│   ├── PathLockManager：对执行智能体分配的路径范围加锁
+│   └── RuntimeEventHook / ArchitectureApprovalHook：向用户展示阶段进度并审批架构变化
 ├── 配置与状态层：config.py / cache.py / workspace_identity.py / session_switch.py
 ├── Capability Router：capabilities/
 │   ├── CapabilityRouter：融合 Skill 推荐与 MCP Server 推荐
@@ -48,24 +54,25 @@ myCodingAgent
 
 ### 3.1 顶层模块
 
-#### `__main__.py` (651 行)
-- 职责：CLI 启动与主交互循环：准备 Docker 沙箱、工具注册表、Skill 运行时、记忆运行时和会话命令。
+#### `__main__.py` (785 行)
+- 职责：CLI 启动与主交互循环：准备 Docker 沙箱、工具注册表、Skill/MCP/记忆运行时，创建多智能体编排器并分发持续模式任务。
 - 模块函数：
-  - `async main()` L45
-  - `build_command_registry()` L170
-  - `async handle_resume_command(context, arguments)` L261
-  - `async handle_fork_command(context, arguments)` L310
-  - `async handle_clear_command(context, arguments)` L376
-  - `async handle_delete_command(context, arguments)` L411
-  - `select_session_interactively(memory_runtime, *limit, *include_all, *action)` L482
-  - `render_session_selector(sessions, selected, *previous_row_count, *include_workspace, *action)` L563
-  - `clear_session_selector(rendered_row_count)` L588
-  - `print_session_options(sessions, *include_workspace)` L602
-  - `command_for_session_action(action)` L607
-  - `format_session_option(session, *selected, *include_workspace)` L616
-  - `confirm_cross_workspace_restore(source_workspace, current_workspace)` L623
-  - `confirm_delete_sessions(sessions, *include_all)` L627
-  - `confirm_cross_workspace_action(action, source_workspace, current_workspace)` L637
+  - `async main()` L57
+  - `build_command_registry()` L253
+  - `async handle_multicoding_command(context, arguments)` L366
+  - `async handle_resume_command(context, arguments)` L395
+  - `async handle_fork_command(context, arguments)` L444
+  - `async handle_clear_command(context, arguments)` L510
+  - `async handle_delete_command(context, arguments)` L545
+  - `select_session_interactively(memory_runtime, *limit, *include_all, *action)` L616
+  - `render_session_selector(sessions, selected, *previous_row_count, *include_workspace, *action)` L697
+  - `clear_session_selector(rendered_row_count)` L722
+  - `print_session_options(sessions, *include_workspace)` L736
+  - `command_for_session_action(action)` L741
+  - `format_session_option(session, *selected, *include_workspace)` L750
+  - `confirm_cross_workspace_restore(source_workspace, current_workspace)` L757
+  - `confirm_delete_sessions(sessions, *include_all)` L761
+  - `confirm_cross_workspace_action(action, source_workspace, current_workspace)` L771
 
 #### `cache.py` (36 行)
 - 职责：轻量缓存：提供线程安全的内存缓存结构。
@@ -117,7 +124,7 @@ myCodingAgent
   - `hard_wrap_ansi(text, columns)` L348
   - `character_width(char)` L376
 
-#### `client.py` (992 行)
+#### `client.py` (1075 行)
 - 职责：模型交互层：封装 OpenAI 兼容 Chat Completions、流式响应、工具调用循环、工具结果回填、双阶段上下文接入、RuntimeContext 当前轮渲染、PromptDebug 与 token 汇总输出。
 - 类：
   - `class PendingToolCall` L44
@@ -144,22 +151,24 @@ myCodingAgent
   - `skill_tool_notice(tool_name, args, skill_runtime)` L347
   - `get_skill_record_for_notice(skill_runtime, tool_name)` L384
   - `compact_notice_value(value, limit)` L396
-  - `async execute_local_tool(registry, tool_name, raw_args, skill_runtime)` L408
-  - `async stream_one_round(client, model, messages, tools)` L437
-  - `async ask_deepseek(client, prompt, registry, tools, messages, skill_runtime, core_tool...)` L510
-    - `save_session_state(sync)` L644：局部函数，保存原始会话消息，不持久化 RuntimeContext 渲染包装
-    - `end_skill_turn()` L657：局部函数，结束本轮 Skill 缓存事务
-    - `print_turn_token_summary()` L665：局部函数，根据 ROUND_TOKEN / CONVERSATION_TOKEN 控制终端 token 汇总输出
-    - 工具输出写回策略 L841：非 Skill 工具输出统一走 `MemoryRuntime.tool_output_prompt_content()`；RAW 模式小输出完整保留，大输出转为预览并提示现有恢复工具
-  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L880
-  - `async summarize_engineering_state(client, model, messages)` L896
-  - `truncate_tool_output(output)` L932
-  - `build_turn_temporary_system_messages(workspace_tracker)` L939：兼容旧接口，返回空列表
-  - `with_workspace_change_notice(messages, workspace_tracker)` L943：兼容旧接口，不再插入 system
-  - `with_turn_temporary_system_messages(messages, temporary_system_messages)` L947：兼容旧接口
-  - `workspace_change_notice_content(workspace_tracker)` L957：兼容旧接口，返回空字符串
-  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L961
-  - `async main()` L973
+  - `parse_tool_arguments(raw_args)` L408
+  - `compact_tool_metadata_value(value, limit)` L416
+  - `tool_call_metadata(tool_name, raw_args, output)` L423
+  - `async execute_local_tool(registry, tool_name, raw_args, skill_runtime)` L458
+  - `async stream_one_round(client, model, messages, tools, *display, *output_label)` L487：无工具时省略 API `tools` 参数；内部智能体可关闭终端流式展示
+  - `async ask_deepseek(client, prompt, registry, tools, messages, skill_runtime, core_tool...)` L569
+    - `save_session_state(sync)`：局部函数，保存原始会话消息，不持久化 RuntimeContext 渲染包装
+    - `end_skill_turn()`：局部函数，结束本轮 Skill 缓存事务
+    - `print_turn_token_summary()`：局部函数，根据 ROUND_TOKEN / CONVERSATION_TOKEN 控制终端 token 汇总输出
+  - `should_generate_summary(memory_runtime, messages, tools, prompt)` L959
+  - `async summarize_engineering_state(client, model, messages)` L975
+  - `truncate_tool_output(output)` L1011
+  - `build_turn_temporary_system_messages(workspace_tracker)` L1018：兼容旧接口，返回空列表
+  - `with_workspace_change_notice(messages, workspace_tracker)` L1022：兼容旧接口，不再插入 system
+  - `with_turn_temporary_system_messages(messages, temporary_system_messages)` L1026：兼容旧接口
+  - `workspace_change_notice_content(workspace_tracker)` L1036：兼容旧接口，返回空字符串
+  - `async build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas)` L1040
+  - `async main()` L1056
 
 #### `runtime_context.py` (156 行)
 - 职责：Runtime Context 数据模型与当前轮 Prompt 渲染层；将运行态信息包装到当前轮 user message 的非持久化模型视图中。
@@ -181,22 +190,24 @@ myCodingAgent
   - `is_rendered_runtime_prompt(content)` L143
   - `extract_user_request_from_rendered_prompt(content)` L147
 
-#### `config.py` (373 行)
-- 职责：配置层：集中定义 API、客户端、沙箱、Docker、Skill、记忆、Milvus、Embedding 等环境变量配置。
+#### `config.py` (428 行)
+- 职责：配置层：集中定义 API、客户端、多智能体、沙箱、Docker、Skill、记忆、Milvus、Embedding 和 MCP 环境变量配置。
 - 类：
-  - `class ApiConfig` L114
-  - `class ClientConfig` L123：包含 DEBUG 开关 `debug`，由 `DEBUG` / `MYCODINGAGENT_DEBUG` 控制 PromptDebug 输出；包含 `step_token` / `round_token` / `conversation_token`，由 `STEP_TOKEN` / `ROUND_TOKEN` / `CONVERSATION_TOKEN` 控制每次工具调用、本轮、会话 token 终端输出，默认均为 true
-  - `class MemoryConfig` L137
-    - `context_window_for(self, model)` L185
-  - `class SandboxConfig` L193
-  - `class DockerConfig` L215
-  - `class SkillConfig` L236
-    - `root(self)` L300
-    - `roots(self)` L304
-  - `class EmbeddingConfig` L309
-  - `class MilvusConfig` L327
-    - `uri(self)` L357
-  - `class AppConfig` L362
+  - `class ApiConfig` L122
+  - `class ClientConfig` L131：控制模型工具轮次、展示长度、PromptDebug 与 token 终端输出
+  - `class MultiCodingConfig` L145：配置审计/执行并发度、最大修复轮数、内部智能体工具轮次和角色级模型覆盖
+  - `class MemoryConfig` L167
+    - `context_window_for(self, model)` L215
+  - `class SandboxConfig` L223
+  - `class DockerConfig` L245
+  - `class SkillConfig` L266
+    - `root(self)` L330
+    - `roots(self)` L334
+  - `class EmbeddingConfig` L339
+  - `class MilvusConfig` L357
+    - `uri(self)` L387
+  - `class MCPConfig` L392
+  - `class AppConfig` L415
 - 模块函数：
   - `_env_int(name, default)` L9
   - `_env_float(name, default)` L19
@@ -209,7 +220,9 @@ myCodingAgent
   - `_default_builtin_skills_root()` L77
   - `_default_workspace_skills_root()` L81
   - `_default_memory_db_path()` L91
-  - `_dedupe_paths(paths)` L101
+  - `_default_mcp_user_config_path()` L101
+  - `_default_mcp_project_config_path()` L105
+  - `_dedupe_paths(paths)` L109
 
 #### `conversation_history.py` (54 行)
 - 职责：历史展示：将会话消息渲染为终端可读文本。
@@ -241,18 +254,18 @@ myCodingAgent
 #### `commands/registry.py` (92 行)
 - 职责：命令系统：定义斜杠命令规格、上下文、执行结果和注册/分发逻辑。
 - 类：
-  - `class CommandContext` L8
-  - `class CommandResult` L17
-  - `class CommandSpec` L27
-    - `names(self)` L36
-    - `help_text(self)` L39
-  - `class CommandRegistry` L54
-    - `__init__(self)` L55
-    - `register(self, spec)` L58
-    - `suggestions(self, buffer)` L61
-    - `exact_command(self, buffer)` L69
-    - `match(self, text)` L76
-    - `async execute(self, text, context)` L86
+  - `class CommandContext` L8：包含会话/Skill/工作区状态和 `multicoding_controller`
+  - `class CommandResult` L18
+  - `class CommandSpec` L28
+    - `names(self)` L37
+    - `help_text(self)` L40
+  - `class CommandRegistry` L55
+    - `__init__(self)` L56
+    - `register(self, spec)` L59
+    - `suggestions(self, buffer)` L62
+    - `exact_command(self, buffer)` L70
+    - `match(self, text)` L77
+    - `async execute(self, text, context)` L87
 
 ### 3.3 `tools/` - 基础工具注册表与具体工具实现。
 
@@ -1317,6 +1330,144 @@ myCodingAgent
     - `test_router_enforces_top_n_and_retrieval_floor(self)` L98
 - 模块函数：
   - `_record(name)` L13
+
+#### `tests/test_multicoding.py` (269 行)
+- 职责：覆盖持续模式命令、工具权限、验证命令白名单、路径冲突调度和完整多智能体状态机。
+- 类：
+  - `class FakeOrchestrator` L41
+    - `async run(self, prompt, messages)` L42
+  - `class FakeRunner` L53
+    - `__init__(self, root)` L54
+    - `async run(self, request)` L58
+- 模块函数：
+  - `load_app_main()` L32
+  - `test_controller_persistent_enable_disable_and_run()` L148
+  - `test_multicoding_command_controls_persistent_mode(capsys)` L161
+  - `test_tool_policy_enforces_read_only_and_scoped_writes(tmp_path)` L187
+  - `test_validation_command_allowlist()` L208
+  - `test_scheduler_parallelizes_disjoint_paths_and_serializes_overlaps(tmp_path)` L216
+  - `test_orchestrator_runs_planned_workflow_and_updates_framework(tmp_path)` L228
+  - `test_architecture_approval_required_for_structural_changes()` L261
+
+### 3.7 `multi_agent/` - 多智能体编码编排、权限隔离、路径锁、审批与验证。
+
+#### `multi_agent/__init__.py` (19 行)
+- 结构：导出 `MultiCodingController`、`MultiCodingOrchestrator`、Runtime Event Hook 和 Architecture Approval Hook。
+
+#### `multi_agent/controller.py` (49 行)
+- 类：
+  - `class MultiCodingController` L9
+    - `__init__(self, orchestrator, config)` L10
+    - `enable(self)` L17
+    - `disable(self)` L20
+    - `status_text(self)` L25
+    - `async run(self, prompt, messages)` L34
+
+#### `multi_agent/hooks.py` (71 行)
+- 类：
+  - `class RuntimeEventHook` L9
+    - `async emit(self, event)` L10
+  - `class CLIRuntimeEventHook` L14
+    - `async emit(self, event)` L15
+  - `class ArchitectureApprovalDecision` L24
+  - `class ArchitectureApprovalHook` L29
+    - `async approve(self, proposal)` L30
+  - `class CLIArchitectureApprovalHook` L34
+    - `async approve(self, proposal)` L35
+  - `class StaticArchitectureApprovalHook` L57
+    - `__init__(self, allowed)` L58
+    - `async approve(self, proposal)` L61
+  - `class CollectingRuntimeEventHook` L66
+    - `__init__(self)` L67
+    - `async emit(self, event)` L70
+
+#### `multi_agent/locks.py` (31 行)
+- 类：
+  - `class PathLockManager` L11
+    - `__init__(self, workspace_root)` L12
+    - `async acquire(self, paths)` L18
+    - `async _get_locks(self, keys)` L29
+
+#### `multi_agent/models.py` (250 行)
+- 枚举与数据模型：
+  - `class AgentRole` L8
+  - `class WorkflowStatus` L17
+  - `class QueryDecision` L30
+  - `class AuditScope` L45
+  - `class FunctionNode` L60
+  - `class CallEdge` L83
+  - `class ProjectAuditReport` L106
+  - `class ArchitectureProposal` L141
+  - `class WorkItem` L167
+  - `class VerificationReport` L191
+  - `class AgentRequest` L214
+  - `class AgentResult` L226
+  - `class RuntimeEvent` L234
+  - `class WorkflowResult` L241
+- 模块函数：
+  - `_strings(value)` L23
+
+#### `multi_agent/permissions.py` (118 行)
+- 类：
+  - `class ToolPermissionError` L11
+  - `class ToolAccessPolicy` L22
+    - `schemas(self, registry)` L28
+    - `authorize(self, tool_name, arguments)` L43
+    - `_authorize_write_path(self, raw_path)` L55
+- 模块函数：
+  - `normalize_workspace_path(raw_path, workspace_root)` L67
+  - `is_validation_command(command)` L80
+  - `_allowed_validation_subcommand(executable, args)` L105
+
+#### `multi_agent/prompts.py` (135 行)
+- 结构：定义主路由、规划、审计、优化、执行、验证、修复和最终汇总角色的结构化输出协议。
+
+#### `multi_agent/runner.py` (118 行)
+- 类：
+  - `class AgentOutputError` L14
+  - `class AgentRunner` L18
+    - `__init__(self, *api_client, *registry, *workspace_root)` L19
+    - `async run(self, request)` L30
+- 模块函数：
+  - `parse_json_object(text)` L88
+  - `_parse_arguments(raw)` L113
+
+#### `multi_agent/workspace.py` (55 行)
+- 模块函数：
+  - `capture_workspace_state(root)` L24
+  - `changed_paths(before, after)` L38
+  - `outside_scopes(paths, scopes, root)` L46
+
+#### `multi_agent/orchestrator.py` (848 行)
+- 类：
+  - `class WorkflowError` L59
+  - `class MultiCodingOrchestrator` L63
+    - `__init__(self, *api_client, *registry, *tools, *core_tool_schemas, *workspace_root, ...)` L64
+    - `async run(self, prompt, messages)` L100
+    - `async _decide_query(self, prompt)` L239
+    - `async _audit(self, query)` L255
+    - `async _architecture_phase(self, query, audit_report)` L351
+    - `async _plan_work_items(self, query, audit_report, proposal, ...)` L392
+    - `async _execute_work_items(self, *query, *audit_report, *proposal, *work_items)` L430
+    - `async _execute_item(self, *query, *audit_report, *proposal, *item)` L492
+    - `async _validate(self, *query, *audit_report, *proposal, *work_items, ...)` L525
+    - `async _synthesize(self, *query, *status, *audit_report, *proposal, ...)` L569
+    - `async _agent_json(self, *role, *system_prompt, *user_prompt, *allowed_tools, ...)` L606
+    - `async _emit(self, phase, message, **metadata)` L643
+    - `_model_for(self, role)` L646
+    - `_record_turn(self, messages, prompt, response)` L657
+- 模块函数：
+  - `parse_work_items(payload)` L674
+  - `ensure_framework_work_item(items)` L685
+  - `validate_work_items(items)` L705
+  - `select_runnable_batch(items, completed, limit, workspace_root)` L726
+  - `path_scopes_overlap(left, right, root)` L748
+  - `merge_audit_reports(reports)` L758
+  - `architecture_approval_required(proposal)` L785
+  - `user_forbids_architecture_change(query)` L794
+  - `heuristic_requires_planning(prompt)` L809
+  - `_json(value)` L840
+  - `_compact_json(value, limit)` L844
 
 ## 4. Skill 资产与脚本框架
 
@@ -3322,8 +3473,12 @@ myCodingAgent
     ├── MemoryRuntime(...) 初始化会话记忆与清理过期会话
     ├── create_default_registry(...) 注册基础工具
     ├── SkillRuntime.initialize() 同步并注册 Skill 工具
-    ├── build_command_registry() 注册 /resume、/fork、/clear、/delete
-    └── while True: read_user_prompt() -> 命令分发或 client.ask_deepseek()
+    ├── MultiCodingOrchestrator + MultiCodingController 初始化持续模式运行时
+    ├── build_command_registry() 注册 /multicoding、/resume、/fork、/clear、/delete
+    └── while True: read_user_prompt()
+        ├── slash command -> CommandRegistry.execute()
+        ├── multicoding=enabled -> MultiCodingController.run()
+        └── multicoding=disabled -> client.ask_deepseek()
 ```
 
 ### 5.2 模型工具调用
@@ -3384,6 +3539,37 @@ SkillRuntime.initialize()/sync()
 └── record_skill_invocation() 更新调用反馈与 LRFU
 ```
 
+### 5.5 多智能体编码流程
+
+```text
+/multicoding on
+└── MultiCodingController.enabled = true（持续到 /multicoding off 或进程退出）
+
+下一条普通用户输入
+└── MultiCodingOrchestrator.run()
+    ├── MAIN：归一化 query 并判断 needs_planning
+    ├── needs_planning=false -> 复用 client.ask_deepseek() 直接处理
+    └── needs_planning=true
+        ├── PLANNER：生成 AuditScope
+        ├── Lead AUDITOR：拆分互不重叠的审计子任务
+        ├── AUDITOR workers：受 READ_ONLY_TOOLS 强制约束并发读取不同模块
+        ├── Lead AUDITOR：合并 ProjectAuditReport 与函数调用有向边
+        ├── PLANNER：判断是否需要架构优化
+        ├── OPTIMIZER：只读生成 ArchitectureProposal
+        ├── 结构变化 -> CLIArchitectureApprovalHook 阻塞等待用户确认
+        │   └── 拒绝后按“不改架构”约束重新规划
+        ├── PLANNER：生成带 dependencies / allowed_paths / acceptance_criteria 的 WorkItem
+        ├── ensure_framework_work_item() 强制加入 PROJECT_FRAMEWORK.md 同步任务
+        ├── select_runnable_batch() 只并行依赖已满足且路径不重叠的任务
+        ├── PathLockManager + ToolAccessPolicy
+        │   ├── EXECUTOR 只能写 assigned allowed_paths
+        │   └── 工作区快照检测越界修改
+        ├── VALIDATOR：只读检查并仅允许测试/构建/静态检查 Bash 命令
+        ├── 验证失败 -> REPAIR_PLANNER + EXECUTOR，最多 max_repair_rounds
+        ├── MAIN：汇总最终结果，不暴露内部推理
+        └── _record_turn() 只保存用户原始请求和最终摘要
+```
+
 ## 6. 已知索引异常
 
 以下文件存在语法或解析异常，框架图中无法通过 AST 完整提取其类/函数；后续修复代码时应同步补充本节：
@@ -3394,5 +3580,5 @@ SkillRuntime.initialize()/sync()
 
 - 修改任何核心源码后，同步更新第 3 节对应模块的类、函数和职责。
 - 新增、删除或重命名 Skill 包后，同步更新第 4 节对应技能包。
-- 修改启动流程、模型工具循环、记忆流程或 Skill 路由时，同步更新第 5 节关键运行流程。
+- 修改启动流程、模型工具循环、记忆流程、Skill 路由或多智能体编排时，同步更新第 5 节关键运行流程。
 - 修复第 6 节列出的语法/解析异常后，删除对应异常并补充该文件的函数级结构。

@@ -489,31 +489,39 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
     model: str,  # 本轮请求使用的模型名，例如 `deepseek-v4-flash`。
     messages: list[dict[str, Any]],  # 当前完整对话历史；包含 system/user/assistant/tool 消息。
     tools: list[dict[str, Any]],  # OpenAI function tools schema；用于告诉模型可调用哪些本地工具。
+    *,
+    display: bool = True,
+    output_label: str = "模型",
 ) -> tuple[str, list[PendingToolCall], Any]:  # 返回 `(assistant_text, tool_calls, usage)`，usage 是流末 chunk 的 token 统计对象。
     # `messages` 典型结构：  # 说明传给模型的上下文消息数组。
     # [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]  # 初始请求只包含系统提示和用户问题。
     # 工具调用后会追加 assistant tool_calls 消息和 role=tool 的工具结果消息。  # 后续循环依赖这些消息继续推理。
     try:
-        stream = await client.chat.completions.create(  # 发起 Chat Completions 请求，并要求服务端流式返回。
-            model=model,  # 指定模型。
-            messages=messages,  # 传入完整消息历史，让模型基于上下文决定回答或调用工具。
-            tools=tools,  # 传入工具 schema，模型可返回 tool_calls。
-            stream=True,  # 开启流式响应；返回值是异步可迭代对象。
-        )  # 完成请求创建，下面开始消费流式 chunk。
+        request: dict[str, Any] = {
+            "model": model,
+            "messages": messages,
+            "stream": True,
+        }
+        if tools:
+            request["tools"] = tools
+        stream = await client.chat.completions.create(**request)  # 发起流式 Chat Completions 请求。
     except (APIConnectionError, APITimeoutError) as exc:
         error = f"Error: API connection failed: {exc}"
-        print(f"模型：{error}", flush=True)
+        if display:
+            print(f"{output_label}：{error}", flush=True)
         return error, [], None
     except APIError as exc:
         error = f"Error: API request failed: {exc}"
-        print(f"模型：{error}", flush=True)
+        if display:
+            print(f"{output_label}：{error}", flush=True)
         return error, [], None
 
     content_parts: list[str] = []  # 收集模型普通文本 delta，最终拼成完整 assistant 文本。
     pending_tool_calls: dict[int, PendingToolCall] = {}  # 按 tool_call.index 聚合流式工具调用分片。
     last_usage = None  # 流式最后一个 chunk 携带 usage 统计（prompt_tokens / completion_tokens / cache 命中/未命中）。
 
-    print("模型：", end="", flush=True)  # 在终端打印模型输出前缀，`end=""` 让后续流式文本接在同一行。
+    if display:
+        print(f"{output_label}：", end="", flush=True)  # 在终端打印模型输出前缀，`end=""` 让后续流式文本接在同一行。
     async for chunk in stream:  # 异步迭代服务端不断返回的增量 chunk。
         if not chunk.choices:  # 某些兼容接口可能返回无 choices 的心跳/空 chunk。
             continue  # 跳过空 chunk，继续等待下一段有效内容。
@@ -521,7 +529,8 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
         delta = chunk.choices[0].delta  # 取第一个候选的增量内容；本项目没有请求多候选输出。
         text = getattr(delta, "content", None)  # 普通文本增量在 `delta.content` 中；不存在时为 None。
         if text:  # 只有本 chunk 含有文本时才打印和收集。
-            print(text, end="", flush=True)  # 立即把文本打印到终端，实现边生成边显示。
+            if display:
+                print(text, end="", flush=True)  # 立即把文本打印到终端，实现边生成边显示。
             content_parts.append(text)  # 同时保存文本片段，函数结束时拼成完整 assistant_text。
 
         tool_deltas = getattr(delta, "tool_calls", None) or []  # 工具调用增量在 `delta.tool_calls` 中；缺失时按空列表处理。
@@ -541,10 +550,10 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
         if hasattr(chunk, "usage") and chunk.usage:  # 流式最后一个 chunk 通常携带 usage 统计信息。
             last_usage = chunk.usage  # 保留最后一帧的 usage，函数结束时返回。
 
-    if content_parts:  # 如果本轮模型输出过普通文本，需要补一个换行结束终端显示。
+    if display and content_parts:  # 如果本轮模型输出过普通文本，需要补一个换行结束终端显示。
         print()  # 打印换行，避免后面的“工具调用”标题接在模型正文后。
 
-    if pending_tool_calls:  # 如果模型本轮请求了工具调用，就把工具调用内容打印出来。
+    if display and pending_tool_calls:  # 如果模型本轮请求了工具调用，就把工具调用内容打印出来。
         print("工具调用：", flush=True)  # 打印工具调用分区标题。
         for index in sorted(pending_tool_calls):  # 按 OpenAI 返回的 index 排序，保证多工具调用展示顺序稳定。
             call = pending_tool_calls[index]  # 取出某个已经聚合完成的工具调用。
