@@ -15,7 +15,7 @@ class SearchSkillParams(BaseModel):
             "translate/summarize it into Chinese before searching. Repeated searches should broaden the query."
         )
     )
-    max_results: int = Field(default=5, description="Maximum number of skill tool schemas to return")
+    max_results: int = Field(default=5, description="Maximum number of matching SKILL workflows to return")
     tool_names: list[str] = Field(default_factory=list, description="Optional exact or partial tool names to prefer")
 
 
@@ -24,7 +24,7 @@ class SearchSkillTool(Tool):
     description = (
         "Search developer-provided SKILL tools by tool name or description using hybrid retrieval "
         "(keyword + semantic over SKILL descriptions). Use this instead of Bash/Glob/ReadFile when looking "
-        "for a skill by capability. Returns matching tool schemas that may be useful for the current task. "
+        "for a skill by capability. Returns matching skill names and metadata for invoke_skill. "
         "Use this when no highly matching Business Skill is already available in the current prompt, but the "
         "task may have a developer-provided expert workflow. Query must be Chinese; if retrying, broaden from "
         "specific task to synonyms/capability category to upper-level domain."
@@ -80,9 +80,9 @@ class GetToolByNameParams(BaseModel):
 class GetToolByNameTool(Tool):
     name = "Get_tool_by_name"
     description = (
-        "Return the full schema for a SKILL tool by exact name from Get_all_tool, and make it available "
-        "in the next model round. Use this after Get_all_tool/search_tool identifies a Business Skill that "
-        "matches the task but is not currently callable."
+        "Return details for a SKILL workflow by exact name from Get_all_tool or search_tool. Use this after "
+        "Get_all_tool/search_tool identifies a Business Skill that matches the task, then call invoke_skill "
+        "with that skill_name when the workflow should be applied."
     )
     params_model = GetToolByNameParams
     category = "read"
@@ -159,6 +159,68 @@ class SkillInvocationParams(BaseModel):
     context: str = Field(default="", description="Optional task-specific context for applying the skill")
 
 
+class InvokeSkillParams(SkillInvocationParams):
+    skill_name: str = Field(description="Exact SKILL tool name to invoke, e.g. skill_frontend_design")
+
+
+def execute_skill_workflow(runtime: SkillService, tool_name: str, instruction: str, context: str = "") -> ToolResult:
+    record = runtime.get_record(tool_name)
+    if record is None:
+        return ToolResult(output=f"Error: skill not found: {tool_name}", is_error=True)
+    runtime.record_skill_invocation(tool_name)
+    output = (
+        f"SKILL: {record.name}\n"
+        f"DESCRIPTION:\n{record.description}\n\n"
+        f"INSTRUCTIONS:\n{record.content}\n\n"
+        f"USER INSTRUCTION:\n{instruction}"
+    )
+    references = runtime.list_references_for_skill(tool_name)
+    if references:
+        reference_lines = "\n".join(f"- {item['reference_path']}" for item in references)
+        first_reference = references[0]["reference_path"]
+        example = json.dumps(
+            {
+                "skill_name": tool_name,
+                "reference_path": first_reference,
+            },
+            ensure_ascii=False,
+        )
+        output += (
+            "\n\nAVAILABLE REFERENCES:\n"
+            f"{reference_lines}\n\n"
+            "Use Get_skill_reference with this skill tool name and one of the reference_path values "
+            "when the reference content is needed.\n"
+            f"Example Get_skill_reference arguments: {example}"
+        )
+    if context:
+        output += f"\n\nCONTEXT:\n{context}"
+    return ToolResult(output=output)
+
+
+class InvokeSkillTool(Tool):
+    name = "invoke_skill"
+    description = (
+        "Invoke one developer-provided Business Skill workflow by exact skill_name. Use this when Runtime "
+        "Context recommendations, search_tool, Get_all_tool, or Get_tool_by_name identify a matching SKILL. "
+        "This fixed tool replaces per-skill dynamic function schemas."
+    )
+    params_model = InvokeSkillParams
+    category = "read"
+    is_concurrency_safe = True
+    is_system_tool = True
+
+    def __init__(self, runtime: SkillService) -> None:
+        self._runtime = runtime
+
+    async def execute(self, params: InvokeSkillParams) -> ToolResult:
+        return execute_skill_workflow(
+            self._runtime,
+            params.skill_name,
+            params.instruction,
+            params.context,
+        )
+
+
 class SkillTool(Tool):
     category = "read"
     is_concurrency_safe = True
@@ -178,37 +240,7 @@ class SkillTool(Tool):
             self.description = f"Developer-provided Business Skill expert workflow: {tool_name}"
 
     async def execute(self, params: SkillInvocationParams) -> ToolResult:
-        record = self._runtime.get_record(self._tool_name)
-        if record is None:
-            return ToolResult(output=f"Error: skill not found: {self._tool_name}", is_error=True)
-        self._runtime.record_skill_invocation(self._tool_name)
-        output = (
-            f"SKILL: {record.name}\n"
-            f"DESCRIPTION:\n{record.description}\n\n"
-            f"INSTRUCTIONS:\n{record.content}\n\n"
-            f"USER INSTRUCTION:\n{params.instruction}"
-        )
-        references = self._runtime.list_references_for_skill(self._tool_name)
-        if references:
-            reference_lines = "\n".join(f"- {item['reference_path']}" for item in references)
-            first_reference = references[0]["reference_path"]
-            example = json.dumps(
-                {
-                    "skill_name": self._tool_name,
-                    "reference_path": first_reference,
-                },
-                ensure_ascii=False,
-            )
-            output += (
-                "\n\nAVAILABLE REFERENCES:\n"
-                f"{reference_lines}\n\n"
-                "Use Get_skill_reference with this skill tool name and one of the reference_path values "
-                "when the reference content is needed.\n"
-                f"Example Get_skill_reference arguments: {example}"
-            )
-        if params.context:
-            output += f"\n\nCONTEXT:\n{params.context}"
-        return ToolResult(output=output)
+        return execute_skill_workflow(self._runtime, self._tool_name, params.instruction, params.context)
 
 
 def skill_schema_from_record(record) -> dict:

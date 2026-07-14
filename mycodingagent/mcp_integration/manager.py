@@ -112,7 +112,8 @@ class MCPClientManager:
             session = await self._ensure_session(server)
             result = await session.call_tool(tool, arguments or {})
         except Exception as exc:
-            await self._mark_server_unavailable(server, str(exc))
+            if not _is_mcp_operation_error(exc):
+                await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP tool call failed: {exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="tool", name=tool, result=result)
 
@@ -126,7 +127,8 @@ class MCPClientManager:
             session = await self._ensure_session(server)
             result = await session.read_resource(uri)
         except Exception as exc:
-            await self._mark_server_unavailable(server, str(exc))
+            if not _is_mcp_operation_error(exc):
+                await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP resource read failed: {exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="resource", name=uri, result=result)
 
@@ -140,7 +142,8 @@ class MCPClientManager:
             session = await self._ensure_session(server)
             result = await session.get_prompt(prompt, arguments or {})
         except Exception as exc:
-            await self._mark_server_unavailable(server, str(exc))
+            if not _is_mcp_operation_error(exc):
+                await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"MCP prompt get failed: {exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="prompt", name=prompt, result=result)
 
@@ -266,3 +269,9 @@ def _item_summary(item: Any) -> MCPItemSummary:
         if value:
             metadata[key] = str(value)
     return MCPItemSummary(name=name, description=description, metadata=metadata)
+
+
+def _is_mcp_operation_error(exc: Exception) -> bool:
+    """Return True for server-side operation errors that should not poison the connection."""
+    exc_type = type(exc)
+    return exc_type.__name__ == "McpError" and exc_type.__module__ == "mcp.shared.exceptions"

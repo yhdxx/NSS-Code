@@ -9,6 +9,7 @@ SKILL_RELATED_TOOL_NAMES = {
     "Get_tool_by_name",
     "search_skill_references",
     "Get_skill_reference",
+    "invoke_skill",
 }
 
 

@@ -2,9 +2,11 @@ from __future__ import annotations
 
 import asyncio
 import json
+from pathlib import Path
 import sys
 
 from mycodingagent.capability_discovery import CapabilityRouter
+from mycodingagent.capability_discovery.models import CapabilityRecommendation, CapabilityResult
 from mycodingagent.mcp_integration.hooks import MCPToolApprovalHook, USER_DENIED_MESSAGE
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.models import MCPItemSummary
@@ -13,6 +15,73 @@ from mycodingagent.llm_runtime.context import PromptRenderer, RuntimeContextBuil
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
+from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
+
+
+def test_runtime_context_skill_recommendation_points_to_invoke_skill():
+    result = CapabilityResult(
+        recommendations=(
+            CapabilityRecommendation(
+                kind="skill",
+                name="skill_review",
+                description="Review code changes",
+                score=0.91,
+            ),
+        )
+    )
+
+    runtime_context = RuntimeContextBuilder(capabilities=result).build()
+    payload = runtime_context.capabilities
+
+    assert payload is not None
+    assert payload["skill_recommendation_usage"].startswith("Call invoke_skill")
+    recommendation = payload["recommendations"][0]
+    assert recommendation["skill_name"] == "skill_review"
+    assert recommendation["recommended_action"] == "invoke_skill"
+    assert recommendation["invoke_tool"] == "invoke_skill"
+
+
+def test_capability_router_uses_skill_runtime_recommendations():
+    class FakeSkillRuntime:
+        router_retrieval_top_k = 10
+
+        def __init__(self):
+            self.called = False
+            self.record = SkillRecord(
+                name="Review",
+                tool_name="skill_review",
+                description="Review code changes",
+                content="",
+                source_path=Path("skills/review/SKILL.md"),
+                content_hash="hash",
+                updated_at=0.0,
+            )
+            self.records = {self.record.tool_name: self.record}
+
+        def recommend_records_for_capability(self, query, *, top_k):
+            self.called = True
+            return [
+                SearchResult(
+                    record=self.record,
+                    score=0.8,
+                    keyword_score=0.0,
+                    semantic_score=0.0,
+                    metadata={"router_source": "skill_router"},
+                )
+            ]
+
+        def search_records_for_capability(self, query, *, top_k):
+            raise AssertionError("CapabilityRouter should prefer recommend_records_for_capability")
+
+    runtime = FakeSkillRuntime()
+    result = asyncio.run(CapabilityRouter(skill_runtime=runtime).route("review this patch"))
+
+    assert runtime.called is True
+    recommendation = result.recommendations[0]
+    assert recommendation.kind == "skill"
+    assert recommendation.name == "skill_review"
+    assert recommendation.reasons == ("skill router",)
+    assert recommendation.metadata["router_source"] == "skill_router"
 
 
 def test_mcp_config_loader_merges_user_project_and_env(tmp_path, monkeypatch):
@@ -440,6 +509,50 @@ if __name__ == "__main__":
     assert prompt_result.is_error is False
     assert prompt_payload["mcp_prompt"] == "review_prompt"
     assert "MCP" in prompt_payload["content_text"]
+
+
+def test_mcp_tool_argument_error_does_not_mark_server_unavailable(tmp_path):
+    server_script = tmp_path / "fake_mcp_server.py"
+    server_script.write_text(
+        """
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("fake")
+
+@mcp.tool(description="Search fake repositories")
+def search_repositories(query: str) -> str:
+    return f"result:{query}"
+
+if __name__ == "__main__":
+    mcp.run("stdio")
+""".strip(),
+        encoding="utf-8",
+    )
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps({"servers": {"fake": {"command": sys.executable, "args": [str(server_script)]}}}),
+        encoding="utf-8",
+    )
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+
+    async def scenario():
+        await manager.initialize()
+        bad_result = await manager.call_tool("fake", "search_repositories", {})
+        after_bad = next(server for server in manager.list_servers() if server.name == "fake")
+        good_result = await manager.call_tool("fake", "search_repositories", {"query": "react"})
+        after_good = next(server for server in manager.list_servers() if server.name == "fake")
+        await manager.close()
+        return bad_result, after_bad, good_result, after_good
+
+    bad_result, after_bad, good_result, after_good = asyncio.run(scenario())
+
+    assert bad_result.is_error is True
+    assert "query" in bad_result.content_text
+    assert after_bad.available is True
+    assert after_bad.error == ""
+    assert good_result.is_error is False
+    assert "result:react" in good_result.content_text
+    assert after_good.available is True
 
 
 def test_mcp_write_tool_requires_approval_and_returns_user_denied(tmp_path):

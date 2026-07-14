@@ -16,6 +16,7 @@ REPRODUCIBLE_TOOLS = {
     "search_tool",
     "Get_tool_by_name",
     "Get_all_tool",
+    "invoke_skill",
 }
 
 

@@ -19,6 +19,10 @@ class CapabilityRecommendation:
     def to_payload(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["score"] = round(self.score, 4)
+        if self.kind == "skill":
+            payload["skill_name"] = self.name
+            payload["recommended_action"] = "invoke_skill"
+            payload["invoke_tool"] = "invoke_skill"
         return payload
 
 
@@ -47,6 +51,7 @@ class CapabilityResult:
             "mcp_approval_required_for_non_read": True,
             "mcp_tool_intent_required": True,
             "recommendations_are_restrictions": False,
+            "skill_recommendation_usage": "Call invoke_skill with recommendation.skill_name when a recommended SKILL should be applied.",
             "recommendations": [item.to_payload() for item in self.recommendations],
             "note": self.note,
         }

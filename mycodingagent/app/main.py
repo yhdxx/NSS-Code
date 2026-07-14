@@ -85,7 +85,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         memory_runtime=memory_runtime,
     )
     registry.register(GetMultiAgentRun(run_journal))
-    base_tool_schemas = registry.get_all_schemas("openai")  # 保存核心工具 schema，后续每轮基于它动态追加 SKILL。
+    base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
         skills_root=CONFIG.skills.root,
         skill_roots=CONFIG.skills.roots,
@@ -131,13 +131,26 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         "read_resource",
         "get_prompt",
     }
+    skill_management_tool_names = {
+        "search_tool",
+        "Get_all_tool",
+        "Get_tool_by_name",
+        "search_skill_references",
+        "Get_skill_reference",
+        "invoke_skill",
+    }
+    skill_management_tool_schemas = [
+        schema
+        for schema in registry.get_all_schemas("openai")
+        if schema.get("name") in skill_management_tool_names
+    ]
     discovery_tool_schemas = [
         schema
         for schema in registry.get_all_schemas("openai")
         if schema.get("name") in discovery_tool_names
     ]
-    core_tool_schemas = base_tool_schemas + discovery_tool_schemas
-    tools = client.format_openai_tools(core_tool_schemas)  # 无 SKILL runtime 时的兜底工具 schema；实际对话每轮会动态构造。
+    core_tool_schemas = base_tool_schemas + skill_management_tool_schemas + discovery_tool_schemas
+    tools = client.format_openai_tools(core_tool_schemas)  # 固定核心工具 schema；动态能力推荐进入 Runtime Context。
     command_registry = build_command_registry()
 
     # 创建 OpenAI 客户端（复用连接）

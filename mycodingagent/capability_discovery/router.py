@@ -61,19 +61,21 @@ class CapabilityRouter:
         prompt: str,
         core_tool_schemas: list[dict[str, Any]],
     ) -> list[dict[str, Any]]:
-        if self.skill_runtime is None:
-            return core_tool_schemas
-        return await self.skill_runtime.build_tools_for_prompt_async(prompt, core_tool_schemas)
+        return core_tool_schemas
 
     async def _skill_recommendations(self, prompt: str) -> list[CapabilityRecommendation]:
         runtime = self.skill_runtime
         if runtime is None or not runtime.records:
             return []
         try:
-            results = runtime.search_records_for_capability(
-                prompt,
-                top_k=min(5, runtime.router_retrieval_top_k),
-            )
+            top_k = min(5, runtime.router_retrieval_top_k)
+            recommend = getattr(runtime, "recommend_records_for_capability", None)
+            if callable(recommend):
+                results = recommend(prompt, top_k=top_k)
+                reason = "skill router"
+            else:
+                results = runtime.search_records_for_capability(prompt, top_k=top_k)
+                reason = "skill retrieval"
         except Exception:
             return []
         recommendations: list[CapabilityRecommendation] = []
@@ -85,8 +87,8 @@ class CapabilityRouter:
                     name=record.tool_name,
                     description=record.description,
                     score=float(result.score or 0.0),
-                    reasons=("skill retrieval",),
-                    metadata={"source_path": str(record.source_path)},
+                    reasons=(reason,),
+                    metadata={"source_path": str(record.source_path), **getattr(result, "metadata", {})},
                 )
             )
         return recommendations

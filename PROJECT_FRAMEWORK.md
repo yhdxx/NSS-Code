@@ -116,7 +116,8 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 类 `class SkillCapabilitySource(Protocol)`（L20）：封装该模块的状态与行为。
   - `async build_tools_for_prompt_async(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L24）；调用：无
   - `search_records_for_capability(self, query: str, *, top_k: int) -> list[Any]`（L30）；调用：无
-- 类 `class MCPServerSource(Protocol)`（L33）：封装该模块的状态与行为。
+  - `recommend_records_for_capability(self, query: str, *, top_k: int) -> list[Any]`（L32）：返回融合检索、用户 LRFU、会话 LRFU、默认/pinned Skill 的推荐结果。；调用：无
+- 类 `class MCPServerSource(Protocol)`（L35）：封装该模块的状态与行为。
   - `server_count(self) -> int`（L34）；调用：无
   - `available_count(self) -> int`（L36）；调用：无
   - `list_servers(self) -> list[MCPServerView]`（L38）；调用：无
@@ -127,9 +128,9 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 职责：Skill 与 MCP 能力推荐，依赖抽象能力源。
 - 内部依赖：无
 - 类 `class CapabilityRecommendation`（L11）：封装该模块的状态与行为。
-  - `to_payload(self) -> dict[str, Any]`（L19）；调用：`asdict`, `round`
+  - `to_payload(self) -> dict[str, Any]`（L19）；调用：`asdict`, `round`；Skill 推荐会附带 `skill_name`、`recommended_action=invoke_skill` 和 `invoke_tool=invoke_skill`。
 - 类 `class CapabilityResult`（L26）：封装该模块的状态与行为。
-  - `to_runtime_payload(self) -> dict[str, Any]`（L36）；调用：`item.to_payload`
+  - `to_runtime_payload(self) -> dict[str, Any]`（L40）；调用：`item.to_payload`；Runtime Context 明确提示推荐 Skill 通过固定 `invoke_skill` 调用。
 
 ### `mycodingagent/capability_discovery/retrieval.py`
 
@@ -152,8 +153,8 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `__init__(self, *, skill_runtime: SkillCapabilitySource | None = None, mcp_manager: MCPServerSource | None = None, config: CapabilityRouterConfig | None = None) -> None`（L22）；调用：`CapabilityRouterConfig`, `LRFUCache`, `LexicalServerSignal`
   - `async route(self, prompt: str) -> CapabilityResult`（L36）；调用：`CapabilityResult`, `recommendations.extend`, `recommendations.sort`, `self._mcp_recommendations`, `self._skill_recommendations`, `self.mcp_manager.available_count`, `self.mcp_manager.server_count`, `tuple`
   - `record_mcp_server_use(self, server: str, *, reward: float = 1.0) -> None`（L55）；调用：`self._server_lrfu.touch`
-  - `async build_tools_for_prompt(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L59）；调用：`self.skill_runtime.build_tools_for_prompt_async`
-  - `async _skill_recommendations(self, prompt: str) -> list[CapabilityRecommendation]`（L68）；调用：`CapabilityRecommendation`, `float`, `min`, `recommendations.append`, `runtime.search_records_for_capability`, `str`
+  - `async build_tools_for_prompt(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L59）；调用：无；返回固定核心工具 schema，动态能力推荐进入 Runtime Context。
+  - `async _skill_recommendations(self, prompt: str) -> list[CapabilityRecommendation]`（L66）：优先读取 SkillRuntime 融合推荐并写入 Runtime Context。；调用：`CapabilityRecommendation`, `callable`, `float`, `getattr`, `min`, `recommendations.append`, `runtime.recommend_records_for_capability`, `runtime.search_records_for_capability`, `str`
   - `_mcp_recommendations(self, prompt: str) -> list[CapabilityRecommendation]`（L94）；调用：`CapabilityRecommendation`, `by_name.get`, `by_name.values`, `max`, `self._lexical_signal.score`, `self._server_lrfu.top_candidates`, `self.mcp_manager.list_servers`, `server_by_name.get`, `sorted`
 
 ### `mycodingagent/commands/__init__.py`
@@ -283,7 +284,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 函数 `with_workspace_change_notice(messages: list[dict[str, Any]], workspace_tracker: Any | None) -> list[dict[str, Any]]`（L1029）：执行模块级业务逻辑。；调用：`list`
 - 函数 `with_turn_temporary_system_messages(messages: list[dict[str, Any]], temporary_system_messages: list[dict[str, Any]]) -> list[dict[str, Any]]`（L1033）：执行模块级业务逻辑。；调用：`get`, `list`
 - 函数 `workspace_change_notice_content(workspace_tracker: Any | None) -> str`（L1043）：执行模块级业务逻辑。；调用：无
-- 函数 `async build_round_tools(prompt: str, default_tools: list[dict[str, Any]], skill_runtime: Any | None, core_tool_schemas: list[dict[str, Any]] | None, capability_router: Any | None = None) -> list[dict[str, Any]]`（L1047）：执行模块级业务逻辑。；调用：`capability_router.build_tools_for_prompt`, `format_openai_tools`, `skill_runtime.build_tools_for_prompt_async`
+- 函数 `async build_round_tools(prompt: str, default_tools: list[dict[str, Any]], skill_runtime: Any | None, core_tool_schemas: list[dict[str, Any]] | None, capability_router: Any | None = None) -> list[dict[str, Any]]`（L1057）：返回固定核心工具 schema，避免每轮动态 tool schema 破坏 DeepSeek 前缀缓存。；调用：`format_openai_tools`
 - 函数 `async main() -> None`（L1063）：执行模块级业务逻辑。；调用：`AsyncOpenAI`, `ask_deepseek`, `client.close`, `create_default_registry`, `format_openai_tools`, `print`, `registry.get_all_schemas`
 
 ### `mycodingagent/llm_runtime/context.py`
@@ -385,9 +386,9 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `async list_tools(self, server: str) -> dict[str, Any]`（L78）；调用：`item.to_payload`, `self._ensure_discovered`, `self.metadata_cache.get`, `summary.to_payload`
   - `async list_resources(self, server: str) -> dict[str, Any]`（L87）；调用：`item.to_payload`, `self._ensure_discovered`, `self.metadata_cache.get`, `summary.to_payload`
   - `async list_prompts(self, server: str) -> dict[str, Any]`（L96）；调用：`item.to_payload`, `self._ensure_discovered`, `self.metadata_cache.get`, `summary.to_payload`
-  - `async call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult`（L105）；调用：`MCPExecutionResult`, `normalize_mcp_result`, `self._ensure_session`, `self._mark_server_unavailable`, `self._unavailable_result`, `session.call_tool`, `str`
-  - `async read_resource(self, server: str, uri: str) -> MCPExecutionResult`（L119）；调用：`MCPExecutionResult`, `normalize_mcp_result`, `self._ensure_session`, `self._mark_server_unavailable`, `self._unavailable_result`, `session.read_resource`, `str`
-  - `async get_prompt(self, server: str, prompt: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult`（L133）；调用：`MCPExecutionResult`, `normalize_mcp_result`, `self._ensure_session`, `self._mark_server_unavailable`, `self._unavailable_result`, `session.get_prompt`, `str`
+  - `async call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult`（L105）；调用：`MCPExecutionResult`, `_is_mcp_operation_error`, `normalize_mcp_result`, `self._ensure_session`, `self._mark_server_unavailable`, `self._unavailable_result`, `session.call_tool`, `str`
+  - `async read_resource(self, server: str, uri: str) -> MCPExecutionResult`（L120）；调用：`MCPExecutionResult`, `_is_mcp_operation_error`, `normalize_mcp_result`, `self._ensure_session`, `self._mark_server_unavailable`, `self._unavailable_result`, `session.read_resource`, `str`
+  - `async get_prompt(self, server: str, prompt: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult`（L135）；调用：`MCPExecutionResult`, `_is_mcp_operation_error`, `normalize_mcp_result`, `self._ensure_session`, `self._mark_server_unavailable`, `self._unavailable_result`, `session.get_prompt`, `str`
   - `unavailable_servers(self) -> list[str]`（L147）；调用：`self.metadata_cache.unavailable_servers`
   - `schedule_reconnect_unavailable_servers(self) -> asyncio.Task | None`（L150）；调用：`asyncio.create_task`, `self._reconnect_task.done`, `self.reconnect_unavailable_servers`, `self.unavailable_servers`
   - `async reconnect_unavailable_servers(self) -> list[MCPServerSummary]`（L158）；调用：`restored.append`, `self.refresh_server`, `self.unavailable_servers`
@@ -399,7 +400,8 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `async _list_tools_from_session(self, server: str) -> list[MCPItemSummary]`（L236）；调用：`_item_summary`, `getattr`, `self._ensure_session`, `session.list_tools`
   - `async _list_resources_from_session(self, server: str) -> list[MCPItemSummary]`（L241）；调用：`_item_summary`, `contextlib.suppress`, `getattr`, `self._ensure_session`, `session.list_resources`
   - `async _list_prompts_from_session(self, server: str) -> list[MCPItemSummary]`（L248）；调用：`_item_summary`, `contextlib.suppress`, `getattr`, `self._ensure_session`, `session.list_prompts`
-- 函数 `_item_summary(item: Any) -> MCPItemSummary`（L256）：执行模块级业务逻辑。；调用：`MCPItemSummary`, `getattr`, `str`
+- 函数 `_item_summary(item: Any) -> MCPItemSummary`（L259）：执行模块级业务逻辑。；调用：`MCPItemSummary`, `getattr`, `str`
+- 函数 `_is_mcp_operation_error(exc: Exception) -> bool`（L274）：识别 MCP 工具/资源/prompt 的业务级错误，避免把参数错误升级为 server unavailable。；调用：`type`
 
 ### `mycodingagent/mcp_integration/models.py`
 
@@ -1294,9 +1296,10 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 职责：Skill 发现、索引、检索、路由、缓存与运行时生命周期。
 - 内部依赖：`mycodingagent.configuration`, `mycodingagent.skill_runtime.contracts`, `mycodingagent.skill_runtime.discovery`, `mycodingagent.skill_runtime.embeddings`, `mycodingagent.skill_runtime.index`, `mycodingagent.skill_runtime.models`, `mycodingagent.skill_runtime.reviewers`, `mycodingagent.skill_runtime.router`, `mycodingagent.skill_runtime.session_skill_cache`, `mycodingagent.skill_runtime.user_skill_cache`, `mycodingagent.skill_runtime.vector_store`, `mycodingagent.skill_runtime.watcher`, `mycodingagent.tool_runtime.skill_tools`
 - 类 `class SkillRuntime`（L86）：封装该模块的状态与行为。
-  - `__init__(self, *, skills_root: Path | None = None, skill_roots: tuple[Path, ...] | list[Path] | None = None, registry: ToolRegistrar) -> None`（L87）；调用：`EmbeddingCache`, `GetAllTool`, `GetSkillReferenceTool`, `GetToolByNameTool`, `MultiSkillDirectoryWatcher`, `SearchSkillReferencesTool`, `SearchSkillTool`, `SessionSkillCache`, `SkillRouter`, `SkillRouterConfig`, `SkillSqlStore`, `UserSkillCache`, `create_embedding_service`, `create_vector_store`, `int`, `normalize_tool_name`, `self.store.load_all`, `self.store.load_references`, `self.user_skill_cache.start_session`, `set`, `time.time`, `tuple`, `uuid4`
+  - `__init__(self, *, skills_root: Path | None = None, skill_roots: tuple[Path, ...] | list[Path] | None = None, registry: ToolRegistrar) -> None`（L87）；调用：`EmbeddingCache`, `GetAllTool`, `GetSkillReferenceTool`, `GetToolByNameTool`, `InvokeSkillTool`, `MultiSkillDirectoryWatcher`, `SearchSkillReferencesTool`, `SearchSkillTool`, `SessionSkillCache`, `SkillRouter`, `SkillRouterConfig`, `SkillSqlStore`, `UserSkillCache`, `create_embedding_service`, `create_vector_store`, `int`, `normalize_tool_name`, `self.store.load_all`, `self.store.load_references`, `self.user_skill_cache.start_session`, `set`, `time.time`, `tuple`, `uuid4`
   - `async initialize(self) -> SkillSyncReport`（L148）；调用：`self._ensure_vector_index_complete`, `self._watcher.start`, `self.ensure_synced`, `self.registry.register`
   - `search_records_for_capability(self, query: str, *, top_k: int) -> list[SearchResult]`（L159）；调用：`self._search_records`
+  - `recommend_records_for_capability(self, query: str, *, top_k: int) -> list[SearchResult]`（L168）：融合检索、用户 LRFU、会话 LRFU、默认/pinned Skill，作为 Runtime Context 推荐来源。；调用：`SearchResult`, `_format_recall_names`, `enumerate`, `max`, `print`, `self._search_records`, `self.router.select`, `self.session_skill_cache.top_candidates`, `self.user_skill_cache.top_candidates`, `set`
   - `close(self) -> None`（L162）；调用：`self._watcher.stop`, `self.user_skill_cache.commit_session`
   - `async ensure_synced(self) -> SkillSyncReport`（L168）；调用：`SkillSyncReport`, `self._watcher.consume_dirty`, `self.sync`
   - `_ensure_vector_index_complete(self, report: SkillSyncReport | None = None) -> None`（L173）；调用：`_progress_bar`, `getattr`, `len`, `max`, `print`, `range`, `self._upsert_vector_batch_with_retry`, `self.vector_store.stale_records`
@@ -1304,16 +1307,16 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `async sync(self) -> SkillSyncReport`（L246）；调用：`SkillSyncReport`, `any`, `changed_records.append`, `current_records.values`, `discover_skill_records`, `getattr`, `list`, `report.rejected.append`, `self._activate_default_skill_tools`, `self._register_available_skill_tools`, `self._review`, `self._sync_references`, `self.embedding_cache.delete_missing`, `self.store.delete_missing_sources`, `self.store.delete_missing_tool_names`, `self.store.load_all`, `self.store.load_references`, `self.store.reject`, `self.store.upsert`, `self.vector_store.delete_missing`, `self.vector_store.upsert`, `stored.get`, `str`, `time.time`
   - `get_record(self, tool_name: str) -> SkillRecord | None`（L314）；调用：`self.records.get`
   - `list_references_for_skill(self, tool_name: str) -> list[dict[str, Any]]`（L317）；调用：`self.references.values`, `sorted`, `str`
-  - `build_tools_for_prompt(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L333）；调用：`_dedupe_schemas`, `_format_recall_names`, `print`, `self._search_records`, `self._skill_management_schemas`, `self.router.select`, `self.session_skill_cache.top_candidates`, `self.user_skill_cache.top_candidates`, `set`, `skill_schema_from_record`
-  - `async build_tools_for_prompt_async(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L367）；调用：`self.build_tools_for_prompt`, `self.ensure_synced`
-  - `async search_skill_schemas(self, *, query: str, max_results: int, tool_names: list[str] | None = None) -> dict[str, Any]`（L375）；调用：`len`, `max`, `min`, `result.metadata.get`, `round`, `self._pin_skill`, `self._search_records`, `self.ensure_synced`, `skill_schema_from_record`, `str`, `zip`
+  - `build_tools_for_prompt(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L339）；调用：`_dedupe_schemas`, `self._skill_management_schemas`；不再动态追加每个 `skill_*` schema。
+  - `async build_tools_for_prompt_async(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]`（L342）；调用：`self.build_tools_for_prompt`, `self.ensure_synced`
+  - `async search_skill_schemas(self, *, query: str, max_results: int, tool_names: list[str] | None = None) -> dict[str, Any]`（L350）；调用：`_skill_payload_from_record`, `len`, `max`, `min`, `result.metadata.get`, `round`, `self._pin_skill`, `self._search_records`, `self.ensure_synced`, `str`, `zip`
   - `async list_skill_tools(self) -> dict[str, Any]`（L402）；调用：`len`, `self._source_kind`, `self.ensure_synced`, `self.records.values`, `sorted`, `str`
-  - `async get_tool_schema_by_name(self, tool_name: str) -> dict[str, Any]`（L419）；调用：`len`, `record.name.lower`, `record.tool_name.lower`, `self._pin_skill`, `self._source_kind`, `self.ensure_synced`, `self.records.get`, `self.records.values`, `self.session_skill_cache.touch`, `skill_schema_from_record`, `str`, `tool_name.lower`
+  - `async get_tool_schema_by_name(self, tool_name: str) -> dict[str, Any]`（L395）；调用：`_skill_payload_from_record`, `len`, `record.name.lower`, `record.tool_name.lower`, `self._pin_skill`, `self._source_kind`, `self.ensure_synced`, `self.records.get`, `self.records.values`, `self.session_skill_cache.touch`, `str`, `tool_name.lower`
   - `async search_skill_references(self, *, query: str = '', skill_name: str = '', max_results: int = 5) -> dict[str, Any]`（L449）；调用：`_rank_references`, `_reference_snippet`, `len`, `max`, `min`, `query.strip`, `round`, `self._resolve_skill_tool_name`, `self.ensure_synced`, `self.references.values`, `sorted`, `str`
   - `async get_skill_reference(self, *, skill_name: str, reference_path: str) -> dict[str, Any]`（L502）；调用：`_normalize_reference_path`, `self._resolve_skill_tool_name`, `self.ensure_synced`, `self.references.get`, `str`
   - `system_hint(self) -> str`（L532）；调用：无
   - `default_skill_hint(self) -> str`（L535）；调用：`join`, `parts.append`, `self._source_kind`
-  - `_skill_management_schemas(self) -> list[dict[str, Any]]`（L556）；调用：`self.get_all_tool_instance.get_schema`, `self.get_reference_tool_instance.get_schema`, `self.get_tool_by_name_instance.get_schema`, `self.search_references_tool_instance.get_schema`, `self.search_tool_instance.get_schema`
+  - `_skill_management_schemas(self) -> list[dict[str, Any]]`（L532）；调用：`self.get_all_tool_instance.get_schema`, `self.get_reference_tool_instance.get_schema`, `self.get_tool_by_name_instance.get_schema`, `self.invoke_skill_instance.get_schema`, `self.search_references_tool_instance.get_schema`, `self.search_tool_instance.get_schema`
   - `_register_available_skill_tools(self) -> None`（L565）；调用：`SkillTool`, `self._registered_skill_tools.add`, `self.registry.register`
   - `_activate_default_skill_tools(self) -> None`（L572）；调用：`self._pin_skill`
   - `begin_turn(self) -> None`（L576）；调用：`self._turn_pinned_tool_names.clear`
@@ -1766,10 +1769,15 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `__init__(self, runtime: SkillService) -> None`（L146）；调用：无
   - `async execute(self, params: GetSkillReferenceParams) -> ToolResult`（L149）；调用：`ToolResult`, `bool`, `json.dumps`, `result.get`, `self._runtime.get_skill_reference`
 - 类 `class SkillInvocationParams(BaseModel)`（L157）：封装该模块的状态与行为。
-- 类 `class SkillTool(Tool)`（L162）：封装该模块的状态与行为。
-  - `__init__(self, runtime: SkillService, tool_name: str) -> None`（L166）；调用：`self._runtime.get_record`
-  - `async execute(self, params: SkillInvocationParams) -> ToolResult`（L180）；调用：`ToolResult`, `join`, `json.dumps`, `self._runtime.get_record`, `self._runtime.list_references_for_skill`, `self._runtime.record_skill_invocation`
-- 函数 `skill_schema_from_record(record) -> dict`（L214）：执行模块级业务逻辑。；调用：`SkillInvocationParams.model_json_schema`
+- 类 `class InvokeSkillParams(SkillInvocationParams)`（L162）：固定 `invoke_skill` 工具参数，包含 `skill_name`、`instruction`、`context`。
+- 函数 `execute_skill_workflow(runtime: SkillService, tool_name: str, instruction: str, context: str = '') -> ToolResult`（L166）：复用 Skill workflow 输出逻辑。；调用：`ToolResult`, `json.dumps`, `runtime.get_record`, `runtime.list_references_for_skill`, `runtime.record_skill_invocation`
+- 类 `class InvokeSkillTool(Tool)`（L200）：固定核心工具，用 exact `skill_name` 间接调用动态 Skill workflow。
+  - `__init__(self, runtime: SkillService) -> None`（L212）；调用：无
+  - `async execute(self, params: InvokeSkillParams) -> ToolResult`（L215）；调用：`execute_skill_workflow`
+- 类 `class SkillTool(Tool)`（L224）：兼容历史 `skill_*` 工具调用，当前不再动态暴露为每轮 OpenAI tools schema。
+  - `__init__(self, runtime: SkillService, tool_name: str) -> None`（L228）；调用：`self._runtime.get_record`
+  - `async execute(self, params: SkillInvocationParams) -> ToolResult`（L242）；调用：`execute_skill_workflow`
+- 函数 `skill_schema_from_record(record) -> dict`（L246）：兼容旧动态 Skill schema 生成路径；固定核心 schema 模式下不再由每轮路由追加到 OpenAI tools。；调用：`SkillInvocationParams.model_json_schema`
 
 ### `mycodingagent/tool_runtime/workspace_change_tracker.py`
 

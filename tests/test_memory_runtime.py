@@ -184,6 +184,46 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
     asyncio.run(scenario())
 
 
+def test_build_round_tools_returns_fixed_core_schemas_without_dynamic_skill_lookup():
+    async def scenario():
+        class ExplodingSkillRuntime:
+            async def build_tools_for_prompt_async(self, prompt, core_tool_schemas):
+                raise AssertionError("dynamic skill schema lookup should not run")
+
+        class ExplodingCapabilityRouter:
+            async def build_tools_for_prompt(self, prompt, core_tool_schemas):
+                raise AssertionError("dynamic capability tool schema lookup should not run")
+
+        core_tool_schemas = [
+            {
+                "name": "invoke_skill",
+                "description": "Invoke a fixed skill workflow",
+                "parameters": {"type": "object", "properties": {}},
+            }
+        ]
+
+        tools = await agent_client.build_round_tools(
+            "review this code",
+            default_tools=[],
+            skill_runtime=ExplodingSkillRuntime(),
+            core_tool_schemas=core_tool_schemas,
+            capability_router=ExplodingCapabilityRouter(),
+        )
+
+        assert tools == [
+            {
+                "type": "function",
+                "function": {
+                    "name": "invoke_skill",
+                    "description": "Invoke a fixed skill workflow",
+                    "parameters": {"type": "object", "properties": {}},
+                },
+            }
+        ]
+
+    asyncio.run(scenario())
+
+
 def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypatch):
     async def scenario():
         seen_messages = []

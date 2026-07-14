@@ -19,10 +19,10 @@ from mycodingagent.tool_runtime.skill_tools import (
     GetAllTool,
     GetSkillReferenceTool,
     GetToolByNameTool,
+    InvokeSkillTool,
     SearchSkillReferencesTool,
     SearchSkillTool,
     SkillTool,
-    skill_schema_from_record,
 )
 from mycodingagent.skill_runtime.user_skill_cache import UserSkillCache
 from mycodingagent.skill_runtime.vector_store import create_vector_store
@@ -38,7 +38,7 @@ SEARCH_HINT = (
     "最多尝试三次（防止死循环），且三次检索必须逐步放宽：具体任务 -> 同义词/能力类别 -> 上位领域。"
     "只有当 SKILL 兜底能力摘要中明确描述了你需要的能力，且三次 search_tool 都没有找到对应 Skill 时，才允许调用 Get_all_tool；"
     "如果不能根据摘要确认存在相关能力，禁止调用 Get_all_tool，以减少不必要 token 消耗。"
-    "Get_all_tool 返回后，再调用 Get_tool_by_name 获取目标工具 schema；如果仍找不到，则认为目前不提供该工具。"
+    "Get_all_tool 返回后，再调用 Get_tool_by_name 获取目标 SKILL 详情；需要应用该 SKILL 时调用固定工具 invoke_skill。"
 )
 
 CAPABILITY_SELECTION_POLICY = (
@@ -49,7 +49,8 @@ CAPABILITY_SELECTION_POLICY = (
     "决策顺序：\n"
     "1. 只有同时满足以下条件，才允许直接依赖 Model 自身能力回答：不需要任何 Tool；不需要任何 Business Skill；"
     "不需要访问本地代码、文件或命令；当前 Prompt 中不存在明显匹配的 Business Skill。\n"
-    "2. 如果当前 Prompt 的工具列表中已经存在高度匹配的 Business Skill，必须优先调用该 Business Skill；"
+    "2. 如果 Runtime Context recommendations、search_tool 或 Get_tool_by_name 已经识别出高度匹配的 Business Skill，"
+    "必须优先调用固定工具 invoke_skill，并传入对应 skill_name；"
     "不得因为你自己知道如何完成，就跳过该 Skill；Business Skill 优先级高于 Model 自身能力和 Core Tool。\n"
     "3. 如果当前 Prompt 中没有匹配 Business Skill，但任务可能存在相关 Skill，必须先调用 search_tool 检索；"
     "调用 search_tool 时，query 必须使用中文表达；如果用户原始需求是英文或中英混合，先在 query 中翻译/概括为中文能力描述再检索。"
@@ -58,8 +59,10 @@ CAPABILITY_SELECTION_POLICY = (
     "4. 只有不存在相关 Business Skill、Business Skill 明显无法完成任务，或 Skill 指令明确要求执行操作时，才直接调用 Core Tool。\n"
     "禁止行为：Business Skill 已存在时，禁止直接依赖 HTML/CSS/Python/Java 等自身知识完成整个任务；"
     "禁止直接调用 ReadFile、WriteFile、EditFile、Glob、Grep、Bash 等 Core Tool 替代 Business Skill 的专家工作流。\n"
-    "典型规则：设计/实现/优化前端页面、组件、Web App、UI/UX 时，如果 skill_frontend_design 可用，必须先调用它；"
-    "代码 Review 时如果 skill_review 可用，必须先调用它；后端面试时如果 skill_backend_interview 可用，必须先调用它。"
+    "典型规则：设计/实现/优化前端页面、组件、Web App、UI/UX 时，如果 skill_frontend_design 可用，必须先调用 "
+    "invoke_skill(skill_name=\"skill_frontend_design\")；代码 Review 时如果 skill_review 可用，必须先调用 "
+    "invoke_skill(skill_name=\"skill_review\")；后端面试时如果 skill_backend_interview 可用，必须先调用 "
+    "invoke_skill(skill_name=\"skill_backend_interview\")。"
 )
 
 SKILL_FALLBACK_SUMMARY = (
@@ -76,9 +79,10 @@ SKILL_FALLBACK_SUMMARY = (
 SKILL_FALLBACK_HINT = (
     "SKILL 兜底能力摘要：\n"
     f"{SKILL_FALLBACK_SUMMARY}\n"
-    "如果当前已提供的 SKILL schema 不是你真正需要的能力，请根据该摘要判断是否调用 "
+    "如果 Runtime Context 推荐的 SKILL 不是你真正需要的能力，请根据该摘要判断是否调用 "
     "search_tool、Get_all_tool、Get_tool_by_name、search_skill_references 或 Get_skill_reference "
-    "继续查询；search_tool 的 query 必须使用中文。只有摘要明确覆盖目标能力且 search_tool 多次未命中时，才允许调用 Get_all_tool；"
+    "继续查询；search_tool 的 query 必须使用中文。需要应用某个 SKILL 时调用 invoke_skill。"
+    "只有摘要明确覆盖目标能力且 search_tool 多次未命中时，才允许调用 Get_all_tool；"
     "若摘要没有明确覆盖目标能力，禁止调用 Get_all_tool，直接回答、使用核心工具或说明当前没有对应 Skill。"
 )
 
@@ -140,6 +144,7 @@ class SkillRuntime:
         self.get_tool_by_name_instance = GetToolByNameTool(self)
         self.search_references_tool_instance = SearchSkillReferencesTool(self)
         self.get_reference_tool_instance = GetSkillReferenceTool(self)
+        self.invoke_skill_instance = InvokeSkillTool(self)
         self._registered_skill_tools: set[str] = set()
         self._session_pinned_tool_names: dict[str, None] = {}
         self._turn_pinned_tool_names: dict[str, None] = {}
@@ -154,10 +159,62 @@ class SkillRuntime:
         self.registry.register(self.get_tool_by_name_instance)
         self.registry.register(self.search_references_tool_instance)
         self.registry.register(self.get_reference_tool_instance)
+        self.registry.register(self.invoke_skill_instance)
         return report
 
     def search_records_for_capability(self, query: str, *, top_k: int) -> list[SearchResult]:
         return self._search_records(query, top_k=top_k)
+
+    def recommend_records_for_capability(self, query: str, *, top_k: int) -> list[SearchResult]:
+        retrieval_results = self._search_records(
+            query,
+            top_k=max(top_k, self.router_retrieval_top_k),
+        )
+        user_candidates = self.user_skill_cache.top_candidates(
+            user_id=self.user_id,
+            limit=self.router_cache_top_k,
+        )
+        session_candidates = self.session_skill_cache.top_candidates(
+            limit=self.router_cache_top_k,
+            current_round=self.session_skill_call_round,
+        )
+        selected = self.router.select(
+            records=self.records,
+            retrieval_results=retrieval_results,
+            user_candidates=user_candidates,
+            session_candidates=session_candidates,
+            pinned_names=set(self._session_pinned_tool_names) | set(self._turn_pinned_tool_names) | self.default_tool_names,
+        )
+        if CONFIG.skills.output_recall_skill:
+            print(f"[SKILL] 检索候选: {_format_recall_names(result.record.tool_name for result in retrieval_results)}", flush=True)
+            print(f"[SKILL] 用户LRFU候选: {_format_recall_names(candidate.skill_name for candidate in user_candidates)}", flush=True)
+            print(f"[SKILL] 会话LRFU候选: {_format_recall_names(candidate.skill_name for candidate in session_candidates)}", flush=True)
+            print(f"[SKILL] Runtime Context推荐: {_format_recall_names(record.tool_name for record in selected)}", flush=True)
+        by_name = {result.record.tool_name: result for result in retrieval_results}
+        recommendations: list[SearchResult] = []
+        for rank, record in enumerate(selected[:top_k], start=1):
+            retrieval_result = by_name.get(record.tool_name)
+            if retrieval_result is not None:
+                recommendations.append(
+                    SearchResult(
+                        record=record,
+                        score=retrieval_result.score,
+                        keyword_score=retrieval_result.keyword_score,
+                        semantic_score=retrieval_result.semantic_score,
+                        metadata={**retrieval_result.metadata, "router_source": "skill_router"},
+                    )
+                )
+                continue
+            recommendations.append(
+                SearchResult(
+                    record=record,
+                    score=1.0 / rank,
+                    keyword_score=0.0,
+                    semantic_score=0.0,
+                    metadata={"retriever": "skill_router_lrfu_or_pinned", "router_source": "skill_router"},
+                )
+            )
+        return recommendations
 
     def close(self) -> None:
         try:
@@ -331,38 +388,7 @@ class SkillRuntime:
         ]
 
     def build_tools_for_prompt(self, prompt: str, core_tool_schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
-        skill_management_schemas = self._skill_management_schemas()
-        if not self.records:
-            return _dedupe_schemas(core_tool_schemas + skill_management_schemas)
-
-        retrieval_results = self._search_records(
-            prompt,
-            top_k=self.router_retrieval_top_k,
-        )
-        user_candidates = self.user_skill_cache.top_candidates(
-            user_id=self.user_id,
-            limit=self.router_cache_top_k,
-        )
-        session_candidates = self.session_skill_cache.top_candidates(
-            limit=self.router_cache_top_k,
-            current_round=self.session_skill_call_round,
-        )
-        selected = self.router.select(
-            records=self.records,
-            retrieval_results=retrieval_results,
-            user_candidates=user_candidates,
-            session_candidates=session_candidates,
-            pinned_names=set(self._session_pinned_tool_names) | set(self._turn_pinned_tool_names) | self.default_tool_names,
-        )
-        if CONFIG.skills.output_recall_skill:
-            print(f"[SKILL] 检索候选: {_format_recall_names(result.record.tool_name for result in retrieval_results)}", flush=True)
-            print(f"[SKILL] 用户LRFU候选: {_format_recall_names(candidate.skill_name for candidate in user_candidates)}", flush=True)
-            print(f"[SKILL] 会话LRFU候选: {_format_recall_names(candidate.skill_name for candidate in session_candidates)}", flush=True)
-            print(f"[SKILL] 最终召回: {_format_recall_names(record.tool_name for record in selected)}", flush=True)
-        skill_schemas = [skill_schema_from_record(record) for record in selected]
-        return _dedupe_schemas(
-            core_tool_schemas + skill_management_schemas + skill_schemas
-        )
+        return _dedupe_schemas(core_tool_schemas + self._skill_management_schemas())
 
     async def build_tools_for_prompt_async(
         self,
@@ -382,20 +408,21 @@ class SkillRuntime:
         )
         for result in results:
             self._pin_skill(result.record.tool_name, scope="turn")
-        schemas = [skill_schema_from_record(item.record) for item in results]
+        skills = [_skill_payload_from_record(item.record) for item in results]
         return {
             "hint": SEARCH_HINT,
-            "count": len(schemas),
-            "tools": [
+            "count": len(skills),
+            "next_step": "Call invoke_skill with the exact skill_name when one of these workflows should be applied.",
+            "skills": [
                 {
-                    "schema": schema,
+                    **skill,
                     "score": round(result.score, 4),
                     "keyword_score": round(result.keyword_score, 4),
                     "semantic_score": round(result.semantic_score, 4),
                     "retriever": result.metadata.get("retriever", "milvus_hnsw_bm25_rrf"),
                     "source_path": str(result.record.source_path),
                 }
-                for schema, result in zip(schemas, results)
+                for skill, result in zip(skills, results)
             ],
         }
 
@@ -413,7 +440,7 @@ class SkillRuntime:
                 }
                 for record in records
             ],
-            "next_step": "Call Get_tool_by_name with an exact name from this list to retrieve that tool schema.",
+            "next_step": "Call invoke_skill with an exact skill_name to apply a workflow, or Get_tool_by_name for details.",
         }
 
     async def get_tool_schema_by_name(self, tool_name: str) -> dict[str, Any]:
@@ -440,10 +467,10 @@ class SkillRuntime:
             reward=self.session_activation_reward,
         )
         return {
-            "schema": skill_schema_from_record(record),
+            **_skill_payload_from_record(record),
             "source": self._source_kind(record.source_path),
             "source_path": str(record.source_path),
-            "next_step": "This schema will be included in the next model round; call the tool by its schema name.",
+            "next_step": "Call invoke_skill with this skill_name when the workflow should be applied.",
         }
 
     async def search_skill_references(self, *, query: str = "", skill_name: str = "", max_results: int = 5) -> dict[str, Any]:
@@ -560,6 +587,7 @@ class SkillRuntime:
             self.get_tool_by_name_instance.get_schema(),
             self.search_references_tool_instance.get_schema(),
             self.get_reference_tool_instance.get_schema(),
+            self.invoke_skill_instance.get_schema(),
         ]
 
     def _register_available_skill_tools(self) -> None:
@@ -706,6 +734,16 @@ def _dedupe_schemas(schemas: list[dict[str, Any]]) -> list[dict[str, Any]]:
         seen.add(name)
         result.append(schema)
     return result
+
+
+def _skill_payload_from_record(record: SkillRecord) -> dict[str, Any]:
+    return {
+        "skill_name": record.tool_name,
+        "name": record.name,
+        "description": record.description,
+        "recommended_action": "invoke_skill",
+        "invoke_tool": "invoke_skill",
+    }
 
 
 def _format_recall_names(names: Any) -> str:

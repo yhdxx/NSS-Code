@@ -1643,7 +1643,7 @@ def skill_invocation_kind(tool_name: str) -> str:
         return "list"
     if tool_name in {"search_skill_references", "Get_skill_reference"}:
         return "reference"
-    if tool_name.startswith("skill_"):
+    if tool_name == "invoke_skill" or tool_name.startswith("skill_"):
         return "workflow"
     return ""
 

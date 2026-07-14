@@ -345,7 +345,8 @@ def indent_multiline_text(value: str, prefix: str = "    ") -> str:  # 给多行
 
 
 def skill_tool_notice(tool_name: str, args: dict[str, Any], skill_runtime: Any | None = None) -> str:  # 为 SKILL 相关工具调用生成终端可见的简短提示。
-    record = get_skill_record_for_notice(skill_runtime, tool_name)
+    notice_tool_name = str(args.get("skill_name") or "") if tool_name == "invoke_skill" else tool_name
+    record = get_skill_record_for_notice(skill_runtime, notice_tool_name)
     if record is not None:
         lines = [f"[SKILL] 调用：{record.tool_name} ({record.name})"]
         description = compact_notice_value(record.description, limit=160)
@@ -364,6 +365,12 @@ def skill_tool_notice(tool_name: str, args: dict[str, Any], skill_runtime: Any |
     if tool_name == "Get_tool_by_name":  # Get_tool_by_name 会按名称激活并返回某个 SKILL schema。
         requested_name = compact_notice_value(args.get("tool_name"))
         return f"[SKILL] 获取工具定义: {requested_name}" if requested_name else "[SKILL] 获取工具定义"
+    if tool_name == "invoke_skill":
+        requested_name = compact_notice_value(args.get("skill_name"))
+        instruction = compact_notice_value(args.get("instruction"))
+        if requested_name and instruction:
+            return f"[SKILL] 调用: {requested_name} instruction={instruction}"
+        return f"[SKILL] 调用: {requested_name}" if requested_name else "[SKILL] 调用"
     if tool_name == "search_skill_references":
         query = compact_notice_value(args.get("query"))
         skill_name = compact_notice_value(args.get("skill_name"))
@@ -637,7 +644,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -只有当 SKILL 兜底能力摘要明确覆盖你需要的能力，即你认为有 80% 可能存在你需要的skill，且三次中文 search_tool 都未命中时，才允许调用 Get_all_tool；若不确定摘要是否覆盖，禁止调用 Get_all_tool。
                     -Get_all_tool 主要用于用户询问“有哪些 skill/能力”或上述严格兜底场景；不要为了普通任务随意列出全部 skill。
                     -只有不存在相关 Business Skill、Skill 明显无法完成任务，或 Skill 指令明确要求执行时，才直接调用 Core Tool。
-                    -前端页面/组件/Web App/UI/UX 需求优先调用 skill_frontend_design；代码 Review 优先调用 skill_review；后端面试优先调用 skill_backend_interview。
+                    -前端页面/组件/Web App/UI/UX 需求优先调用 invoke_skill 且 skill_name=skill_frontend_design；
+                     代码 Review 优先调用 invoke_skill 且 skill_name=skill_review；
+                     后端面试优先调用 invoke_skill 且 skill_name=skill_backend_interview。
 
                     当有专用工具可用时，不要用 Bash 来执行命令。使用专用工具可以
                     让用户更好地理解和审查你的工作。这一点至关重要：
@@ -1052,13 +1061,9 @@ async def build_round_tools(
     core_tool_schemas: list[dict[str, Any]] | None,
     capability_router: Any | None = None,
 ) -> list[dict[str, Any]]:
-    if capability_router is not None and core_tool_schemas is not None:
-        raw_tools = await capability_router.build_tools_for_prompt(prompt, core_tool_schemas)
-        return format_openai_tools(raw_tools)
-    if skill_runtime is None or core_tool_schemas is None:
+    if core_tool_schemas is None:
         return default_tools
-    raw_tools = await skill_runtime.build_tools_for_prompt_async(prompt, core_tool_schemas)
-    return format_openai_tools(raw_tools)
+    return format_openai_tools(core_tool_schemas)
 
 
 async def main() -> None:  # 提供一个直接运行 `client.py` 时使用的测试入口。
