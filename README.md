@@ -152,7 +152,7 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
   ├─ 3. 工具输出先持久化；RAW 下超 1000 字符时只给首尾预览
   │
   ├─ 4. 热工作阶段达到 30% 时提示提交，达到 40% 时安排强制提交
-  │      └─ CommitWorkingContext 只登记 pending，在完整回合结束后生效
+  │      └─ CommitWorkingContext 只登记 hot-to-cold pending，在完整回合结束后生效，不要求模型生成任务摘要
   │
   ├─ 5. RAW 窗口达到 60% 时进入渐进式虚拟化
   │      └─ cold 区保留用户/模型文本，工具输出降为恢复元数据
@@ -166,7 +166,7 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
 
 提交采用模型与 Runtime 混合控制：
 
-- 模型在任务完成、用户明确切换工作、连续新请求已形成新任务或收到热区提示时调用 `CommitWorkingContext`。
+- 模型在任务完成、用户明确切换工作、连续新请求已形成新任务或收到热区提示时调用 `CommitWorkingContext`；该工具只需要轮转原因和可选短备注，不负责生成 checkpoint/rollover 摘要。
 - 热区达到模型窗口 30% 时，仅注入提示，不自动提交。
 - 热区达到 40% 时，Runtime 创建强制 pending 提交，并保留最近若干轮作为新热区。
 - pending 提交不会在 assistant/tool 调用链中途改变消息结构，而是在 `on_turn_completed` 确认当前回合完整后生效。

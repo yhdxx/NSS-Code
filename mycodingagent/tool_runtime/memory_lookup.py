@@ -4,7 +4,7 @@ import json
 from dataclasses import asdict
 from typing import TYPE_CHECKING, Any
 
-from pydantic import BaseModel, Field
+from pydantic import BaseModel, ConfigDict, Field
 
 from mycodingagent.memory.contracts import ContextEpochControl
 from mycodingagent.tool_runtime.base import Tool, ToolResult
@@ -318,11 +318,13 @@ class SummarizeCurrentTurnMessage(Tool):
 
 
 class CommitWorkingContextParams(BaseModel):
-    reason: str = Field(description="Why the current multi-turn task context is complete or should be archived.")
-    summary: str = Field(description="Dense summary of completed work, decisions, results, and unfinished items.")
+    model_config = ConfigDict(extra="allow")
+
+    reason: str = Field(description="Why the current hot working-context epoch should be committed after this turn.")
+    commit_note: str = Field(default="", description="Optional short note for this epoch commit. Do not summarize the full task history here.")
     retain_context_ids: list[str] = Field(
         default_factory=list,
-        description="Visible context_id values that may still be needed after the working context is archived.",
+        description="Visible context_id values that may still be needed after this hot epoch becomes cold context.",
     )
     active_files: list[str] = Field(
         default_factory=list,
@@ -337,11 +339,12 @@ class CommitWorkingContextParams(BaseModel):
 class CommitWorkingContext(Tool):
     name = "CommitWorkingContext"
     description = (
-        "Close the current multi-turn working-context epoch after the current assistant turn completes. "
+        "Schedule the current hot working-context epoch to be committed after this assistant turn completes. "
         "Use this only when the current task is complete, the user explicitly closes or switches work, or "
         "the visible hot-context notice requests a commit. The model is responsible for semantic context "
         "switches; runtime only forces commits when the hot context exceeds its budget. This tool schedules "
-        "archival and never hides messages during the current tool-call chain."
+        "a hot-to-cold epoch rotation and never hides messages during the current tool-call chain. It is not "
+        "a checkpoint or rollover summary generator."
     )
     params_model = CommitWorkingContextParams
     category = "command"
@@ -354,7 +357,7 @@ class CommitWorkingContext(Tool):
         try:
             state = self._context_control.request_context_epoch_commit(
                 reason=params.reason,
-                summary=params.summary,
+                summary=commit_context_note(params),
                 retain_context_ids=params.retain_context_ids,
                 active_files=params.active_files,
                 next_context_hint=params.next_context_hint,
@@ -372,6 +375,20 @@ class CommitWorkingContext(Tool):
             "notice": "The working context will be archived only after the current assistant turn completes.",
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
+
+
+def commit_context_note(params: CommitWorkingContextParams) -> str:
+    note = params.commit_note.strip()
+    if note:
+        return note
+    extra = getattr(params, "model_extra", None)
+    legacy_summary = extra.get("summary") if isinstance(extra, dict) else None
+    if isinstance(legacy_summary, str) and legacy_summary.strip():
+        return legacy_summary.strip()
+    reason = " ".join(params.reason.split())
+    if reason:
+        return f"Model requested working-context commit: {reason}"
+    return "Model requested working-context commit."
 
 
 class RestoreSessionParams(BaseModel):

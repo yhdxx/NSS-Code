@@ -1156,6 +1156,7 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
     schemas = registry.get_all_schemas("openai")
     names = {schema["name"] for schema in schemas}
     output_schema = next(schema for schema in schemas if schema["name"] == "BatchRecoverContext")
+    commit_schema = next(schema for schema in schemas if schema["name"] == "CommitWorkingContext")
 
     assert {
         "CommitWorkingContext",
@@ -1171,6 +1172,12 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
     assert "items" in output_schema["parameters"]["properties"]
     assert "context_id" not in output_schema["parameters"]["properties"]
     assert "output_id" not in output_schema["parameters"]["properties"]
+    assert "reason" in commit_schema["parameters"]["required"]
+    assert "summary" not in commit_schema["parameters"]["required"]
+    assert "summary" not in commit_schema["parameters"]["properties"]
+    assert "commit_note" in commit_schema["parameters"]["properties"]
+    assert "Close the current" not in commit_schema["description"]
+    assert "archival" not in commit_schema["description"]
 
 
 def test_current_turn_summary_uses_single_recovery_path(tmp_path):
@@ -2388,6 +2395,8 @@ def test_hot_context_force_retains_recent_turns_as_new_hot_context(tmp_path):
         for index, message in enumerate(rendered)
         if "Working context transition" in str(message.get("content", ""))
     )
+    assert '"commit_note"' in rendered[marker_index]["content"]
+    assert '"summary"' not in rendered[marker_index]["content"]
     assert rendered[marker_index + 1]["content"].startswith("billing invoice ledger revenue turn 3")
 
 
@@ -2452,7 +2461,6 @@ def test_commit_working_context_tool_is_deferred_and_idempotent(tmp_path):
     tool = CommitWorkingContext(runtime)
     params = CommitWorkingContextParams(
         reason="task complete",
-        summary="Completed the task and verified the result.",
         active_files=["app.py", "app.py"],
     )
 
@@ -2464,6 +2472,7 @@ def test_commit_working_context_tool_is_deferred_and_idempotent(tmp_path):
     pending = runtime.get_active_context_epoch(session_id)
     assert pending is not None
     assert pending.status == ContextEpochStatus.PENDING_COMMIT
+    assert pending.summary == "Model requested working-context commit: task complete"
     assert pending.active_files == ["app.py"]
     assert pending.end_message_index is None
 
@@ -2483,6 +2492,58 @@ def test_commit_working_context_tool_is_deferred_and_idempotent(tmp_path):
     assert restored_runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
     assert restored_state.context_epoch is not None
     assert restored_state.context_epoch.epoch_id == epochs[1].epoch_id
+
+
+def test_commit_working_context_accepts_commit_note_and_legacy_summary(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "complete task"},
+        {"role": "assistant", "content": "done"},
+    ]
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="complete task",
+        current_turn_start=1,
+    )
+    tool = CommitWorkingContext(runtime)
+
+    result = asyncio.run(
+        tool.execute(
+            CommitWorkingContextParams(
+                reason="task complete",
+                commit_note="Short handoff note.",
+            )
+        )
+    )
+    assert not result.is_error
+    pending = runtime.get_active_context_epoch(session_id)
+    assert pending is not None
+    assert pending.summary == "Short handoff note."
+
+    runtime.finalize_pending_context_epoch(session_id=session_id, messages=messages)
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=[*messages, {"role": "user", "content": "new task"}],
+        tools=[],
+        current_prompt="new task",
+        current_turn_start=len(messages),
+    )
+    legacy_result = asyncio.run(
+        tool.execute(
+            CommitWorkingContextParams(
+                reason="legacy call",
+                summary="Legacy summary remains accepted.",
+            )
+        )
+    )
+    assert not legacy_result.is_error
+    legacy_pending = runtime.get_active_context_epoch(session_id)
+    assert legacy_pending is not None
+    assert legacy_pending.summary == "Legacy summary remains accepted."
 
 
 def test_hot_context_threshold_schedules_runtime_commit(tmp_path):

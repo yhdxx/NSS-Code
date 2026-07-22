@@ -500,7 +500,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `get(self, session_id: str) -> ContextEpochState | None`（L38）；调用：`self._states.get`, `self.remember`, `self.store.load_active_context_epoch`
   - `ensure(self, *, session_id: str, messages: list[dict[str, Any]], current_turn_start: int | None = None) -> ContextEpochState`（L45）；调用：`last_user_message_index`, `len`, `max`, `min`, `self.create`, `self.get`
   - `create(self, *, session_id: str, start_message_index: int) -> ContextEpochState`（L63）；调用：`ContextEpochState`, `max`, `self.remember`, `self.store.save_context_epoch`, `uuid4`
-  - `request_commit(self, *, session_id: str, reason: str, summary: str, retain_context_ids: list[str] | None = None, active_files: list[str] | None = None, next_context_hint: str = '', trigger: str = 'model') -> ContextEpochState`（L73）；调用：`ValueError`, `dedupe_strings`, `join`, `next_context_hint.strip`, `reason.split`, `self.get`, `self.store.save_context_epoch`, `summary.strip`
+  - `request_commit(self, *, session_id: str, reason: str, summary: str, retain_context_ids: list[str] | None = None, active_files: list[str] | None = None, next_context_hint: str = '', trigger: str = 'model') -> ContextEpochState`（L73）；内部仍保存非空 commit note；模型侧 `CommitWorkingContext` 不再要求生成 summary。
   - `finalize(self, *, session_id: str, end_message_index: int, pending_tool_call: bool) -> tuple[ContextEpochState, ContextEpochState] | None`（L116）；调用：`max`, `self.create`, `self.get`, `self.store.save_context_epoch`, `time`
   - `snapshot(self, *, session_id: str, messages: list[dict[str, Any]], current_turn_start: int | None = None) -> HotContextBudgetSnapshot`（L134）；调用：`HotContextBudgetSnapshot`, `estimate_tokens`, `len`, `max`, `min`, `self.ensure`
   - `delete(self, session_id: str) -> None`（L160）；调用：`self._states.pop`
@@ -549,7 +549,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 内部依赖：`mycodingagent.memory.models`
 - 类 `class ContextEpochControl(Protocol)`（L8）：封装该模块的状态与行为。
   - `get_current_session_id(self) -> str | None`（L9）；调用：无
-  - `request_context_epoch_commit(self, *, reason: str, summary: str, retain_context_ids: list[str] | None = None, active_files: list[str] | None = None, next_context_hint: str = '', trigger: str = 'model', session_id: str | None = None) -> ContextEpochState`（L12）；调用：无
+  - `request_context_epoch_commit(self, *, reason: str, summary: str, retain_context_ids: list[str] | None = None, active_files: list[str] | None = None, next_context_hint: str = '', trigger: str = 'model', session_id: str | None = None) -> ContextEpochState`（L12）；内部字段 `summary` 作为 commit note 使用；模型工具 schema 暴露 `commit_note`。
 
 ### `mycodingagent/memory/message_filters.py`
 
@@ -605,7 +605,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `clear_current_session_id(self) -> None`（L206）；调用：`self._current_turn_summaries.clear`
   - `get_active_context_epoch(self, session_id: str | None = None) -> ContextEpochState | None`（L211）；调用：`self.context_epoch_manager.get`
   - `ensure_context_epoch(self, *, session_id: str, messages: list[dict[str, Any]], current_turn_start: int | None = None) -> ContextEpochState`（L215）；调用：`self.context_epoch_manager.ensure`
-  - `request_context_epoch_commit(self, *, reason: str, summary: str, retain_context_ids: list[str] | None = None, active_files: list[str] | None = None, next_context_hint: str = '', trigger: str = 'model', session_id: str | None = None) -> ContextEpochState`（L228）；调用：`ValueError`, `self.context_epoch_manager.request_commit`
+  - `request_context_epoch_commit(self, *, reason: str, summary: str, retain_context_ids: list[str] | None = None, active_files: list[str] | None = None, next_context_hint: str = '', trigger: str = 'model', session_id: str | None = None) -> ContextEpochState`（L228）；调用：`ValueError`, `self.context_epoch_manager.request_commit`；内部 `summary` 兼容旧存储语义。
   - `finalize_pending_context_epoch(self, *, session_id: str, messages: list[dict[str, Any]]) -> ContextEpochState | None`（L252）；调用：`format_context_epoch_commit_report`, `has_pending_tool_call`, `len`, `print`, `self._current_turn_summaries.clear`, `self.context_epoch_manager.finalize`, `self.force_context_virtualized`
   - `hot_context_budget_snapshot(self, *, session_id: str, messages: list[dict[str, Any]], current_turn_start: int | None = None) -> HotContextBudgetSnapshot`（L273）；调用：`self.context_epoch_manager.snapshot`
   - `context_mode(self, session_id: str | None = None) -> ContextMode`（L286）；调用：`self._context_modes.get`
@@ -1383,7 +1383,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 类 `class SummarizeCurrentTurnMessage(Tool)`（L252）：封装该模块的状态与行为。
   - `__init__(self, memory_runtime: MemoryRuntime) -> None`（L263）；调用：无
   - `async execute(self, params: SummarizeCurrentTurnMessageParams) -> ToolResult`（L266）；调用：`ToolResult`, `asdict`, `json.dumps`, `self._memory_runtime.summarize_current_turn_message`
-- 类 `class CommitWorkingContextParams(BaseModel)`（L285）：封装该模块的状态与行为。
+- 类 `class CommitWorkingContextParams(BaseModel)`（L285）：模型侧提交 hot epoch 轮转的参数；`reason` 必填，`commit_note` 可选，legacy `summary` 仅兼容读取且不出现在 schema 中。
 - 类 `class CommitWorkingContext(Tool)`（L302）：封装该模块的状态与行为。
   - `__init__(self, context_control: ContextEpochControl) -> None`（L315）；调用：无
   - `async execute(self, params: CommitWorkingContextParams) -> ToolResult`（L318）；调用：`ToolResult`, `json.dumps`, `self._context_control.request_context_epoch_commit`

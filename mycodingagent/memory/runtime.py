@@ -1351,7 +1351,7 @@ def render_context_transition_marker(epoch: ContextEpochState) -> list[dict[str,
     tool_call_id = f"context_epoch_commit_{epoch.epoch_id}"
     transition = {
         "reason": epoch.reason,
-        "summary": epoch.summary,
+        "commit_note": epoch.summary,
         "trigger": epoch.trigger,
         "cold_message_range": [epoch.start_message_index, epoch.end_message_index],
         "new_hot_start_message_index": epoch.end_message_index,

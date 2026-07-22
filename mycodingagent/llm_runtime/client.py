@@ -684,7 +684,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     You are responsible for semantic working-context switches. Call CommitWorkingContext when the current task is complete, the user explicitly closes/switches work, or several recent requests have clearly formed a new task that no longer needs the prior hot context.
                     Runtime only forces CommitWorkingContext when the hot working context exceeds its budget; do not expect runtime to infer topic drift.
                     The commit is deferred until the current assistant turn is fully complete, so continue using the visible context normally after calling it.
-                    Include completed work, decisions, verification results, unfinished items, important files, and any context_id values worth retaining.
+                    CommitWorkingContext is a hot-to-cold epoch rotation control, not a checkpoint or rollover summary generator. Provide a concise reason, optional commit_note, important active_files, and any context_id values worth retaining; do not generate a dense task-history summary just for this tool.
 
                     ***Runtime Context Input Protocol***
                     A current user message may contain a structured wrapper with <RUNTIME_CONTEXT> and <USER_REQUEST>.
