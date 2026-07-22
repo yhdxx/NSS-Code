@@ -11,7 +11,6 @@ class CommandContext:
     messages: list[dict]
     file_state_cache: Any = None
     workspace_tracker: Any = None
-    multicoding_controller: Any = None
 
 
 @dataclass

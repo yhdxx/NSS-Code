@@ -33,18 +33,7 @@ from mycodingagent.tool_runtime.workspace_change_tracker import WorkspaceChangeT
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.hooks import CLIApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
-from mycodingagent.multi_agent import (
-    CLIArchitectureApprovalHook,
-    CLIRuntimeEventHook,
-    MultiCodingController,
-    MultiCodingOrchestrator,
-)
-from mycodingagent.multi_agent.infrastructure.direct_responder import LLMDirectResponder
-from mycodingagent.multi_agent.infrastructure.history_tool import GetMultiAgentRun
-from mycodingagent.multi_agent.infrastructure.run_journal import JsonRunJournal
-from mycodingagent.multi_agent.infrastructure.runner import AgentRunner
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
-from mycodingagent.workspace.identity import workspace_fingerprint
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
 try:  # 开始可能抛出异常的保护代码块。
@@ -74,17 +63,11 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
             print(f"已清理 {deleted_count} 个超过 {CONFIG.memory.session_ttl_days} 天未访问的会话。", flush=True)
-    run_journal = JsonRunJournal(
-        CONFIG.memory.db_path.parent
-        / "multicoding_runs"
-        / workspace_fingerprint(get_sandbox_root())
-    )
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
     )
-    registry.register(GetMultiAgentRun(run_journal))
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
         skills_root=CONFIG.skills.root,
@@ -155,35 +138,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
     # 创建 OpenAI 客户端（复用连接）
     api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
-    multicoding_event_hook = CLIRuntimeEventHook()
-    multicoding_runner = AgentRunner(
-        api_client=api_client,
-        registry=registry,
-        workspace_root=get_sandbox_root(),
-        event_sink=multicoding_event_hook,
-    )
-    direct_responder = LLMDirectResponder(
-        api_client=api_client,
-        registry=registry,
-        tools=tools,
-        core_tool_schemas=core_tool_schemas,
-        skill_runtime=skill_runtime,
-        workspace_tracker=workspace_tracker,
-        memory_runtime=memory_runtime,
-        capability_router=capability_router,
-    )
-    multicoding_orchestrator = MultiCodingOrchestrator(
-        workspace_root=get_sandbox_root(),
-        config=CONFIG.multicoding,
-        event_hook=multicoding_event_hook,
-        approval_hook=CLIArchitectureApprovalHook(),
-        runner=multicoding_runner,
-        direct_responder=direct_responder,
-        conversation_recorder=memory_runtime,
-        run_journal=run_journal,
-        default_model=client.MODEL,
-    )
-    multicoding_controller = MultiCodingController(multicoding_orchestrator, CONFIG.multicoding)
 
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
@@ -218,7 +172,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     messages=messages,
                     file_state_cache=file_state_cache,
                     workspace_tracker=workspace_tracker,
-                    multicoding_controller=multicoding_controller,
                 ),
             )
             if command_result.handled:
@@ -240,21 +193,18 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
             # 携带历史消息进行对话，并获取更新后的消息列表
             # 注意：首次对话不传 messages（None），让 ask_deepseek 自动注入系统提示词 "H-Agent"
-            if multicoding_controller.enabled:
-                _, messages = await multicoding_controller.run(prompt, messages or None)
-            else:
-                _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
-                    api_client,
-                    prompt,
-                    registry,
-                    tools,
-                    messages or None,
-                    skill_runtime=skill_runtime,
-                    core_tool_schemas=core_tool_schemas,
-                    workspace_tracker=workspace_tracker,
-                    memory_runtime=memory_runtime,
-                    capability_router=capability_router,
-                )  # 结束上方的多行结构。
+            _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
+                api_client,
+                prompt,
+                registry,
+                tools,
+                messages or None,
+                skill_runtime=skill_runtime,
+                core_tool_schemas=core_tool_schemas,
+                workspace_tracker=workspace_tracker,
+                memory_runtime=memory_runtime,
+                capability_router=capability_router,
+            )  # 结束上方的多行结构。
             if memory_runtime is not None:
                 rollover = await memory_runtime.on_turn_completed(
                     messages=messages,

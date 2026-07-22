@@ -101,21 +101,6 @@ def test_root_contains_only_thin_entrypoint_for_runtime_code():
     assert "from mycodingagent.app.main import main" in entrypoint
 
 
-def test_multi_agent_roles_have_dedicated_directories():
-    agents = PACKAGE_ROOT / "multi_agent" / "agents"
-    expected = {"router", "planner", "auditor", "optimizer", "executor", "validator"}
-    assert expected == {path.name for path in agents.iterdir() if path.is_dir() and not path.name.startswith("__")}
-    for role in expected:
-        assert (agents / role / "prompts.py").exists()
-
-
-def test_orchestration_does_not_import_llm_or_tool_implementations():
-    orchestration = PACKAGE_ROOT / "multi_agent" / "orchestration"
-    source = "\n".join(path.read_text(encoding="utf-8") for path in orchestration.glob("*.py"))
-    assert "mycodingagent.llm_runtime" not in source
-    assert "mycodingagent.tool_runtime" not in source
-
-
 def test_skill_tools_depend_on_contract_not_runtime():
     source = (PACKAGE_ROOT / "tool_runtime" / "skill_tools.py").read_text(encoding="utf-8")
     assert "skill_runtime.contracts import SkillService" in source

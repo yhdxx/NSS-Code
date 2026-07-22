@@ -17,28 +17,6 @@ def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
     registry.register(
         CommandSpec(
-            name="/multicoding",
-            aliases=("multicoding", "多智能体"),
-            description="启用、关闭或查看持续多智能体编码模式",
-            usage="[on|off|status|--help]",
-            usages=(
-                ("", "启用持续多智能体编码模式"),
-                (" on", "启用持续多智能体编码模式"),
-                (" off", "关闭多智能体编码模式"),
-                (" status", "显示当前模式和并发配置"),
-                (" --help", "显示 /multicoding 的完整参数说明"),
-            ),
-            examples=(
-                "/multicoding",
-                "/multicoding on",
-                "/multicoding off",
-                "/multicoding status",
-            ),
-            handler=handle_multicoding_command,
-        )
-    )
-    registry.register(
-        CommandSpec(
             name="/resume",
             aliases=("resume", "恢复会话"),
             description="恢复历史会话；默认仅显示当前工作目录会话",
@@ -124,35 +102,6 @@ def build_command_registry() -> CommandRegistry:
         )
     )
     return registry
-
-
-async def handle_multicoding_command(context: CommandContext, arguments: str) -> CommandResult:
-    controller = context.multicoding_controller
-    spec = build_command_registry().match("/multicoding")[0]
-    argument = arguments.strip().lower()
-    if argument in {"--help", "-h", "help"}:
-        print(spec.help_text(), flush=True)
-        return CommandResult()
-    if controller is None:
-        print("多智能体运行时未初始化。", flush=True)
-        return CommandResult()
-    if argument in {"", "on", "enable"}:
-        controller.enable()
-        print(f"多智能体模式已启用：{controller.status_text()}", flush=True)
-        return CommandResult()
-    if argument in {"off", "disable"}:
-        try:
-            controller.disable()
-        except RuntimeError as exc:
-            print(f"无法关闭多智能体模式：{exc}", flush=True)
-        else:
-            print(f"多智能体模式已关闭：{controller.status_text()}", flush=True)
-        return CommandResult()
-    if argument == "status":
-        print(controller.status_text(), flush=True)
-        return CommandResult()
-    print(spec.help_text(), flush=True)
-    return CommandResult()
 
 
 async def handle_resume_command(context: CommandContext, arguments: str) -> CommandResult:

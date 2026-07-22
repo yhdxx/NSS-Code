@@ -10,7 +10,6 @@
 - 启动入口：根目录 `__main__.py` -> `mycodingagent.app.main.main()`。
 - 架构原则：应用层负责组装；业务模块依赖 Protocol；基础设施适配器依赖具体 SDK、数据库和工具框架。
 - 上下文模型：冷历史虚拟化 + 跨多轮热工作阶段；模型或 Runtime 在安全回合边界提交阶段。
-- 多智能体模式：`direct`、`audit_only`、`implementation` 三条明确工作流。
 
 ## 2. 顶层目录
 
@@ -23,7 +22,6 @@ mycodingagent/
 ├── llm_runtime/  # 模型请求、流式响应、工具循环、Prompt 上下文和 Token 统计。
 ├── mcp_integration/  # MCP 配置、连接、元数据发现、调用和审批策略。
 ├── memory/  # 会话持久化、跨多轮热工作上下文、虚拟化、检查点和恢复。
-├── multi_agent/  # 多智能体领域模型、角色、编排状态机和基础设施适配器。
 ├── relevance/  # 跨模块复用的相关性和使用频率排序算法。
 ├── skill_runtime/  # Skill 发现、索引、检索、路由、缓存与运行时生命周期。
 ├── terminal_ui/  # 终端输入、历史展示、会话选择与确认交互。
@@ -36,12 +34,11 @@ tests/                  # 单元、集成和架构边界测试
 ## 3. 跨模块依赖图
 
 ```text
-app -> capability_discovery, commands, configuration, llm_runtime, mcp_integration, memory, multi_agent, skill_runtime, terminal_ui, tool_runtime, workspace
+app -> capability_discovery, commands, configuration, llm_runtime, mcp_integration, memory, skill_runtime, terminal_ui, tool_runtime
 capability_discovery -> relevance
 commands -> configuration, llm_runtime, memory, terminal_ui
 llm_runtime -> configuration, memory, tool_runtime
 memory -> configuration, workspace
-multi_agent -> llm_runtime, tool_runtime
 skill_runtime -> configuration, relevance, tool_runtime
 terminal_ui -> commands, memory
 tool_runtime -> capability_discovery, configuration, mcp_integration, memory, skill_runtime, workspace
@@ -51,7 +48,6 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - `app` 是组合根，负责实例化并连接具体实现。
 - `memory/context_epoch.py` 依赖 `ContextEpochStore` Protocol，不依赖 SQLite 实现。
 - `tool_runtime/CommitWorkingContext` 依赖 `ContextEpochControl` Protocol，不依赖 `MemoryRuntime` 实现。
-- `multi_agent/orchestration` 不直接导入 LLM 或 Tool 具体实现。
 
 ## 4. 核心运行流程
 
@@ -65,16 +61,6 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   └── 热区 >= 40% -> Runtime 自动 pending_commit
 完整回合结束 -> 提交旧阶段 -> 创建新阶段 -> 旧工具输出 metadata 虚拟化
 需要精确信息 -> SearchRecoverableContext / RecoverContext
-```
-
-### 4.2 多智能体
-
-```text
-用户输入 -> Router
-  ├── direct -> DirectResponder -> 主 Agent 回答
-  ├── audit_only -> Planner -> Auditor workers -> merge -> Optimizer proposal -> 总结
-  └── implementation -> Audit -> Optimize/Approve -> Plan -> Executors -> Validator -> Repair -> 总结
-所有路径 -> JsonRunJournal -> get_multicoding_run 可查询
 ```
 
 ## 5. 函数级模块索引
@@ -97,8 +83,8 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 
 - 模块：`mycodingagent.app.main`
 - 职责：应用启动、依赖组装、资源生命周期和交互主循环。
-- 内部依赖：`mycodingagent.capability_discovery`, `mycodingagent.commands`, `mycodingagent.commands.handlers`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.mcp_integration`, `mycodingagent.mcp_integration.hooks`, `mycodingagent.mcp_integration.policy`, `mycodingagent.memory`, `mycodingagent.multi_agent`, `mycodingagent.multi_agent.infrastructure.direct_responder`, `mycodingagent.multi_agent.infrastructure.history_tool`, `mycodingagent.multi_agent.infrastructure.run_journal`, `mycodingagent.multi_agent.infrastructure.runner`, `mycodingagent.skill_runtime`, `mycodingagent.terminal_ui.input`, `mycodingagent.tool_runtime`, `mycodingagent.tool_runtime.base`, `mycodingagent.tool_runtime.bash`, `mycodingagent.tool_runtime.file_state_cache`, `mycodingagent.tool_runtime.mcp_discovery`, `mycodingagent.tool_runtime.mcp_execution`, `mycodingagent.tool_runtime.workspace_change_tracker`, `mycodingagent.workspace.identity`
-- 函数 `async main() -> None`（L56）：执行模块级业务逻辑。；调用：`AgentRunner`, `AsyncOpenAI`, `CLIApprovalHook`, `CLIArchitectureApprovalHook`, `CLIRuntimeEventHook`, `CapabilityRouter`, `CommandContext`, `FileStateCache`, `GetMultiAgentRun`, `JsonRunJournal`, `LLMDirectResponder`, `MCPClientManager`, `MCPConfigLoader`, `MCPToolPermissionPolicy`, `MemoryRuntime`, `MultiCodingController`, `MultiCodingOrchestrator`, `SkillRuntime`, `WorkspaceChangeTracker`, `api_client.close`, `build_command_registry`, `client.ask_deepseek`, `client.format_openai_tools`, `command_registry.execute`, `create_default_registry`, `ensure_docker_image`, `get_docker_image`, `get_sandbox_root`, `mcp_manager.close`, `mcp_manager.initialize`, `mcp_manager.schedule_reconnect_unavailable_servers`, `mcp_manager.server_count`, `memory_runtime.await_pending_rollover`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.close`, `memory_runtime.on_turn_completed`, `multicoding_controller.run`, `print`, `prompt.strip`, `pyfiglet.figlet_format`, `read_user_prompt`, `register_mcp_discovery_tools`, `register_mcp_execution_tools`, `registry.get_all_schemas`, `registry.register`, `schema.get`, `skill_report.summary`, `skill_runtime.close`, `skill_runtime.initialize`, `str`, `workspace_fingerprint`, `workspace_tracker.close`, `workspace_tracker.start`
+- 内部依赖：`mycodingagent.capability_discovery`, `mycodingagent.commands`, `mycodingagent.commands.handlers`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.mcp_integration`, `mycodingagent.mcp_integration.hooks`, `mycodingagent.mcp_integration.policy`, `mycodingagent.memory`, `mycodingagent.skill_runtime`, `mycodingagent.terminal_ui.input`, `mycodingagent.tool_runtime`, `mycodingagent.tool_runtime.base`, `mycodingagent.tool_runtime.bash`, `mycodingagent.tool_runtime.file_state_cache`, `mycodingagent.tool_runtime.mcp_discovery`, `mycodingagent.tool_runtime.mcp_execution`, `mycodingagent.tool_runtime.workspace_change_tracker`
+- 函数 `async main() -> None`（L39）：执行模块级业务逻辑。；调用：`AsyncOpenAI`, `CLIApprovalHook`, `CapabilityRouter`, `CommandContext`, `FileStateCache`, `MCPClientManager`, `MCPConfigLoader`, `MCPToolPermissionPolicy`, `MemoryRuntime`, `SkillRuntime`, `WorkspaceChangeTracker`, `api_client.close`, `build_command_registry`, `client.ask_deepseek`, `client.format_openai_tools`, `command_registry.execute`, `create_default_registry`, `ensure_docker_image`, `get_docker_image`, `get_sandbox_root`, `mcp_manager.close`, `mcp_manager.initialize`, `mcp_manager.schedule_reconnect_unavailable_servers`, `mcp_manager.server_count`, `memory_runtime.await_pending_rollover`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.close`, `memory_runtime.on_turn_completed`, `print`, `prompt.strip`, `pyfiglet.figlet_format`, `read_user_prompt`, `register_mcp_discovery_tools`, `register_mcp_execution_tools`, `registry.get_all_schemas`, `schema.get`, `skill_report.summary`, `skill_runtime.close`, `skill_runtime.initialize`, `str`, `workspace_tracker.close`, `workspace_tracker.start`
 
 ### `mycodingagent/capability_discovery/__init__.py`
 
@@ -170,8 +156,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 职责：CLI 命令注册、解析和命令处理。
 - 内部依赖：`mycodingagent.commands.registry`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.memory.session_switch`, `mycodingagent.terminal_ui.confirm`, `mycodingagent.terminal_ui.history`, `mycodingagent.terminal_ui.session_selector`
 - 函数 `build_command_registry() -> CommandRegistry`（L16）：执行模块级业务逻辑。；调用：`CommandRegistry`, `CommandSpec`, `registry.register`
-- 函数 `async handle_multicoding_command(context: CommandContext, arguments: str) -> CommandResult`（L129）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `controller.disable`, `controller.enable`, `controller.status_text`, `lower`, `match`, `print`, `spec.help_text`
-- 函数 `async handle_resume_command(context: CommandContext, arguments: str) -> CommandResult`（L158）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_restore`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.load_session`, `memory_runtime.touch_session`, `print`, `render_conversation_history`, `resume_spec.help_text`, `save_current_session_if_needed`, `select_session_interactively`
+- 函数 `async handle_resume_command(context: CommandContext, arguments: str) -> CommandResult`（L129）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_restore`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.load_session`, `memory_runtime.touch_session`, `print`, `render_conversation_history`, `resume_spec.help_text`, `save_current_session_if_needed`, `select_session_interactively`
 - 函数 `async handle_fork_command(context: CommandContext, arguments: str) -> CommandResult`（L207）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_action`, `fork_spec.help_text`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.fork_session`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.store.load_session`, `print`, `render_conversation_history`, `save_current_session_if_needed`, `select_session_interactively`
 - 函数 `async handle_clear_command(context: CommandContext, arguments: str) -> CommandResult`（L273）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `clear_spec.help_text`, `match`, `memory_runtime.clear_current_session_id`, `memory_runtime.drain`, `memory_runtime.start_session`, `print`, `save_current_session_if_needed`
 - 函数 `async handle_delete_command(context: CommandContext, arguments: str) -> CommandResult`（L308）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_action`, `confirm_delete_sessions`, `delete_spec.help_text`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.delete_session`, `memory_runtime.delete_sessions`, `memory_runtime.drain`, `memory_runtime.list_sessions`, `memory_runtime.store.load_session`, `print`, `save_current_session_if_needed`, `select_session_interactively`
@@ -222,8 +207,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 函数 `_dedupe_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]`（L109）：执行模块级业务逻辑。；调用：`path.expanduser`, `resolve`, `result.append`, `seen.add`, `set`, `str`, `tuple`
 - 类 `class ApiConfig`（L122）：封装该模块的状态与行为。
 - 类 `class ClientConfig`（L131）：封装该模块的状态与行为。
-- 类 `class MultiCodingConfig`（L145）：封装该模块的状态与行为。
-- 类 `class MemoryConfig`（L167）：封装该模块的状态与行为。
+- 类 `class MemoryConfig`（L145）：封装该模块的状态与行为。
   - `context_window_for(self, model: str) -> int`（L221）；调用：`isinstance`, `self.model_context_windows.get`
 - 类 `class SandboxConfig`（L229）：封装该模块的状态与行为。
 - 类 `class DockerConfig`（L251）：封装该模块的状态与行为。
@@ -784,325 +768,6 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `archive(self, context_id: str) -> RecoverableContextObject | None`（L22）；调用：`self.contexts.pop`
   - `metadata(self) -> list[dict]`（L28）；调用：`context.to_dict`, `self.contexts.values`
   - `clear(self) -> None`（L31）；调用：`self.contexts.clear`, `self.contexts.values`
-
-### `mycodingagent/multi_agent/__init__.py`
-
-- 模块：`mycodingagent.multi_agent`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.infrastructure.direct_responder`, `mycodingagent.multi_agent.infrastructure.events`, `mycodingagent.multi_agent.infrastructure.runner`, `mycodingagent.multi_agent.orchestration.controller`, `mycodingagent.multi_agent.orchestration.orchestrator`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents`
-- 职责：Role-specific multi-agent implementations.
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/auditor/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents.auditor`
-- 职责：Parallel project inspection and audit result merging.
-- 内部依赖：`mycodingagent.multi_agent.agents.auditor.prompts`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/auditor/prompts.py`
-
-- 模块：`mycodingagent.multi_agent.agents.auditor.prompts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/executor/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents.executor`
-- 职责：Scoped source-code execution agents.
-- 内部依赖：`mycodingagent.multi_agent.agents.executor.prompts`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/executor/prompts.py`
-
-- 模块：`mycodingagent.multi_agent.agents.executor.prompts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/optimizer/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents.optimizer`
-- 职责：Read-only architecture optimization proposals.
-- 内部依赖：`mycodingagent.multi_agent.agents.optimizer.prompts`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/optimizer/prompts.py`
-
-- 模块：`mycodingagent.multi_agent.agents.optimizer.prompts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/planner/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents.planner`
-- 职责：Audit scope, implementation, and repair planning.
-- 内部依赖：`mycodingagent.multi_agent.agents.planner.prompts`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/planner/prompts.py`
-
-- 模块：`mycodingagent.multi_agent.agents.planner.prompts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/router/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents.router`
-- 职责：Main request routing and final workflow synthesis.
-- 内部依赖：`mycodingagent.multi_agent.agents.router.prompts`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/router/prompts.py`
-
-- 模块：`mycodingagent.multi_agent.agents.router.prompts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/validator/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.agents.validator`
-- 职责：Read-only implementation verification agents.
-- 内部依赖：`mycodingagent.multi_agent.agents.validator.prompts`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/agents/validator/prompts.py`
-
-- 模块：`mycodingagent.multi_agent.agents.validator.prompts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/domain/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.domain`
-- 职责：Pure multi-agent workflow contracts and data models.
-- 内部依赖：`mycodingagent.multi_agent.domain.contracts`, `mycodingagent.multi_agent.domain.models`
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/domain/contracts.py`
-
-- 模块：`mycodingagent.multi_agent.domain.contracts`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.domain.models`
-- 类 `class AgentRuntime(Protocol)`（L9）：封装该模块的状态与行为。
-  - `async run(self, request: AgentRequest) -> AgentResult`（L10）；调用：无
-- 类 `class DirectResponder(Protocol)`（L13）：封装该模块的状态与行为。
-  - `async respond(self, prompt: str, messages: list[dict[str, Any]] | None) -> tuple[str, list[dict[str, Any]]]`（L14）；调用：无
-- 类 `class RuntimeEventSink(Protocol)`（L21）：封装该模块的状态与行为。
-  - `async emit(self, event: RuntimeEvent) -> None`（L22）；调用：无
-- 类 `class MultiAgentSettings(Protocol)`（L25）：封装该模块的状态与行为。
-- 类 `class ConversationRecorder(Protocol)`（L38）：封装该模块的状态与行为。
-  - `start_session(self, model: str) -> str`（L39）；调用：无
-  - `save_messages(self, session_id: str, messages: list[dict[str, Any]]) -> None`（L41）；调用：无
-- 类 `class RunJournal(Protocol)`（L44）：封装该模块的状态与行为。
-  - `save(self, record: dict[str, Any]) -> str`（L45）；调用：无
-  - `latest(self) -> dict[str, Any] | None`（L47）；调用：无
-  - `get(self, run_id: str) -> dict[str, Any] | None`（L49）；调用：无
-- 类 `class ArchitectureApprovalDecision`（L53）：封装该模块的状态与行为。
-- 类 `class ArchitectureApprovalPort(Protocol)`（L58）：封装该模块的状态与行为。
-  - `async approve(self, proposal: ArchitectureProposal) -> ArchitectureApprovalDecision`（L59）；调用：无
-
-### `mycodingagent/multi_agent/domain/models.py`
-
-- 模块：`mycodingagent.multi_agent.domain.models`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 类 `class AgentRole(str, Enum)`（L8）：封装该模块的状态与行为。
-- 类 `class WorkflowStatus(str, Enum)`（L17）：封装该模块的状态与行为。
-- 类 `class WorkflowMode(str, Enum)`（L23）：封装该模块的状态与行为。
-- 函数 `_strings(value: Any) -> tuple[str, ...]`（L29）：执行模块级业务逻辑。；调用：`isinstance`, `str`, `strip`, `tuple`
-- 类 `class QueryDecision`（L36）：封装该模块的状态与行为。
-  - `needs_planning(self) -> bool`（L42）；调用：无
-  - `from_mapping(cls, value: dict[str, Any], fallback_query: str) -> QueryDecision`（L46）；调用：`WorkflowMode`, `bool`, `cls`, `lower`, `str`, `strip`, `value.get`
-- 类 `class AuditScope`（L62）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any], index: int = 0) -> AuditScope`（L68）；调用：`_strings`, `cls`, `str`, `strip`, `value.get`
-- 类 `class FunctionNode`（L77）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any]) -> FunctionNode`（L87）；调用：`_strings`, `cls`, `str`, `strip`, `value.get`
-- 类 `class CallEdge`（L100）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any]) -> CallEdge`（L108）；调用：`cls`, `float`, `max`, `min`, `str`, `strip`, `value.get`
-- 类 `class ProjectAuditReport`（L123）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any]) -> ProjectAuditReport`（L133）；调用：`CallEdge.from_mapping`, `FunctionNode.from_mapping`, `_strings`, `cls`, `isinstance`, `str`, `strip`, `tuple`, `value.get`
-  - `to_dict(self) -> dict[str, Any]`（L153）；调用：`asdict`
-- 类 `class ArchitectureProposal`（L158）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any]) -> ArchitectureProposal`（L168）；调用：`_strings`, `bool`, `cls`, `str`, `strip`, `value.get`
-  - `to_dict(self) -> dict[str, Any]`（L179）；调用：`asdict`
-- 类 `class WorkItem`（L184）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any], index: int = 0) -> WorkItem`（L193）；调用：`_strings`, `cls`, `str`, `strip`, `value.get`
-  - `to_dict(self) -> dict[str, Any]`（L203）；调用：`asdict`
-- 类 `class VerificationReport`（L208）：封装该模块的状态与行为。
-  - `from_mapping(cls, value: dict[str, Any]) -> VerificationReport`（L216）；调用：`_strings`, `bool`, `cls`, `isinstance`, `str`, `strip`, `tuple`, `value.get`
-  - `to_dict(self) -> dict[str, Any]`（L226）；调用：`asdict`
-- 类 `class AgentRequest`（L231）：封装该模块的状态与行为。
-- 类 `class AgentResult`（L243）：封装该模块的状态与行为。
-- 类 `class RuntimeEvent`（L251）：封装该模块的状态与行为。
-- 类 `class WorkflowResult`（L258）：封装该模块的状态与行为。
-
-### `mycodingagent/multi_agent/infrastructure/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure`
-- 职责：Model, tool, workspace, persistence, and user-interface adapters.
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/infrastructure/direct_responder.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.direct_responder`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.llm_runtime`, `mycodingagent.tool_runtime`
-- 类 `class LLMDirectResponder`（L11）：封装该模块的状态与行为。
-  - `__init__(self, *, api_client: AsyncOpenAI, registry: ToolRegistry, tools: list[dict[str, Any]], core_tool_schemas: list[dict[str, Any]], skill_runtime: Any = None, workspace_tracker: Any = None, memory_runtime: Any = None, capability_router: Any = None) -> None`（L12）；调用：无
-  - `async respond(self, prompt: str, messages: list[dict[str, Any]] | None) -> tuple[str, list[dict[str, Any]]]`（L33）；调用：`agent_client.ask_deepseek`
-
-### `mycodingagent/multi_agent/infrastructure/events.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.events`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.domain.contracts`, `mycodingagent.multi_agent.domain.models`
-- 类 `class RuntimeEventHook`（L9）：封装该模块的状态与行为。
-  - `async emit(self, event: RuntimeEvent) -> None`（L10）；调用：无
-- 类 `class CLIRuntimeEventHook(RuntimeEventHook)`（L14）：封装该模块的状态与行为。
-  - `async emit(self, event: RuntimeEvent) -> None`（L15）；调用：`event.metadata.items`, `join`, `print`
-- 类 `class ArchitectureApprovalHook`（L23）：封装该模块的状态与行为。
-  - `async approve(self, proposal: ArchitectureProposal) -> ArchitectureApprovalDecision`（L24）；调用：`ArchitectureApprovalDecision`
-- 类 `class CLIArchitectureApprovalHook(ArchitectureApprovalHook)`（L28）：封装该模块的状态与行为。
-  - `async approve(self, proposal: ArchitectureProposal) -> ArchitectureApprovalDecision`（L29）；调用：`ArchitectureApprovalDecision`, `input`, `lower`, `print`, `strip`
-- 类 `class StaticArchitectureApprovalHook(ArchitectureApprovalHook)`（L51）：封装该模块的状态与行为。
-  - `__init__(self, allowed: bool) -> None`（L52）；调用：无
-  - `async approve(self, proposal: ArchitectureProposal) -> ArchitectureApprovalDecision`（L55）；调用：`ArchitectureApprovalDecision`
-- 类 `class CollectingRuntimeEventHook(RuntimeEventHook)`（L60）：封装该模块的状态与行为。
-  - `__init__(self) -> None`（L61）；调用：无
-  - `async emit(self, event: RuntimeEvent) -> None`（L64）；调用：`self.events.append`
-
-### `mycodingagent/multi_agent/infrastructure/history_tool.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.history_tool`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.domain.contracts`, `mycodingagent.tool_runtime.base`
-- 类 `class GetMultiAgentRunParams(BaseModel)`（L11）：封装该模块的状态与行为。
-- 类 `class GetMultiAgentRun(Tool)`（L18）：封装该模块的状态与行为。
-  - `__init__(self, journal: RunJournal) -> None`（L29）；调用：无
-  - `async execute(self, params: GetMultiAgentRunParams) -> ToolResult`（L32）；调用：`ToolResult`, `json.dumps`, `self._journal.get`, `self._journal.latest`
-
-### `mycodingagent/multi_agent/infrastructure/path_locks.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.path_locks`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.infrastructure.permissions`
-- 类 `class PathLockManager`（L11）：封装该模块的状态与行为。
-  - `__init__(self, workspace_root: Path) -> None`（L12）；调用：`asyncio.Lock`, `workspace_root.resolve`
-  - `async acquire(self, paths: tuple[str, ...]) -> AsyncIterator[None]`（L18）；调用：`lock.acquire`, `lock.release`, `normalize_workspace_path`, `reversed`, `self._get_locks`, `sorted`, `str`
-  - `async _get_locks(self, keys: list[str]) -> list[asyncio.Lock]`（L29）；调用：`asyncio.Lock`, `self._locks.setdefault`
-
-### `mycodingagent/multi_agent/infrastructure/permissions.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.permissions`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.tool_runtime`
-- 类 `class ToolPermissionError(RuntimeError)`（L11）：封装该模块的状态与行为。
-- 类 `class ToolAccessPolicy`（L22）：封装该模块的状态与行为。
-  - `schemas(self, registry: ToolRegistry) -> list[dict[str, Any]]`（L28）；调用：`registry.list_tools`, `schemas.append`, `tool.get_schema`
-  - `authorize(self, tool_name: str, arguments: dict[str, Any]) -> None`（L43）；调用：`ToolPermissionError`, `arguments.get`, `is_validation_command`, `self._authorize_write_path`, `str`, `strip`
-  - `_authorize_write_path(self, raw_path: str) -> None`（L55）；调用：`ToolPermissionError`, `any`, `join`, `normalize_workspace_path`, `str`
-- 函数 `normalize_workspace_path(raw_path: str, workspace_root: Path) -> Path`（L67）：执行模块级业务逻辑。；调用：`Path`, `len`, `path.is_absolute`, `path.resolve`, `raw_path.strip`, `text.startswith`, `workspace_root.resolve`
-- 函数 `is_validation_command(command: str) -> bool`（L80）：执行模块级业务逻辑。；调用：`Path`, `_allowed_validation_subcommand`, `any`, `len`, `shlex.split`
-- 函数 `_allowed_validation_subcommand(executable: str, args: list[str]) -> bool`（L105）：执行模块级业务逻辑。；调用：`any`, `bool`
-
-### `mycodingagent/multi_agent/infrastructure/run_journal.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.run_journal`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：无
-- 类 `class JsonRunJournal`（L10）：封装该模块的状态与行为。
-  - `__init__(self, root: Path) -> None`（L11）；调用：`Lock`
-  - `save(self, record: dict[str, Any]) -> str`（L15）；调用：`json.dumps`, `record.get`, `self.root.mkdir`, `str`, `target.write_text`, `uuid4`, `write_text`
-  - `latest(self) -> dict[str, Any] | None`（L25）；调用：`marker.exists`, `marker.read_text`, `self.get`, `strip`
-  - `get(self, run_id: str) -> dict[str, Any] | None`（L31）；调用：`isinstance`, `json.loads`, `target.exists`, `target.read_text`
-
-### `mycodingagent/multi_agent/infrastructure/runner.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.runner`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.llm_runtime`, `mycodingagent.multi_agent.domain.contracts`, `mycodingagent.multi_agent.domain.models`, `mycodingagent.multi_agent.infrastructure.permissions`, `mycodingagent.tool_runtime`
-- 类 `class AgentOutputError(ValueError)`（L16）：封装该模块的状态与行为。
-- 类 `class AgentRunner`（L20）：封装该模块的状态与行为。
-  - `__init__(self, *, api_client: AsyncOpenAI, registry: ToolRegistry, workspace_root: Any, event_sink: RuntimeEventSink | None = None) -> None`（L21）；调用：无
-  - `async run(self, request: AgentRequest) -> AgentResult`（L34）；调用：`AgentResult`, `ToolAccessPolicy`, `_parse_arguments`, `agent_client.execute_local_tool`, `agent_client.format_openai_tools`, `agent_client.stream_one_round`, `enumerate`, `messages.append`, `policy.authorize`, `policy.schemas`, `range`, `self._emit`, `tuple`
-  - `async _emit(self, phase: str, message: str, **metadata: Any) -> None`（L126）；调用：`RuntimeEvent`, `self.event_sink.emit`
-- 函数 `parse_json_object(text: str) -> dict[str, Any]`（L131）：执行模块级业务逻辑。；调用：`AgentOutputError`, `isinstance`, `join`, `json.loads`, `startswith`, `strip`, `text.strip`, `value.find`, `value.rfind`, `value.splitlines`, `value.startswith`
-- 函数 `_parse_arguments(raw: str) -> dict[str, Any]`（L156）：执行模块级业务逻辑。；调用：`isinstance`, `json.loads`
-
-### `mycodingagent/multi_agent/infrastructure/workspace_state.py`
-
-- 模块：`mycodingagent.multi_agent.infrastructure.workspace_state`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.infrastructure.permissions`
-- 函数 `capture_workspace_state(root: Path) -> dict[str, str]`（L24）：执行模块级业务逻辑。；调用：`any`, `as_posix`, `hashlib.sha256`, `hexdigest`, `path.is_file`, `path.read_bytes`, `path.relative_to`, `resolved_root.rglob`, `root.resolve`
-- 函数 `changed_paths(before: dict[str, str], after: dict[str, str]) -> set[str]`（L38）：执行模块级业务逻辑。；调用：`after.get`, `after.keys`, `before.get`, `before.keys`
-- 函数 `outside_scopes(paths: set[str], scopes: tuple[str, ...], root: Path) -> set[str]`（L46）：执行模块级业务逻辑。；调用：`any`, `normalize_workspace_path`, `outside.add`, `set`
-
-### `mycodingagent/multi_agent/orchestration/__init__.py`
-
-- 模块：`mycodingagent.multi_agent.orchestration`
-- 职责：Multi-agent workflow state machine and scheduling.
-- 内部依赖：无
-- 定义：无公开类或函数。
-
-### `mycodingagent/multi_agent/orchestration/controller.py`
-
-- 模块：`mycodingagent.multi_agent.orchestration.controller`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.domain.contracts`, `mycodingagent.multi_agent.domain.models`
-- 类 `class MultiCodingController`（L9）：封装该模块的状态与行为。
-  - `__init__(self, orchestrator: Any, config: MultiAgentSettings) -> None`（L10）；调用：无
-  - `enable(self) -> None`（L17）；调用：无
-  - `disable(self) -> None`（L20）；调用：`RuntimeError`
-  - `status_text(self) -> str`（L25）；调用：无
-  - `async run(self, prompt: str, messages: list[dict[str, Any]] | None) -> tuple[str, list[dict[str, Any]]]`（L34）；调用：`RuntimeError`, `self.orchestrator.run`
-
-### `mycodingagent/multi_agent/orchestration/orchestrator.py`
-
-- 模块：`mycodingagent.multi_agent.orchestration.orchestrator`
-- 职责：多智能体领域模型、角色、编排状态机和基础设施适配器。
-- 内部依赖：`mycodingagent.multi_agent.agents.auditor`, `mycodingagent.multi_agent.agents.executor`, `mycodingagent.multi_agent.agents.optimizer`, `mycodingagent.multi_agent.agents.planner`, `mycodingagent.multi_agent.agents.router`, `mycodingagent.multi_agent.agents.validator`, `mycodingagent.multi_agent.domain.contracts`, `mycodingagent.multi_agent.domain.models`, `mycodingagent.multi_agent.infrastructure.path_locks`, `mycodingagent.multi_agent.infrastructure.permissions`, `mycodingagent.multi_agent.infrastructure.runner`, `mycodingagent.multi_agent.infrastructure.workspace_state`
-- 类 `class WorkflowError(RuntimeError)`（L57）：封装该模块的状态与行为。
-- 类 `class MultiCodingOrchestrator`（L61）：封装该模块的状态与行为。
-  - `__init__(self, *, workspace_root: Path, config: MultiAgentSettings, event_hook: RuntimeEventSink, approval_hook: ArchitectureApprovalPort, runner: AgentRuntime, direct_responder: DirectResponder | None = None, conversation_recorder: ConversationRecorder | None = None, run_journal: RunJournal | None = None, default_model: str = '') -> None`（L62）；调用：`PathLockManager`, `workspace_root.resolve`
-  - `async run(self, prompt: str, messages: list[dict[str, Any]] | None) -> tuple[WorkflowResult, list[dict[str, Any]]]`（L86）；调用：`VerificationReport`, `WorkflowError`, `WorkflowResult`, `all_execution_reports.extend`, `all_work_items.extend`, `capture_workspace_state`, `changed.update`, `changed_paths`, `len`, `list`, `print`, `self._architecture_phase`, `self._audit`, `self._decide_query`, `self._emit`, `self._execute_work_items`, `self._plan_work_items`, `self._record_turn`, `self._save_run`, `self._synthesize`, `self._validate`, `self.direct_responder.respond`, `set`, `sorted`, `str`, `time`, `tuple`, `uuid4`
-  - `async _decide_query(self, prompt: str) -> QueryDecision`（L304）；调用：`QueryDecision`, `QueryDecision.from_mapping`, `frozenset`, `heuristic_workflow_mode`, `join`, `prompt.split`, `self._agent_json`
-  - `async _audit(self, query: str) -> ProjectAuditReport`（L320）；调用：`AuditScope`, `AuditScope.from_mapping`, `ProjectAuditReport.from_mapping`, `_compact_json`, `_json`, `asyncio.Semaphore`, `asyncio.gather`, `enumerate`, `frozenset`, `isinstance`, `len`, `list`, `merge_audit_reports`, `reports.append`, `run_subtask`, `scope_payload.get`, `self._agent_json`, `self._emit`, `split_payload.get`, `str`, `zip`
-  - `async _architecture_phase(self, query: str, audit_report: ProjectAuditReport, *, request_approval: bool = True) -> tuple[ArchitectureProposal | None, str]`（L419）；调用：`ArchitectureProposal.from_mapping`, `_compact_json`, `architecture_approval_required`, `audit_report.to_dict`, `bool`, `decision.get`, `self._agent_json`, `self._emit`, `self.approval_hook.approve`, `user_forbids_architecture_change`
-  - `async _plan_work_items(self, query: str, audit_report: ProjectAuditReport, proposal: ArchitectureProposal | None, *, architecture_constraint: str, planner_prompt: str, verification: VerificationReport | None = None) -> tuple[WorkItem, ...]`（L464）；调用：`WorkflowError`, `_compact_json`, `audit_report.to_dict`, `ensure_framework_work_item`, `len`, `parse_work_items`, `proposal.to_dict`, `range`, `self._agent_json`, `self._emit`, `str`, `validate_work_items`, `verification.to_dict`
-  - `async _execute_work_items(self, *, query: str, audit_report: ProjectAuditReport, proposal: ArchitectureProposal | None, work_items: tuple[WorkItem, ...]) -> tuple[list[dict[str, Any]], set[str]]`（L502）；调用：`WorkflowError`, `asyncio.gather`, `capture_workspace_state`, `changed.update`, `changed_paths`, `completed.add`, `failures.append`, `isinstance`, `join`, `outside_scopes`, `pending.pop`, `pending.values`, `reports.append`, `select_runnable_batch`, `self._emit`, `self._execute_item`, `set`, `sorted`, `tuple`, `zip`
-  - `async _execute_item(self, *, query: str, audit_report: ProjectAuditReport, proposal: ArchitectureProposal | None, item: WorkItem) -> dict[str, Any]`（L564）；调用：`AgentRequest`, `WorkflowError`, `_compact_json`, `item.to_dict`, `parse_json_object`, `proposal.to_dict`, `result.text.strip`, `self._model_for`, `self.path_locks.acquire`, `self.runner.run`
-  - `async _validate(self, *, query: str, audit_report: ProjectAuditReport, proposal: ArchitectureProposal | None, work_items: tuple[WorkItem, ...], execution_reports: list[dict[str, Any]], changed_files: set[str]) -> VerificationReport`（L597）；调用：`VerificationReport`, `VerificationReport.from_mapping`, `_compact_json`, `item.to_dict`, `len`, `proposal.to_dict`, `self._agent_json`, `self._emit`, `sorted`
-  - `async _synthesize(self, *, query: str, status: WorkflowStatus, audit_report: ProjectAuditReport, proposal: ArchitectureProposal | None, work_items: tuple[WorkItem, ...], verification: VerificationReport, repair_rounds: int, changed_files: set[str], execution_reports: list[dict[str, Any]]) -> str`（L641）；调用：`AgentRequest`, `_compact_json`, `frozenset`, `item.to_dict`, `join`, `proposal.to_dict`, `result.text.strip`, `self._model_for`, `self.runner.run`, `sorted`, `verification.to_dict`
-  - `async _agent_json(self, *, role: AgentRole, system_prompt: str, user_prompt: str, allowed_tools: frozenset[str], allow_validation_bash: bool = False) -> dict[str, Any]`（L680）；调用：`AgentRequest`, `WorkflowError`, `errors.append`, `join`, `parse_json_object`, `range`, `self._model_for`, `self.runner.run`, `str`
-  - `async _emit(self, phase: str, message: str, **metadata: Any) -> None`（L717）；调用：`RuntimeEvent`, `self.event_hook.emit`
-  - `_model_for(self, role: AgentRole) -> str`（L720）；调用：无
-  - `_record_turn(self, messages: list[dict[str, Any]] | None, prompt: str, response: str) -> list[dict[str, Any]]`（L731）；调用：`list`, `self.conversation_recorder.save_messages`, `self.conversation_recorder.start_session`, `updated.append`
-  - `_save_run(self, *, run_id: str, started_at: float, prompt: str, decision: QueryDecision | None, status: WorkflowStatus, response: str, audit_report: ProjectAuditReport | None = None, proposal: ArchitectureProposal | None = None, work_items: tuple[WorkItem, ...] = (), execution_reports: list[dict[str, Any]] | None = None, verification: VerificationReport | None = None, changed_files: set[str] | None = None, errors: tuple[str, ...] = ()) -> None`（L747）；调用：`audit_report.to_dict`, `item.to_dict`, `list`, `proposal.to_dict`, `self.run_journal.save`, `set`, `sorted`, `time`, `verification.to_dict`
-- 函数 `parse_work_items(payload: dict[str, Any]) -> tuple[WorkItem, ...]`（L787）：执行模块级业务逻辑。；调用：`WorkItem.from_mapping`, `WorkflowError`, `enumerate`, `isinstance`, `payload.get`, `tuple`
-- 函数 `ensure_framework_work_item(items: tuple[WorkItem, ...]) -> tuple[WorkItem, ...]`（L798）：执行模块级业务逻辑。；调用：`WorkItem`, `any`, `path.rstrip`, `tuple`
-- 函数 `validate_work_items(items: tuple[WorkItem, ...]) -> None`（L818）：执行模块级业务逻辑。；调用：`WorkflowError`, `any`, `join`, `len`, `set`, `sorted`
-- 函数 `select_runnable_batch(items: tuple[WorkItem, ...], completed: set[str], limit: int, workspace_root: Path) -> tuple[WorkItem, ...]`（L839）：执行模块级业务逻辑。；调用：`any`, `issubset`, `len`, `max`, `path_scopes_overlap`, `selected.append`, `set`, `sorted`, `tuple`
-- 函数 `path_scopes_overlap(left: tuple[str, ...], right: tuple[str, ...], root: Path) -> bool`（L861）：执行模块级业务逻辑。；调用：`any`, `normalize_workspace_path`
-- 函数 `merge_audit_reports(reports: list[dict[str, Any]]) -> dict[str, Any]`（L871）：执行模块级业务逻辑。；调用：`append`, `isinstance`, `join`, `json.dumps`, `report.get`, `seen.add`, `set`, `str`, `strip`
-- 函数 `architecture_approval_required(proposal: ArchitectureProposal) -> bool`（L898）：执行模块级业务逻辑。；调用：`bool`
-- 函数 `user_forbids_architecture_change(query: str) -> bool`（L907）：执行模块级业务逻辑。；调用：`any`, `join`, `query.lower`, `split`
-- 函数 `heuristic_workflow_mode(prompt: str) -> WorkflowMode`（L922）：执行模块级业务逻辑。；调用：`any`, `prompt.lower`
-- 函数 `_json(value: Any) -> str`（L969）：执行模块级业务逻辑。；调用：`json.dumps`
-- 函数 `_compact_json(value: Any, limit: int = 60000) -> str`（L973）：执行模块级业务逻辑。；调用：`_json`, `len`
 
 ### `mycodingagent/relevance/__init__.py`
 
@@ -1857,7 +1522,6 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 ## 6. 架构验证规则
 
 - `tests/test_architecture_boundaries.py` 检查核心模块无 import cycle。
-- 多智能体角色必须位于独立目录，编排层不得直接依赖 LLM/Tool 实现。
 - 上下文阶段管理器依赖存储 Protocol；提交工具依赖控制 Protocol。
 - 新增、删除、移动模块、类或函数后必须重新生成本文档。
 - 完成修改前必须运行全量测试、编译检查和 `git diff --check`。

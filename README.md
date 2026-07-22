@@ -12,16 +12,13 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - `mycodingagent/configuration/`：环境变量和应用配置。
 - `mycodingagent/llm_runtime/`：模型请求、流式响应、工具循环、Prompt 上下文和 Token 统计。
 - `mycodingagent/terminal_ui/`：终端输入、历史展示、会话选择与确认。
-- `mycodingagent/commands/`：命令注册和 `/multicoding`、`/resume`、`/fork`、`/clear`、`/delete` 处理器。
+- `mycodingagent/commands/`：命令注册和 `/resume`、`/fork`、`/clear`、`/delete` 处理器。
 - `mycodingagent/workspace/`：工作区身份和文件缓存。
 - `mycodingagent/tool_runtime/`：工具契约、注册表及文件、Shell、记忆、MCP、Skill 工具适配器。
 - `mycodingagent/memory/`：会话、上下文预算、虚拟化、检查点和 SQLite 持久化。
 - `mycodingagent/capability_discovery/`：基于抽象 Skill/MCP 能力源的统一推荐。
 - `mycodingagent/mcp_integration/`：MCP 配置、连接、发现、执行和审批。
 - `mycodingagent/skill_runtime/`：Skill 发现、索引、检索、路由和缓存；`skills/` 仅保存插件资产。
-- `mycodingagent/multi_agent/`：领域契约、工作流编排、基础设施以及按角色拆分的子 Agent。
-
-多智能体请求分为 `direct`、`audit_only`、`implementation`。只读审计不会创建 Executor 或修改项目；每次运行写入用户状态目录，并可通过 `get_multicoding_run` 查询。
 
 ---
 
@@ -334,7 +331,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 启动时首先清理代理环境变量以避免干扰 API 连接，随后打印 ASCII 艺术欢迎界面，检查并确保 Docker 沙箱镜像可用。然后依次初始化文件状态缓存、工作区变更追踪器、记忆运行时、核心工具注册表和 Skill 运行时，并打印 Skill 索引同步报告。
 
-主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。输入首先经过命令系统匹配；普通输入在 `/multicoding` 开启时交由多智能体编排器处理，否则进入原有模型交互循环。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、MCP、Skill 文件监听、工作区变更追踪和 API 连接。
+主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。输入首先经过命令系统匹配；普通输入统一进入模型交互循环。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、MCP、Skill 文件监听、工作区变更追踪和 API 连接。
 
 ### 配置模块（`mycodingagent/configuration/settings.py`）
 
@@ -365,33 +362,6 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 ### 命令系统（`commands/`）
 
 `CommandRegistry` 提供命令注册、前缀匹配、精确匹配和参数解析。`InteractivePrompt` 在用户输入 `/` 开头的内容时实时弹出候选命令列表，支持方向键选择、Tab 补全和用法面板展示。
-
-`/multicoding` 启用持续多智能体编码模式，后续普通输入会依次经过主智能体路由、并发项目审计、可选架构优化、执行和验证，直到执行 `/multicoding off`。可用命令：
-
-```text
-/multicoding
-/multicoding on
-/multicoding off
-/multicoding status
-/multicoding --help
-```
-
-规划、项目审计和项目优化智能体由运行时强制限制为只读工具。执行智能体只能修改规划任务声明的 `allowed_paths`，路径重叠的任务自动串行；验证智能体只能执行测试、构建和静态检查命令。架构优化涉及文件移动、模块拆分、公共接口或跨模块依赖变化时，会在修改前通过 CLI Hook 请求用户确认，拒绝后按“不改变架构”的约束重新规划。
-
-多智能体配置通过环境变量覆盖，默认审计并发数为 4、执行并发数为 3、最大修复轮数为 3：
-
-```text
-MYCODINGAGENT_MULTICODING_AUDIT_PARALLELISM
-MYCODINGAGENT_MULTICODING_EXECUTION_PARALLELISM
-MYCODINGAGENT_MULTICODING_MAX_REPAIR_ROUNDS
-MYCODINGAGENT_MULTICODING_MAX_AGENT_TOOL_ROUNDS
-MYCODINGAGENT_MULTICODING_MAIN_MODEL
-MYCODINGAGENT_MULTICODING_PLANNER_MODEL
-MYCODINGAGENT_MULTICODING_AUDITOR_MODEL
-MYCODINGAGENT_MULTICODING_OPTIMIZER_MODEL
-MYCODINGAGENT_MULTICODING_EXECUTOR_MODEL
-MYCODINGAGENT_MULTICODING_VALIDATOR_MODEL
-```
 
 内置 `/resume` 命令列出当前工作目录下的历史会话，支持方向键交互选择、跨工作目录恢复确认和会话 ID 直接恢复。恢复后加载完整消息历史、LRFU 快照和文件状态快照。`/delete` 命令支持交互式选择删除、按会话 ID 删除和 `--expired` 批量清理过期会话。
 
