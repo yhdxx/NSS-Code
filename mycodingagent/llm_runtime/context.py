@@ -9,7 +9,6 @@ from mycodingagent.memory.budget import estimate_tokens
 
 
 FORMAT_VERSION = "runtime-context-v1"
-RECOVERY_HINT = "Recover additional context only if required for correctness."
 
 
 @dataclass(frozen=True)
@@ -27,23 +26,34 @@ class ContextBudgetState:
 
 
 @dataclass(frozen=True)
-class RuntimeContextMetadata:
-    format_version: str = FORMAT_VERSION
-    source: str = "current_turn"
-
-
-@dataclass(frozen=True)
 class RuntimeContext:
-    tool_outputs_virtualized: bool = True
+    context_mode: str = "raw"
     workspace_changes: WorkspaceChanges = field(default_factory=WorkspaceChanges)
     context_budget: ContextBudgetState | None = None
     capabilities: dict[str, Any] | None = None
     task_snapshot: str | None = None
-    recovery_hint: str | None = RECOVERY_HINT
-    metadata: RuntimeContextMetadata = field(default_factory=RuntimeContextMetadata)
 
     def to_payload(self) -> dict[str, Any]:
-        return asdict(self)
+        payload: dict[str, Any] = {"context_mode": self.context_mode}
+        workspace_changes = workspace_changes_payload(self.workspace_changes)
+        if workspace_changes:
+            payload["workspace_changes"] = workspace_changes
+        if self.context_budget is not None:
+            payload["context_budget"] = asdict(self.context_budget)
+        if self.capabilities:
+            payload["capabilities"] = self.capabilities
+        if self.task_snapshot:
+            payload["task_snapshot"] = self.task_snapshot
+        return payload
+
+
+def workspace_changes_payload(changes: WorkspaceChanges) -> dict[str, Any]:
+    payload: dict[str, Any] = {}
+    if changes.paths:
+        payload["paths"] = list(changes.paths)
+    if changes.omitted:
+        payload["omitted"] = changes.omitted
+    return payload
 
 
 @dataclass(frozen=True)
@@ -65,24 +75,24 @@ class RuntimeContextBuilder:
         self,
         *,
         workspace_tracker: Any | None = None,
+        context_mode: str = "raw",
         context_budget: ContextBudgetState | None = None,
         capabilities: Any | None = None,
         task_snapshot: str | None = None,
-        recovery_hint: str | None = RECOVERY_HINT,
     ) -> None:
         self.workspace_tracker = workspace_tracker
+        self.context_mode = context_mode
         self.context_budget = context_budget
         self.capabilities = capabilities
         self.task_snapshot = task_snapshot
-        self.recovery_hint = recovery_hint
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
+            context_mode=self.context_mode,
             workspace_changes=self._workspace_changes(),
             context_budget=self.context_budget,
             capabilities=self._capability_payload(),
             task_snapshot=self.task_snapshot or None,
-            recovery_hint=self.recovery_hint,
         )
 
     def _workspace_changes(self) -> WorkspaceChanges:

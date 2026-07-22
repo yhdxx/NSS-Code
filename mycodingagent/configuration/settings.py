@@ -176,6 +176,12 @@ class MemoryConfig:
         default_factory=lambda: _env_int("MYCODINGAGENT_CONTEXT_PREVIEW_THRESHOLD_TOKENS", 12000)
     )
     context_preview_tokens: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_CONTEXT_PREVIEW_TOKENS", 2000))
+    raw_tool_output_preview_chars: int = field(
+        default_factory=lambda: _env_int("MYCODINGAGENT_RAW_TOOL_OUTPUT_PREVIEW_CHARS", 1000)
+    )
+    raw_to_virtualized_ratio: float = field(
+        default_factory=lambda: _env_float("MYCODINGAGENT_RAW_TO_VIRTUALIZED_RATIO", 0.60)
+    )
     budget_soft_ratio: float = field(default_factory=lambda: _env_float("MYCODINGAGENT_BUDGET_SOFT_RATIO", 0.60))
     budget_working_ratio: float = field(default_factory=lambda: _env_float("MYCODINGAGENT_BUDGET_WORKING_RATIO", 0.80))
     budget_emergency_ratio: float = field(default_factory=lambda: _env_float("MYCODINGAGENT_BUDGET_EMERGENCY_RATIO", 0.90))
@@ -184,6 +190,18 @@ class MemoryConfig:
     )
     hot_context_force_ratio: float = field(
         default_factory=lambda: _env_float("MYCODINGAGENT_HOT_CONTEXT_FORCE_RATIO", 0.40)
+    )
+    hot_context_retained_turns: int = field(
+        default_factory=lambda: _env_int("MYCODINGAGENT_HOT_CONTEXT_RETAINED_TURNS", 3)
+    )
+    hot_context_topic_drift_turns: int = field(
+        default_factory=lambda: _env_int("MYCODINGAGENT_HOT_CONTEXT_TOPIC_DRIFT_TURNS", 3)
+    )
+    hot_context_topic_similarity_threshold: float = field(
+        default_factory=lambda: _env_float("MYCODINGAGENT_HOT_CONTEXT_TOPIC_SIMILARITY_THRESHOLD", 0.12)
+    )
+    archive_cold_context_ratio: float = field(
+        default_factory=lambda: _env_float("MYCODINGAGENT_ARCHIVE_COLD_CONTEXT_RATIO", 0.50)
     )
     current_turn_summary_max_per_message: int = field(
         default_factory=lambda: _env_int("MYCODINGAGENT_CURRENT_TURN_SUMMARY_MAX_PER_MESSAGE", 2)

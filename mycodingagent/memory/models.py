@@ -32,6 +32,7 @@ class ContextEpochState:
     retain_context_ids: list[str] = field(default_factory=list)
     active_files: list[str] = field(default_factory=list)
     next_context_hint: str = ""
+    next_start_message_index: int | None = None
     created_at: float = field(default_factory=time)
     committed_at: float | None = None
 

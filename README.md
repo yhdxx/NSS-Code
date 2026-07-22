@@ -152,16 +152,15 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
   │      ├─ 阶段之前的冷历史 → 工具输出 metadata 虚拟化
   │      └─ 阶段内部的连续任务 → 保持 RAW
   │
-  ├─ 3. 大工具输出按需替换为 RecoverableContextObject 引用并持久化
+  ├─ 3. 工具输出先持久化；RAW 下超 1000 字符时只给首尾预览
   │
   ├─ 4. 热工作阶段达到 30% 时提示提交，达到 40% 时安排强制提交
   │      └─ CommitWorkingContext 只登记 pending，在完整回合结束后生效
   │
-  ├─ 5. CheckpointManager 评估是否需要生成检查点
-  │      ├─ 软阈值 + 最小轮次间隔 → 候选检查点
-  │      └─ 硬阈值 → 强制检查点 + 触发会话翻转
+  ├─ 5. RAW 窗口达到 60% 时进入渐进式虚拟化
+  │      └─ cold 区保留用户/模型文本，工具输出降为恢复元数据
   │
-  └─ 6. 会话翻转时，旧会话归档，新会话以快照摘要为起点继续任务
+  └─ 6. cold 区过长时归档旧会话，新会话以 archive tool 结果继续
 ```
 
 ### 跨多轮热工作上下文（`context_epoch.py`）
@@ -170,11 +169,11 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
 
 提交采用模型与 Runtime 混合控制：
 
-- 模型在任务完成、话题切换或收到热区提示时调用 `CommitWorkingContext`。
+- 模型在任务完成、用户明确切换工作、连续新请求已形成新任务或收到热区提示时调用 `CommitWorkingContext`。
 - 热区达到模型窗口 30% 时，仅注入提示，不自动提交。
-- 热区达到 40% 或整体预算进入紧急状态时，Runtime 创建强制 pending 提交。
+- 热区达到 40% 时，Runtime 创建强制 pending 提交，并保留最近若干轮作为新热区。
 - pending 提交不会在 assistant/tool 调用链中途改变消息结构，而是在 `on_turn_completed` 确认当前回合完整后生效。
-- 提交后创建新的空活动阶段，旧阶段工具输出转为 metadata；需要原文时仍可通过 `RecoverContext` 恢复。
+- 提交后创建新的活动阶段，旧阶段工具输出转为 metadata；需要原文时仍可通过 `RecoverContext` 恢复。
 
 阶段状态持久化在 `context_epochs` 表中。旧数据库首次恢复会话时，以最后一个完整用户轮次作为活动阶段，避免突然把整个长会话重新放回 RAW 上下文。
 
@@ -199,22 +198,19 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
 
 `ContextCompressor` 负责单条大输出和紧急场景下的压缩能力；会话级冷/热边界由 `ContextEpochManager` 决定。当前实现不会仅因为用户进入下一轮就立即移除上一轮工具输出。
 
-**单条输出处理**：工具执行后，输出全文始终先写入可恢复存储。小于 `context_preview_threshold_tokens` 且当前可用预算足够时保持内联；超过阈值时，发送给模型的内容替换为预览和 `RecoverableContextObject` 引用。该处理独立于工作阶段是否提交，因此极端输出不会立即占满热区。
+**单条输出处理**：工具执行后，输出全文始终先写入可恢复存储。RAW/热区渲染下，小于 `raw_tool_output_preview_chars` 的输出保持内联；超过阈值时，发送给模型的是前半段 + 省略占位符 + 后半段，并附带 `context_id` 与单一路径恢复方式。默认阈值为 1000 字符，首尾各 500 字符。
 
 引用块包含以下字段：
 
-- `output_id` / `context_id`：全局唯一标识符，用于后续恢复
+- `context_id`：全局唯一标识符，用于后续恢复
 - `tool_name`：工具名称
-- `short_summary`：输出的一句话摘要
-- `token_count` / `content_length`：原始输出的体积统计
-- `keywords`：从内容中提取的关键词（供模型判断是否需要恢复）
-- `related_files`：关联的文件路径
-- `reproducible`：是否可重复获取
-- `recovery_hint`：恢复指引文本，告知模型可通过 `RecoverContext(context_id, offset, limit)` 按偏移量分段读取原文
+- `content_length` / `omitted_chars`：原始输出和省略片段的体积统计
+- `preview`：首尾预览文本
+- `recover`：恢复指引文本，要求模型通过 `RecoverContext` 和精确 `context_id` 按偏移量分段读取原文
 
 引用对象同时记录 `reproducible`，但无论是否可重复执行，已持久化的原始输出都可以通过精确 `context_id` 分段恢复。
 
-**预算压力处理**：热工作阶段达到 30% 时提醒模型提交，达到 40% 时 Runtime 安排阶段提交；整体 Prompt 达到 `budget_emergency_ratio` 时，可按配置生成工程状态摘要并进入检查点/会话翻转流程。阶段提交和会话翻转都只在安全生命周期边界生效。
+**预算压力处理**：热工作阶段达到 30% 时提醒模型提交，达到 40% 时 Runtime 安排阶段提交；RAW 整体 Prompt 达到 `raw_to_virtualized_ratio`（默认 60%）时进入渐进式虚拟化；虚拟化后 cold 区达到 `archive_cold_context_ratio`（默认 50%）时才进入归档流程。阶段提交和会话翻转都只在安全生命周期边界生效。
 
 这套设计的核心洞察在于区分工具输出的"可复现性"：读文件、搜索文件这类操作是确定性的，重新执行总能得到相同结果，因此只需要存一个指针；而 Shell 命令的输出可能包含时效性信息或副作用，不能简单地用指针替代。
 
@@ -237,7 +233,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 `WorkingContext` 管理当前轮的活跃对象池，支持添加、逐出、归档和清空操作。当对象从 WORKING 迁移到 EXTERNAL 时，同时写入 `recoverable_contexts` 表（存储完整对象）和 `session_tool_outputs` 表（存储原始输出）。
 
-**恢复接口**：模型通过 `RecoverContext(context_id, offset, limit)` 工具按需获取被指针化的输出内容。恢复时无需加载全文，可以通过 offset 和 limit 参数分段读取，进一步节省上下文。系统还提供 `GetStoredToolOutput` 作为备选恢复路径，以及 `SearchRecoverableContext` 按关键词搜索可恢复对象。恢复工具只用于当前工作上下文中不可见的历史/虚拟化证据；如果工具结果或事实已经在当前对话中可见，模型应直接基于可见内容回答，不能再调用恢复工具。`context_id` / `output_id` 必须来自可见的恢复引用或搜索结果，禁止根据工具名、参数、offset 或记忆猜测 ID。
+**恢复接口**：模型通过 `RecoverContext(context_id, offset, limit)` 工具按需获取被指针化的输出内容。恢复时无需加载全文，可以通过 offset 和 limit 参数分段读取，进一步节省上下文。系统保留 `GetStoredToolOutput` 作为旧提示兼容别名，但模型可见的新引用只推荐 `RecoverContext`；`SearchRecoverableContext` 用于在没有精确 `context_id` 时按关键词搜索可恢复对象。恢复工具只用于当前工作上下文中不可见的历史/虚拟化证据；如果工具结果或事实已经在当前对话中可见，模型应直接基于可见内容回答，不能再调用恢复工具。`context_id` 必须来自可见的恢复引用或搜索结果，禁止根据工具名、参数、offset 或记忆猜测 ID。
 
 ### 增量检查点与会话快照（`checkpoint.py`）
 
@@ -260,11 +256,11 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 ### 会话翻转
 
-会话翻转是检查点系统的终极动作，也是上下文虚拟化管理的"最后手段"。当预算进入 EMERGENCY 阶段且压缩已无法腾出足够空间时触发。
+会话翻转是检查点系统的终极动作，也是上下文虚拟化管理的"最后手段"。它只在进入虚拟化后 cold 区超过归档阈值时触发，RAW 初始阶段不会直接归档。
 
-翻转流程如下：基于最新快照的摘要和未完成任务创建新会话；将旧会话的所有消息标记为历史并归档；在新会话中注入一条特殊的系统消息，包含快照摘要、未完成任务列表和关键上下文引用；旧会话保存为 `HistoricalSessionRef`，可通过 `/resume` 命令恢复完整历史。
+翻转流程如下：基于最新快照的摘要和未完成任务创建新会话；将旧会话的所有消息标记为历史并归档；在新会话开头注入 `ArchiveConversationSnapshot` 的 assistant tool call 与 tool result，完整提供快照摘要、未完成任务列表和关键上下文引用；旧会话保存为 `HistoricalSessionRef`，可通过 `/resume` 命令恢复完整历史。
 
-从模型视角看，翻转后的新对话窗口干净且充足，但开头有一条系统消息告诉它"之前我们在做什么、做了哪些决策、还有哪些事没做完"，使得任务连续性得以跨越会话边界保持。
+从模型视角看，翻转后的新对话窗口干净且充足，但开头有一组 archive 工具消息告诉它"之前我们在做什么、做了哪些决策、还有哪些事没做完"，使得任务连续性得以跨越会话边界保持。
 
 ### 活动工作阶段与冷历史的分层处理策略
 
@@ -274,13 +270,13 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 活动阶段内的工具输出经历一条"先存储、保持可见、必要时摘要"的处理链路：
 
-**第一步：输出封装与存储**。每次工具调用完成后，输出立即通过 `save_tool_output` 被封装为 `RecoverableContextObject`（生命周期状态为 WORKING），同时生成 `ToolOutputRecord` 将完整输出文本存入 `session_tool_outputs` 表。两个对象共享同一个 `output_id`（即 `context_id`），为后续的指针化和恢复建立桥梁。
+**第一步：输出封装与存储**。每次工具调用完成后，输出立即通过 `save_tool_output` 被封装为 `RecoverableContextObject`（生命周期状态为 WORKING），同时生成 `ToolOutputRecord` 将完整输出文本存入 `session_tool_outputs` 表。存储层仍保留 `output_id` 字段，但模型可见引用统一呈现为 `context_id`，为后续的指针化和恢复建立桥梁。
 
-**第二步：单条输出与阶段预算的实时干预**。`tool_output_prompt_content` 根据单条输出 token、当前可用预算和会话模式决定保留全文或输出预览引用；`ContextEpochManager` 独立计算活动阶段 token，达到 30% 时提示提交，达到 40% 时登记 Runtime 强制提交。
+**第二步：单条输出与阶段预算的实时干预**。`tool_output_prompt_content` 按 RAW 规则保留短输出或生成首尾预览；`ContextEpochManager` 独立计算活动阶段 token，达到 30% 时提示提交，达到 40% 时登记 Runtime 强制提交。
 
 **第三步：模型的主动摘要能力**。模型可以通过 `SummarizeCurrentTurnMessage` 工具主动将当前轮中某条过大的工具输出替换为紧凑摘要。摘要存储在 `_current_turn_summaries` 字典中，由 `apply_current_summaries` 在渲染时注入。这一机制让模型拥有了"自主管理上下文预算"的能力——当它发现某条输出虽然有用但细节不必全部保留时，可以主动压缩它，为后续推理腾出空间。
 
-**关键特征**：当前轮的工具输出即使被指针化，其 `ToolOutputRef` 引用块仍然出现在上下文窗口中（模型可以看到摘要、关键词和恢复指引），模型可以用引用块里的明确 `context_id` 调用 `RecoverContext` 恢复所需部分，无需额外搜索。若原始工具输出或足够回答的预览已经可见，则模型不应调用恢复工具。
+**关键特征**：当前轮的工具输出即使被预览化，明确的 `context_id` 仍然出现在上下文窗口中，模型可以调用 `RecoverContext` 恢复所需部分，无需额外搜索。若原始工具输出或足够回答的预览已经可见，则模型不应调用恢复工具。
 
 #### 冷历史的处理策略
 
@@ -290,7 +286,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 - `user_content`：用户 query 的完整原文，不做任何截断或摘要
 - `assistant_content`：模型文本回复的完整原文，不做任何截断
-- `tool_metadata`：`ToolInvocationMetadata` 列表——仅包含工具名、参数哈希、参数预览、输出摘要、关键词、关联文件、context_id、token 数和可重复性标记，**不包含任何原始输出文本**
+- `tool_metadata`：`ToolInvocationMetadata` 列表——原始记录仍保存完整结构，但冷区渲染只暴露工具名、显式 `intent` 或启发式 `call_summary`、`context_id`、长度统计、错误状态和恢复方式，**不包含任何原始输出文本**
 
 **彻底虚拟化渲染**：当 `render_virtualized_messages` 函数将历史轮转化为模型可消费的上下文格式时，三种角色消息的渲染策略形成鲜明对比：
 
@@ -298,15 +294,15 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 - **模型 answer**：以 `{"role": "assistant", "content": turn.assistant_content}` 形式完整原文注入。模型的文本回复是推理链条的节点，丢失任何一个节点都会导致推理断裂。
 
-- **工具输出**：完全从上下文中移除。所有历史工具调用的原始输出文本不进入模型上下文，取而代之的是一段集中式的 `HISTORICAL TOOL INDEX` 系统消息。这段消息以紧凑的 JSON 格式逐条列出每个历史工具调用的元数据——工具名、参数预览、输出摘要、关键词、关联文件、context_id、恢复指引等。模型只能看到工具调用的"指纹"而非"身体"；只有当这些元数据不足以回答且确实需要原始细节时，才通过 `RecoverContext(context_id, offset, limit)` 按需从 SQLite 存储中恢复。
+- **工具输出**：保留原 assistant tool_calls / tool 拓扑，但历史 tool content 不再包含原始输出，只替换为简短 JSON 元数据：工具名、显式 `intent` 或启发式 `call_summary`、`context_id`、长度统计、错误状态和恢复方式。只有当这些元数据不足以回答且确实需要原始细节时，才通过 `RecoverContext(context_id, offset, limit)` 按需从 SQLite 存储中恢复。
 
 #### 两种策略的设计逻辑
 
 | 维度 | 活动工作阶段 | 冷历史 |
 |------|--------|--------|
-| 工具输出位置 | 在上下文窗口中（可能被压缩） | 完全移出上下文窗口 |
-| 模型可见内容 | 压缩后的输出或指针引用块 | 仅 `HISTORICAL TOOL INDEX` 中的元数据行 |
-| 恢复方式 | 指针引用块在上下文中，直接恢复 | 需在 INDEX 中查找 context_id 后恢复 |
+| 工具输出位置 | 在上下文窗口中（短输出全文，长输出首尾预览） | tool 消息原位保留，但内容替换为元数据 |
+| 模型可见内容 | 原始输出或首尾预览 + 恢复方式 | 用户/模型文本完整；工具仅 intent + 恢复方式 |
+| 恢复方式 | 直接使用可见 `context_id` 恢复 | 使用冷区 tool 元数据里的 `context_id` 恢复 |
 | 用户 query | 已在当前轮消息中 | 完整原文注入 |
 | 模型 answer | 已在当前轮消息中 | 完整原文注入 |
 | 设计目标 | 保留足够细节支持当前任务推理 | 最大化上下文空间，仅保留语义骨架 |

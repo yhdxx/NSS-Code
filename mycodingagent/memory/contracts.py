@@ -19,5 +19,6 @@ class ContextEpochControl(Protocol):
         next_context_hint: str = "",
         trigger: str = "model",
         session_id: str | None = None,
+        next_start_message_index: int | None = None,
     ) -> ContextEpochState:
         ...

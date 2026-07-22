@@ -26,6 +26,7 @@ from mycodingagent.memory.context_epoch import (
     format_context_epoch_commit_report,
     format_hot_context_notice,
     last_user_message_index,
+    retained_hot_start_index,
 )
 from mycodingagent.memory.models import (
     CompressionResult,
@@ -235,6 +236,7 @@ class MemoryRuntime:
         next_context_hint: str = "",
         trigger: str = "model",
         session_id: str | None = None,
+        next_start_message_index: int | None = None,
     ) -> ContextEpochState:
         target_session_id = session_id or self.current_session_id or ""
         if not target_session_id:
@@ -247,6 +249,7 @@ class MemoryRuntime:
             active_files=active_files,
             next_context_hint=next_context_hint,
             trigger=trigger,
+            next_start_message_index=next_start_message_index,
         )
 
     def finalize_pending_context_epoch(
@@ -282,6 +285,97 @@ class MemoryRuntime:
             messages=messages,
             current_turn_start=current_turn_start,
         )
+
+    def cold_context_budget_snapshot(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+    ) -> PromptBudgetSnapshot:
+        transition_epoch = self.latest_committed_context_epoch(session_id)
+        if transition_epoch is None:
+            return self.prompt_budget_snapshot([])
+        epoch = self.ensure_context_epoch(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=len(messages),
+        )
+        historical_messages, _current_messages = split_historical_and_current(
+            messages,
+            epoch.start_message_index,
+        )
+        if not historical_messages:
+            return self.prompt_budget_snapshot([])
+        historical_turns = self.store.load_historical_turns(session_id) or build_historical_turns(
+            session_id,
+            historical_messages,
+        )
+        rendered = render_virtualized_messages(
+            system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
+            historical_messages=historical_messages,
+            session_id=session_id,
+            historical_turns=historical_turns,
+            current_messages=[],
+            current_summaries={},
+            transition_epoch=transition_epoch,
+        )
+        return self.prompt_budget_snapshot(rendered)
+
+    def latest_committed_context_epoch(self, session_id: str) -> ContextEpochState | None:
+        committed = [
+            epoch
+            for epoch in self.store.load_context_epochs(session_id)
+            if epoch.status == ContextEpochStatus.COMMITTED and epoch.end_message_index is not None
+        ]
+        return committed[-1] if committed else None
+
+    def _maybe_rotate_context_epoch(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        current_turn_start: int | None,
+        epoch: ContextEpochState,
+    ) -> ContextEpochState:
+        can_finalize_now = can_finalize_context_rotation(messages, current_turn_start)
+        if epoch.status == ContextEpochStatus.PENDING_COMMIT:
+            if can_finalize_now:
+                return self.finalize_pending_context_epoch(session_id=session_id, messages=messages) or epoch
+            return epoch
+        if epoch.status != ContextEpochStatus.ACTIVE:
+            return epoch
+
+        hot_snapshot = self.hot_context_budget_snapshot(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=current_turn_start,
+        )
+        if not hot_snapshot.force_commit or hot_snapshot.pending_commit:
+            return epoch
+
+        retained_turns = max(1, CONFIG.memory.hot_context_retained_turns)
+        tail_start = retained_hot_start_index(
+            messages,
+            start_message_index=epoch.start_message_index,
+            retained_turns=retained_turns,
+        )
+        next_start = tail_start if tail_start > epoch.start_message_index else None
+        pending = self.request_context_epoch_commit(
+            reason="hot working context reached the forced commit threshold",
+            summary=automatic_context_epoch_summary(messages, epoch.start_message_index, next_start),
+            active_files=collect_context_epoch_files(messages, epoch.start_message_index, next_start),
+            next_context_hint=(
+                f"Runtime retained the latest {retained_turns} user turns as hot context."
+                if next_start is not None
+                else ""
+            ),
+            trigger="runtime",
+            session_id=session_id,
+            next_start_message_index=next_start,
+        )
+        if can_finalize_now:
+            return self.finalize_pending_context_epoch(session_id=session_id, messages=messages) or pending
+        return pending
 
     def context_mode(self, session_id: str | None = None) -> ContextMode:
         key = session_id or self.current_session_id or ""
@@ -594,35 +688,13 @@ class MemoryRuntime:
         tools: list[dict[str, Any]] | None = None,
         current_prompt: str = "",
     ) -> str:
-        """Return inline output or an existing-tool recovery preview.
-
-        This is deliberately an extension of the existing tool-output path:
-        small outputs remain unchanged, large outputs keep a preview and point
-        the model at already registered recovery tools.
-        """
-        threshold = CONFIG.memory.context_preview_threshold_tokens
-        snapshot = self.prompt_budget_snapshot(messages, tools=tools, current_prompt=current_prompt)
-        output_tokens = estimate_tokens(output)
+        """Return current-turn tool output using raw-mode preview rules."""
         metadata = self.get_context_metadata(output_id)
         if metadata is not None:
             self.working_context.add(metadata)
-        if (
-            not self.is_context_virtualized()
-            and output_tokens <= threshold
-            and output_tokens <= snapshot.usable_tokens
-        ):
+        if len(output) <= CONFIG.memory.raw_tool_output_preview_chars:
             return output
-        if self.is_context_virtualized() and output_tokens <= threshold and output_tokens <= snapshot.usable_tokens:
-            # In virtualized mode keep tiny outputs inline; they are cheaper than a recovery reference.
-            return output
-        if output_tokens > snapshot.usable_tokens and snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio:
-            self.force_context_virtualized()
-        if not self.is_context_virtualized() and output_tokens <= threshold:
-            metadata = self.get_context_metadata(output_id)
-            if metadata is not None:
-                self.working_context.add(metadata)
-            return output
-        return self.context_reference_text(output_id, preview=output[: CONFIG.memory.context_preview_tokens * 4], snapshot=snapshot)
+        return raw_tool_output_preview_text(output_id, output, metadata=metadata)
 
     def context_reference_text(
         self,
@@ -635,37 +707,32 @@ class MemoryRuntime:
         if metadata is None:
             ref = self._tool_output_refs.get(context_id)
             if ref is None:
-                return f"[Recoverable context stored]\ncontext_id: {context_id}\nFull output is available through RecoverContext."
+                return (
+                    "[Recoverable context stored]\n"
+                    f"context_id: {context_id}\n"
+                    "recover: Use RecoverContext with this exact context_id and offset/limit."
+                )
             return (
                 "[Recoverable context stored]\n"
                 f"context_id: {ref.output_id}\n"
                 f"tool_name: {ref.tool_name}\n"
                 f"original_length: {ref.original_length}\n"
-                f"reproducible: {str(ref.reproducible).lower()}\n"
                 f"preview:\n{preview or ref.preview}\n"
-                "Use existing tools RecoverContext(context_id, offset, limit) or "
-                "GetStoredToolOutput(output_id, offset, limit) for full or partial recovery."
+                "recover: Use RecoverContext with this exact context_id and offset/limit."
             )
         budget_text = ("\n" + snapshot.to_prompt_text()) if snapshot is not None else ""
         return (
             "[Recoverable context stored]\n"
             f"context_id: {metadata.id}\n"
             f"tool_name: {metadata.tool_name}\n"
-            f"storage_key: {metadata.storage_key}\n"
-            f"short_summary: {metadata.short_summary}\n"
+            f"call_summary: {metadata.short_summary}\n"
             f"keywords: {', '.join(metadata.keywords[:12])}\n"
-            f"entities: {', '.join(metadata.entities[:12])}\n"
             f"related_files: {', '.join(metadata.related_files[:12])}\n"
-            f"reproducible: {str(metadata.reproducible).lower()}\n"
-            f"token_count: {metadata.token_count}\n"
-            f"content_type: {metadata.content_type.value}\n"
             f"content_length: {metadata.content_length}"
             f"{budget_text}\n"
             f"preview:\n{preview}\n"
-            "Use existing tools RecoverContext(context_id, offset, limit) or "
-            "GetStoredToolOutput(output_id, offset, limit) for full or partial recovery."
+            "recover: Use RecoverContext with this exact context_id and offset/limit."
         )
-
     def prepare_messages_for_model(
         self,
         *,
@@ -704,6 +771,12 @@ class MemoryRuntime:
             messages=messages,
             current_turn_start=current_turn_start,
         )
+        epoch = self._maybe_rotate_context_epoch(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=current_turn_start,
+            epoch=epoch,
+        )
         historical_messages, current_messages = split_historical_and_current(
             messages,
             epoch.start_message_index,
@@ -712,11 +785,13 @@ class MemoryRuntime:
             session_id,
             historical_messages,
         )
+        transition_epoch = self.latest_committed_context_epoch(session_id)
         virtualized_rendered = render_virtualized_messages(
             system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
             historical_messages=historical_messages,
             session_id=session_id,
             historical_turns=historical_turns,
+            transition_epoch=transition_epoch,
             current_messages=current_messages,
             current_summaries=self._current_turn_summaries,
         )
@@ -733,19 +808,6 @@ class MemoryRuntime:
             messages=messages,
             current_turn_start=current_turn_start,
         )
-        if hot_snapshot.force_commit and not hot_snapshot.pending_commit:
-            epoch = self.request_context_epoch_commit(
-                reason="hot working context reached the forced commit threshold",
-                summary=automatic_context_epoch_summary(messages, epoch.start_message_index),
-                active_files=collect_context_epoch_files(messages, epoch.start_message_index),
-                trigger="runtime",
-                session_id=session_id,
-            )
-            hot_snapshot = self.hot_context_budget_snapshot(
-                session_id=session_id,
-                messages=messages,
-                current_turn_start=current_turn_start,
-            )
         if hot_snapshot.warning:
             rendered = insert_budget_notice(rendered, format_hot_context_notice(hot_snapshot))
         snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
@@ -795,8 +857,6 @@ class MemoryRuntime:
         switched = False
         if mode == ContextMode.RAW and self._should_switch_to_virtualized(
             raw_snapshot=raw_snapshot,
-            raw_uncached_tokens=raw_uncached_tokens,
-            virtualized_tokens=virtualized_snapshot.current_tokens,
         ):
             mode = ContextMode.VIRTUALIZED
             switched = True
@@ -814,14 +874,10 @@ class MemoryRuntime:
         self,
         *,
         raw_snapshot: PromptBudgetSnapshot,
-        raw_uncached_tokens: int,
-        virtualized_tokens: int,
     ) -> bool:
         if raw_snapshot.current_tokens >= raw_snapshot.context_window:
             return True
-        if raw_snapshot.usage_ratio < CONFIG.memory.budget_soft_ratio:
-            return False
-        return raw_uncached_tokens > int(virtualized_tokens * 1.15)
+        return raw_snapshot.usage_ratio >= CONFIG.memory.raw_to_virtualized_ratio
 
     def summarize_current_turn_message(
         self,
@@ -854,7 +910,6 @@ class MemoryRuntime:
             "reason": reason,
             "summary_version": revision,
             "supersedes_version": previous.get("summary_version") if previous else None,
-            "reference": context_id or message_id,
             "revision_count": revision,
         }
         self._current_turn_summaries[key] = payload
@@ -927,7 +982,7 @@ class MemoryRuntime:
             self.save_file_state_snapshot(session_id, file_state_cache)
             await self.drain()
             self.finalize_pending_context_epoch(session_id=session_id, messages=messages)
-            virtualized_messages = self.render_messages_for_model(
+            self.render_messages_for_model(
                 session_id=session_id,
                 messages=messages,
                 tools=tools or [],
@@ -935,11 +990,7 @@ class MemoryRuntime:
                 current_turn_start=len(messages),
                 persist_snapshot=False,
             )
-            budget_snapshot = self.prompt_budget_snapshot(
-                virtualized_messages,
-                tools=tools,
-                current_prompt=current_prompt,
-            )
+            cold_snapshot = self.cold_context_budget_snapshot(session_id=session_id, messages=messages)
             turn_state = TurnState(
                 completed=True,
                 pending_tool_call=has_pending_tool_call(messages),
@@ -947,8 +998,15 @@ class MemoryRuntime:
                 retrying_error=False,
                 turn_end_index=len(messages),
             )
-            decision = self.checkpoint_manager.should_checkpoint(turn_state, budget_snapshot)
-            if not decision.should_checkpoint:
+            if (
+                not CONFIG.memory.checkpoint_enabled
+                or not turn_state.completed
+                or turn_state.pending_tool_call
+                or turn_state.active_recovery
+                or turn_state.retrying_error
+                or self.context_mode(session_id) != ContextMode.VIRTUALIZED
+                or cold_snapshot.usage_ratio < CONFIG.memory.archive_cold_context_ratio
+            ):
                 return RolloverResult()
             if self._pending_rollover_task is not None and not self._pending_rollover_task.done():
                 return RolloverResult()
@@ -966,8 +1024,8 @@ class MemoryRuntime:
                     session_id=session_id,
                     messages=rollover_messages,
                     runtime_state=runtime_state,
-                    trigger_reason=decision.trigger_reason,
-                    usage_ratio=budget_snapshot.usage_ratio,
+                    trigger_reason="cold_context_threshold",
+                    usage_ratio=cold_snapshot.usage_ratio,
                     system_prompt_source=rollover_system_prompt,
                 )
             )
@@ -1138,6 +1196,34 @@ class MemoryRuntime:
         return self.compressor.should_compress(messages)
 
 
+def raw_tool_output_preview_text(
+    output_id: str,
+    output: str,
+    *,
+    metadata: RecoverableContextObject | None = None,
+) -> str:
+    preview_chars = max(2, CONFIG.memory.raw_tool_output_preview_chars)
+    edge_chars = max(1, preview_chars // 2)
+    head = output[:edge_chars]
+    tail = output[-edge_chars:] if edge_chars < len(output) else ""
+    omitted_chars = max(0, len(output) - len(head) - len(tail))
+    tool_name = metadata.tool_name if metadata is not None else ""
+    preview = (
+        head
+        + f"\n[... {omitted_chars} chars omitted; full output stored as recoverable context ...]\n"
+        + tail
+    )
+    return (
+        "[Tool output preview]\n"
+        f"context_id: {output_id}\n"
+        f"tool_name: {tool_name}\n"
+        f"content_length: {len(output)}\n"
+        f"omitted_chars: {omitted_chars}\n"
+        "recover: Use RecoverContext with this exact context_id and offset/limit for non-preview content.\n"
+        f"preview:\n{preview}"
+    )
+
+
 def format_compression_report(result: CompressionResult) -> str:
     metadata = result.metadata
     current_size = int(metadata.get("current_size", 0))
@@ -1227,7 +1313,7 @@ def format_budget_notice(snapshot: PromptBudgetSnapshot) -> str:
         "CONTEXT BUDGET NOTICE",
         f"usage_ratio: {snapshot.usage_ratio:.2%}",
         f"stage: {snapshot.stage.value}",
-        "Historical tool outputs are virtualized as metadata. Use SearchRecoverableContext or RecoverContext for exact old data.",
+        "Historical tool outputs may be virtualized as metadata. Use RecoverContext only when an exact context_id is visible; otherwise use SearchRecoverableContext first.",
     ]
     if snapshot.usage_ratio >= CONFIG.memory.budget_working_ratio:
         lines.extend(
@@ -1250,12 +1336,62 @@ def render_virtualized_messages(
     historical_turns: list[HistoricalTurn],
     current_messages: list[dict[str, Any]],
     current_summaries: dict[str, dict[str, Any]],
+    transition_epoch: ContextEpochState | None = None,
 ) -> list[dict[str, Any]]:
     rendered: list[dict[str, Any]] = []
     rendered.extend(system_messages[:1])
     rendered.extend(render_historical_topology(session_id, historical_messages, historical_turns))
+    if transition_epoch is not None:
+        rendered.extend(render_context_transition_marker(transition_epoch))
     rendered.extend(apply_current_summaries(current_messages, current_summaries))
     return rendered
+
+
+def render_context_transition_marker(epoch: ContextEpochState) -> list[dict[str, Any]]:
+    tool_call_id = f"context_epoch_commit_{epoch.epoch_id}"
+    transition = {
+        "reason": epoch.reason,
+        "summary": epoch.summary,
+        "trigger": epoch.trigger,
+        "cold_message_range": [epoch.start_message_index, epoch.end_message_index],
+        "new_hot_start_message_index": epoch.end_message_index,
+    }
+    if epoch.retain_context_ids:
+        transition["retain_context_ids"] = epoch.retain_context_ids
+    if epoch.active_files:
+        transition["active_files"] = epoch.active_files
+    if epoch.next_context_hint:
+        transition["next_context_hint"] = epoch.next_context_hint
+    result = {
+        "status": "committed",
+        "epoch_id": epoch.epoch_id,
+        **transition,
+        "notice": (
+            "Previous hot working context is now cold. User and assistant text remain visible; "
+            "older tool outputs are represented by recoverable metadata."
+        ),
+    }
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "CommitWorkingContext",
+                        "arguments": json.dumps(transition, ensure_ascii=False, sort_keys=True),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": "[Working context transition]\n"
+            + json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2),
+        },
+    ]
 
 
 def render_historical_topology(
@@ -1309,25 +1445,25 @@ def render_historical_tool_message(
 
 
 def historical_tool_content(metadata: ToolInvocationMetadata | None, message: dict[str, Any]) -> str:
+    raw_metadata = message.get("metadata")
+    if isinstance(raw_metadata, dict) and raw_metadata.get("archive_snapshot"):
+        return message_content_text(message)
+    if metadata is not None and metadata.metadata.get("archive_snapshot"):
+        return message_content_text(message)
     if metadata is None:
         return (
             "[Historical tool output virtualized]\n"
-            f"tool_call_id: {message.get('tool_call_id', '')}\n"
-            "metadata_unavailable: true"
+            "metadata_unavailable: true\n"
+            "recover: Use SearchSessionHistory with query terms from the surrounding user and assistant messages."
         )
     if metadata.kind == "skill":
         payload = {
             "tool_name": metadata.tool_name,
-            "kind": metadata.kind,
-            "invocation_kind": metadata.invocation_kind,
-            "tool_call_id": metadata.tool_call_id,
-            "intent": metadata.intent,
-            "args_preview": metadata.args_preview,
-            "args_hash": metadata.args_hash,
-            "reference_paths": metadata.reference_paths[:8],
-            "short_summary": metadata.short_summary,
-            "notice": "Skill output is omitted after the current turn.",
+            **tool_summary_prompt_dict(metadata),
+            "recover": "Skill output is not recoverable with RecoverContext. Use listed reference_paths when present.",
         }
+        if metadata.reference_paths:
+            payload["reference_paths"] = metadata.reference_paths[:8]
         return "[Historical skill output omitted]\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return (
         "[Historical tool output virtualized]\n"
@@ -1337,34 +1473,24 @@ def historical_tool_content(metadata: ToolInvocationMetadata | None, message: di
 
 def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any]:
     payload = {
-        "turn_id": metadata.turn_id,
-        "turn_index": metadata.turn_index,
-        "call_index": metadata.call_index,
-        "tool_call_id": metadata.tool_call_id,
         "tool_name": metadata.tool_name,
-        "kind": metadata.kind,
-        "intent": metadata.intent,
-        "args_preview": metadata.args_preview,
-        "args_hash": metadata.args_hash,
-        "short_summary": metadata.short_summary,
-        "keywords": metadata.keywords[:12],
-        "related_files": metadata.related_files[:12],
-        "content_type": metadata.content_type,
+        **tool_summary_prompt_dict(metadata),
         "content_length": metadata.content_length,
-        "token_count": metadata.token_count,
         "is_error": metadata.is_error,
     }
     if metadata.context_id:
         payload["context_id"] = metadata.context_id
-        payload["recovery_hint"] = "RecoverContext(context_id, offset, limit)"
-        payload["reproducible"] = metadata.reproducible
-    if metadata.reference_paths:
-        payload["reference_paths"] = metadata.reference_paths[:12]
-    if metadata.invocation_kind:
-        payload["invocation_kind"] = metadata.invocation_kind
-    if metadata.metadata:
-        payload["metadata"] = metadata.metadata
+        payload["recover"] = "Use RecoverContext with this exact context_id and offset/limit."
+    else:
+        payload["recover"] = "Use SearchSessionHistory with query terms from tool_name and call_summary."
     return payload
+
+
+def tool_summary_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any]:
+    summary = metadata.intent or metadata.short_summary
+    if metadata.metadata.get("intent_is_explicit"):
+        return {"intent": summary}
+    return {"call_summary": summary}
 
 
 def apply_current_summaries(
@@ -1387,16 +1513,26 @@ def apply_current_summaries(
             result.append(dict(message))
             continue
         copied = dict(message)
-        copied["content"] = (
-            "[Current turn message summarized]\n"
-            f"summary_version: {replacement.get('summary_version')}\n"
-            f"supersedes_version: {replacement.get('supersedes_version')}\n"
-            f"reason: {replacement.get('reason')}\n"
-            f"reference: {replacement.get('reference')}\n"
-            f"focus: {replacement.get('focus')}\n"
-            f"summary:\n{replacement.get('summary')}\n"
-            "Original content remains recoverable by context_id/reference when available."
+        lines = [
+            "[Current turn message summarized]",
+            f"summary_version: {replacement.get('summary_version')}",
+        ]
+        if replacement.get("supersedes_version") is not None:
+            lines.append(f"supersedes_version: {replacement.get('supersedes_version')}")
+        lines.append(f"reason: {replacement.get('reason')}")
+        if replacement.get("context_id"):
+            lines.append(f"context_id: {replacement.get('context_id')}")
+        elif replacement.get("message_id"):
+            lines.append(f"source_message_id: {replacement.get('message_id')}")
+        if replacement.get("focus"):
+            lines.append(f"focus: {replacement.get('focus')}")
+        lines.extend(
+            [
+                f"summary:\n{replacement.get('summary')}",
+                "recover: Use RecoverContext with context_id when present; otherwise use the source_message_id only as a current-turn reference.",
+            ]
         )
+        copied["content"] = "\n".join(lines)
         result.append(copied)
     return result
 
@@ -1510,11 +1646,15 @@ def build_tool_invocation_metadata(
     context_id = str(metadata_dict.get("output_id") or metadata_dict.get("context_id") or "")
     kind = "skill" if is_skill_related_tool(tool_name) else "non_skill"
     intent = extract_tool_intent(tool_name, arguments, metadata_dict)
+    parsed_args = parse_arguments_object(arguments)
+    intent_is_explicit = bool(metadata_dict.get("intent") or parsed_args.get("intent"))
     extra_metadata = {
         key: value
         for key, value in metadata_dict.items()
         if key not in {"output_id", "context_id", "tool_name", "intent", "reproducible"}
     }
+    if intent_is_explicit:
+        extra_metadata["intent_is_explicit"] = True
     return ToolInvocationMetadata(
         metadata_id=stable_id(session_id, turn_id, tool_call_id, context_id, tool_name),
         session_id=session_id,
@@ -1679,6 +1819,19 @@ def has_pending_tool_call(messages: list[dict[str, Any]]) -> bool:
         return False
     last_message = messages[-1]
     return last_message.get("role") == "assistant" and bool(last_message.get("tool_calls"))
+
+
+def can_finalize_context_rotation(
+    messages: list[dict[str, Any]],
+    current_turn_start: int | None,
+) -> bool:
+    if has_pending_tool_call(messages):
+        return False
+    if current_turn_start is None:
+        return False
+    if current_turn_start >= len(messages):
+        return True
+    return len(messages) == current_turn_start + 1
 
 
 def snapshot_dict(value: Any | None) -> dict:

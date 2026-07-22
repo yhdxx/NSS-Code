@@ -183,11 +183,13 @@ class SQLiteMemoryStore:
                     retain_context_ids_json TEXT NOT NULL DEFAULT '[]',
                     active_files_json TEXT NOT NULL DEFAULT '[]',
                     next_context_hint TEXT NOT NULL DEFAULT '',
+                    next_start_message_index INTEGER,
                     created_at REAL NOT NULL,
                     committed_at REAL
                 )
                 """
             )
+            self._ensure_column(conn, "context_epochs", "next_start_message_index", "INTEGER")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_snapshots (
@@ -819,9 +821,10 @@ class SQLiteMemoryStore:
                 INSERT OR REPLACE INTO context_epochs(
                     epoch_id, session_id, start_message_index, end_message_index,
                     status, trigger, reason, summary, retain_context_ids_json,
-                    active_files_json, next_context_hint, created_at, committed_at
+                    active_files_json, next_context_hint, next_start_message_index,
+                    created_at, committed_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     state.epoch_id,
@@ -835,6 +838,7 @@ class SQLiteMemoryStore:
                     json.dumps(state.retain_context_ids, ensure_ascii=False),
                     json.dumps(state.active_files, ensure_ascii=False),
                     state.next_context_hint,
+                    state.next_start_message_index,
                     state.created_at,
                     state.committed_at,
                 ),
@@ -1251,6 +1255,7 @@ def tool_metadata_from_row(row: sqlite3.Row) -> ToolInvocationMetadata:
 
 
 def context_epoch_from_row(row: sqlite3.Row) -> ContextEpochState:
+    next_start_value = row["next_start_message_index"] if "next_start_message_index" in row.keys() else None
     return ContextEpochState(
         epoch_id=row["epoch_id"],
         session_id=row["session_id"],
@@ -1263,6 +1268,7 @@ def context_epoch_from_row(row: sqlite3.Row) -> ContextEpochState:
         retain_context_ids=json.loads(row["retain_context_ids_json"] or "[]"),
         active_files=json.loads(row["active_files_json"] or "[]"),
         next_context_hint=row["next_context_hint"],
+        next_start_message_index=int(next_start_value) if next_start_value is not None else None,
         created_at=float(row["created_at"]),
         committed_at=float(row["committed_at"]) if row["committed_at"] is not None else None,
     )

@@ -14,7 +14,7 @@ if TYPE_CHECKING:
 
 
 class GetStoredToolOutputParams(BaseModel):
-    output_id: str = Field(description="Exact output_id/context_id from a visible recoverable reference or search result. Do not guess.")
+    output_id: str = Field(description="Exact legacy output_id from older visible metadata. Prefer RecoverContext when a context_id is visible. Do not guess.")
     offset: int = Field(default=0, ge=0, description="Character offset to start reading from.")
     limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return.")
 
@@ -22,11 +22,10 @@ class GetStoredToolOutputParams(BaseModel):
 class GetStoredToolOutput(Tool):
     name = "GetStoredToolOutput"
     description = (
-        "Read full or partial stored tool output by exact output_id. Use only when the needed "
-        "evidence is not visible in the current working context and a concrete output_id/context_id "
-        "is already visible from a recoverable reference or search result. Do not use this for "
-        "tool outputs already visible in the current conversation, and do not invent ids from "
-        "tool names, offsets, or arguments."
+        "Legacy compatibility alias for RecoverContext. Prefer RecoverContext with exact context_id "
+        "for historical or virtualized evidence. Use this only when older visible metadata explicitly "
+        "names an output_id and no context_id is available. Do not use this for tool outputs already "
+        "visible in the current conversation, and do not invent ids from tool names, offsets, or arguments."
     )
     params_model = GetStoredToolOutputParams
     category = "read"
@@ -243,7 +242,7 @@ class GetRecentConversationTurns(Tool):
 
 class SummarizeCurrentTurnMessageParams(BaseModel):
     message_id: str = Field(default="", description="tool_call_id or current-turn message id to replace with a summary.")
-    context_id: str = Field(default="", description="Recoverable context_id/output_id when summarizing a tool output.")
+    context_id: str = Field(default="", description="Recoverable context_id when summarizing a tool output.")
     summary: str = Field(description="Dense replacement summary for the current-turn message.")
     reason: str = Field(description="Why this summary is necessary. Required for revisions.")
     focus: str = Field(default="", description="Optional focus area, such as errors, file list, or final facts.")
@@ -277,7 +276,10 @@ class SummarizeCurrentTurnMessage(Tool):
         payload = {
             "status": "ok",
             "metadata": asdict(metadata),
-            "notice": "The current-turn message will be replaced by this summary on the next model call.",
+            "notice": (
+                "The summary is available for virtualized or budget-compressed renders. "
+                "Raw renders may continue to show the original current-turn content."
+            ),
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -303,10 +305,10 @@ class CommitWorkingContext(Tool):
     name = "CommitWorkingContext"
     description = (
         "Close the current multi-turn working-context epoch after the current assistant turn completes. "
-        "Use this only when the current task is complete, the user changes topic, or the visible hot-context "
-        "notice requests a commit. Do not call it between closely related requests that still need the same "
-        "file contents or tool results. This tool schedules archival; it never hides messages during the "
-        "current tool-call chain."
+        "Use this only when the current task is complete, the user explicitly closes or switches work, or "
+        "the visible hot-context notice requests a commit. The model is responsible for semantic context "
+        "switches; runtime only forces commits when the hot context exceeds its budget. This tool schedules "
+        "archival and never hides messages during the current tool-call chain."
     )
     params_model = CommitWorkingContextParams
     category = "command"

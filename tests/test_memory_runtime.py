@@ -116,6 +116,21 @@ def test_workspace_changes_render_inside_current_user_runtime_context():
     assert runtime_context.workspace_changes.omitted == 2
     assert '"workspace_changes"' in rendered.runtime_context_json
     assert '"app.py"' in rendered.runtime_context_json
+    payload = json.loads(rendered.runtime_context_json)
+    assert payload == {
+        "context_mode": "raw",
+        "workspace_changes": {"omitted": 2, "paths": ["app.py"]},
+    }
+    assert "tool_outputs_virtualized" not in rendered.runtime_context_json
+    assert '"context_budget": null' not in rendered.runtime_context_json
+
+
+def test_empty_runtime_context_omits_empty_fields():
+    rendered = PromptRenderer.render_current_user_message(RuntimeContextBuilder().build(), "work")
+
+    assert json.loads(rendered.runtime_context_json) == {"context_mode": "raw"}
+    assert "tool_outputs_virtualized" not in rendered.runtime_context_json
+    assert "recovery_hint" not in rendered.runtime_context_json
 
 
 def test_temporary_system_messages_are_disabled():
@@ -443,6 +458,37 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
     assert restored.token_usage.request_count == 1
     assert restored.token_usage.prompt_cache_hit_tokens == 70
     assert restored.token_usage.prompt_cache_miss_tokens == 30
+
+
+def test_ask_deepseek_runtime_context_uses_memory_context_mode(monkeypatch, tmp_path):
+    async def scenario():
+        runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+        session_id = runtime.start_session("test")
+        runtime.force_context_virtualized(session_id)
+        seen_messages = []
+
+        async def fake_stream_one_round(_client, _model, messages, _tools):
+            seen_messages.append(copy.deepcopy(messages))
+            return "done", [], None
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+
+        await agent_client.ask_deepseek(
+            client=object(),
+            prompt="hello",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+            memory_runtime=runtime,
+        )
+        await runtime.close()
+        return seen_messages
+
+    seen_messages = asyncio.run(scenario())
+    current_user = seen_messages[0][1]["content"]
+    runtime_context_json = current_user.split("<RUNTIME_CONTEXT>\n", 1)[1].split("\n</RUNTIME_CONTEXT>", 1)[0]
+
+    assert json.loads(runtime_context_json)["context_mode"] == "virtualized"
 
 
 def test_token_output_flags_control_terminal_lines(monkeypatch, tmp_path, capsys):
@@ -1072,9 +1118,12 @@ def test_large_tool_output_becomes_recoverable_preview(tmp_path):
         current_prompt="inspect",
     )
 
-    assert "[Recoverable context stored]" in prompt_content
+    assert "[Tool output preview]" in prompt_content
     assert f"context_id: {output_id}" in prompt_content
-    assert "PROMPT BUDGET" in prompt_content
+    assert f"output_id: {output_id}" not in prompt_content
+    assert "[... 139000 chars omitted; full output stored as recoverable context ...]" in prompt_content
+    assert "recover: Use RecoverContext with this exact context_id and offset/limit" in prompt_content
+    assert "GetStoredToolOutput" not in prompt_content
     assert len(prompt_content) < len(output)
     assert runtime.context_mode(session_id) == ContextMode.RAW
 
@@ -1104,10 +1153,11 @@ def test_raw_mode_large_tool_output_uses_preview_without_virtualizing_session(tm
     )
 
     assert runtime.context_mode(session_id) == ContextMode.RAW
-    assert "[Recoverable context stored]" in prompt_content
+    assert "[Tool output preview]" in prompt_content
     assert f"context_id: {output_id}" in prompt_content
-    assert "RecoverContext(context_id, offset, limit)" in prompt_content
-    assert "GetStoredToolOutput(output_id, offset, limit)" in prompt_content
+    assert f"output_id: {output_id}" not in prompt_content
+    assert "recover: Use RecoverContext with this exact context_id and offset/limit" in prompt_content
+    assert "GetStoredToolOutput" not in prompt_content
     assert len(prompt_content) < len(output)
 
 
@@ -1222,9 +1272,13 @@ def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_
         ("assistant", ""),
     ]
     assert "HISTORICAL TOOL INDEX" not in "\n".join(str(message.get("content", "")) for message in rendered)
-    assert "Skill output is omitted after the current turn" in rendered[3]["content"]
+    assert "Skill output is not recoverable with RecoverContext" in rendered[3]["content"]
     assert "Historical tool output virtualized" in rendered[4]["content"]
     assert output_id in rendered[4]["content"]
+    assert '"call_summary": "ReadFile: app.py"' in rendered[4]["content"]
+    assert '"output_id"' not in rendered[4]["content"]
+    assert '"token_count"' not in rendered[4]["content"]
+    assert '"storage_key"' not in rendered[4]["content"]
 
 
 def test_short_session_keeps_raw_historical_tool_output(tmp_path):
@@ -1274,7 +1328,7 @@ def test_short_session_keeps_raw_historical_tool_output(tmp_path):
     assert "metadata" not in rendered[3]
 
 
-def test_context_switches_to_virtualized_when_raw_miss_cost_is_higher(tmp_path):
+def test_context_switches_to_virtualized_when_raw_usage_exceeds_threshold(tmp_path):
     compressor = ContextCompressor(context_window=1200)
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
@@ -1401,7 +1455,12 @@ def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
     tool_content = rendered[3]["content"]
     assert "Historical tool output virtualized" in tool_content
     assert '"intent": "读取入口文件"' in tool_content
-    assert '"mcp_server": "fake"' in tool_content
+    assert "Use RecoverContext with this exact context_id and offset/limit" in tool_content
+    assert "GetStoredToolOutput" not in tool_content
+    assert '"output_id"' not in tool_content
+    assert '"token_count"' not in tool_content
+    assert '"storage_key"' not in tool_content
+    assert '"mcp_server": "fake"' not in tool_content
 
 
 def test_context_switch_prints_mode_transition_notice(tmp_path, capsys):
@@ -1739,7 +1798,7 @@ def test_rollover_marks_old_session_historical(tmp_path):
     assert runtime.store.load_messages(session_id) == old_messages
 
 
-def test_rollover_new_session_contains_only_system_and_snapshot(tmp_path):
+def test_rollover_new_session_contains_system_and_archive_tool_snapshot(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")
     snapshot = ConversationSnapshot(
@@ -1757,9 +1816,14 @@ def test_rollover_new_session_contains_only_system_and_snapshot(tmp_path):
     )
 
     assert rollover.new_messages is not None
-    assert len(rollover.new_messages) == 2
-    assert [message["role"] for message in rollover.new_messages] == ["system", "system"]
-    assert rollover.new_messages[1]["content"].startswith("CONVERSATION SNAPSHOT")
+    assert len(rollover.new_messages) == 3
+    assert [message["role"] for message in rollover.new_messages] == ["system", "assistant", "tool"]
+    assert rollover.new_messages[1]["tool_calls"][0]["function"]["name"] == "ArchiveConversationSnapshot"
+    assert rollover.new_messages[2]["content"].startswith("[Conversation archive snapshot]\nCONVERSATION SNAPSHOT")
+    assert "reasoning_conclusions: []" not in rollover.new_messages[2]["content"]
+    assert 'project_status: ""' not in rollover.new_messages[2]["content"]
+    assert "workspace_state: {}" not in rollover.new_messages[2]["content"]
+    assert rollover.new_messages[2]["metadata"]["archive_snapshot"] is True
     assert runtime.store.load_messages(rollover.new_session_id) == rollover.new_messages
 
 
@@ -2067,6 +2131,166 @@ def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(t
     assert output_id in historical_tool["content"]
 
 
+def test_runtime_does_not_rotate_after_one_unrelated_turn(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=100_000),
+    )
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "implement billing invoice parser"},
+        {"role": "assistant", "content": "billing parser done"},
+    ]
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="implement billing invoice parser",
+        current_turn_start=1,
+    )
+    messages.append({"role": "user", "content": "draft marketing launch copy"})
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="draft marketing launch copy",
+        current_turn_start=len(messages) - 1,
+    )
+
+    epoch = runtime.get_active_context_epoch(session_id)
+    assert epoch is not None
+    assert epoch.start_message_index == 1
+    assert [epoch.status for epoch in runtime.store.load_context_epochs(session_id)] == [ContextEpochStatus.ACTIVE]
+    assert "Working context transition" not in "\n".join(str(message.get("content", "")) for message in rendered)
+
+
+def test_runtime_does_not_rotate_after_three_unrelated_turns(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=100_000),
+    )
+    session_id = runtime.start_session("test")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "implement billing invoice parser"},
+        {"role": "assistant", "content": "billing parser done"},
+    ]
+    runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="implement billing invoice parser",
+        current_turn_start=1,
+    )
+    messages.extend(
+        [
+            {"role": "user", "content": "design frontend navigation layout"},
+            {"role": "assistant", "content": "navigation layout done"},
+            {"role": "user", "content": "draft marketing launch copy"},
+            {"role": "assistant", "content": "launch copy done"},
+            {"role": "user", "content": "summarize customer interview insights"},
+        ]
+    )
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="summarize customer interview insights",
+        current_turn_start=len(messages) - 1,
+    )
+
+    epochs = runtime.store.load_context_epochs(session_id)
+    assert [epoch.status for epoch in epochs] == [ContextEpochStatus.ACTIVE]
+    assert epochs[0].start_message_index == 1
+    assert "Working context transition" not in "\n".join(str(message.get("content", "")) for message in rendered)
+
+
+def test_hot_context_force_retains_recent_turns_as_new_hot_context(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=600),
+    )
+    session_id = runtime.start_session("test")
+    messages = [{"role": "system", "content": "system"}]
+    for turn in range(1, 6):
+        messages.extend(
+            [
+                {
+                    "role": "user",
+                    "content": f"billing invoice ledger revenue turn {turn} " + ("billing invoice " * 120),
+                },
+                {"role": "assistant", "content": f"billing answer {turn}"},
+            ]
+        )
+    runtime.ensure_context_epoch(session_id=session_id, messages=messages[:3], current_turn_start=1)
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="billing invoice ledger revenue",
+        current_turn_start=len(messages),
+    )
+
+    epochs = runtime.store.load_context_epochs(session_id)
+    assert [epoch.status for epoch in epochs] == [ContextEpochStatus.COMMITTED, ContextEpochStatus.ACTIVE]
+    assert epochs[0].trigger == "runtime"
+    assert epochs[0].end_message_index == 5
+    assert epochs[1].start_message_index == 5
+    marker_index = next(
+        index
+        for index, message in enumerate(rendered)
+        if "Working context transition" in str(message.get("content", ""))
+    )
+    assert rendered[marker_index + 1]["content"].startswith("billing invoice ledger revenue turn 3")
+
+
+def test_cold_context_threshold_rolls_over_with_archive_tool_snapshot(tmp_path):
+    async def scenario():
+        runtime = MemoryRuntime(
+            store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+            compressor=ContextCompressor(context_window=600),
+        )
+        session_id = runtime.start_session("test")
+        messages = [
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "legacy architecture review " + ("legacy token " * 800)},
+            {"role": "assistant", "content": "legacy review done"},
+            {"role": "user", "content": "small hot followup"},
+            {"role": "assistant", "content": "hot followup done"},
+        ]
+        runtime.ensure_context_epoch(session_id=session_id, messages=messages[:3], current_turn_start=1)
+        runtime.request_context_epoch_commit(
+            reason="old task is cold",
+            summary="Legacy architecture review moved to cold context.",
+            next_start_message_index=3,
+            session_id=session_id,
+        )
+        runtime.finalize_pending_context_epoch(session_id=session_id, messages=messages)
+
+        immediate = await runtime.on_turn_completed(
+            messages=messages,
+            system_prompt_source=messages[0],
+            current_prompt="small hot followup",
+        )
+        rollover = await runtime.await_pending_rollover()
+        await runtime.close()
+        return immediate, rollover
+
+    immediate, rollover = asyncio.run(scenario())
+
+    assert not immediate.performed
+    assert rollover.performed
+    assert rollover.new_messages is not None
+    assert [message["role"] for message in rollover.new_messages] == ["system", "assistant", "tool"]
+    assert rollover.new_messages[1]["tool_calls"][0]["function"]["name"] == "ArchiveConversationSnapshot"
+    assert rollover.new_messages[2]["content"].startswith("[Conversation archive snapshot]\nCONVERSATION SNAPSHOT")
+    assert "workspace_state: {}" not in rollover.new_messages[2]["content"]
+
+
 def test_commit_working_context_tool_is_deferred_and_idempotent(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")
@@ -2138,7 +2362,8 @@ def test_hot_context_threshold_schedules_runtime_commit(tmp_path):
         current_turn_start=1,
     )
 
-    assert any("HOT WORKING CONTEXT NOTICE" in str(message.get("content", "")) for message in rendered)
+    hot_notice = next(str(message.get("content", "")) for message in rendered if "HOT WORKING CONTEXT NOTICE" in str(message.get("content", "")))
+    assert "Call CommitWorkingContext when" not in hot_notice
     pending = runtime.get_active_context_epoch(session_id)
     assert pending is not None
     assert pending.status == ContextEpochStatus.PENDING_COMMIT

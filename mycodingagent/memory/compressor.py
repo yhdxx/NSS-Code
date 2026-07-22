@@ -184,11 +184,9 @@ def is_reproducible_tool(tool_name: str, output: str = "") -> bool:
 def tool_output_reference_text(ref: ToolOutputRef) -> str:
     return (
         "[Tool output stored]\n"
-        f"output_id: {ref.output_id}\n"
         f"context_id: {ref.output_id}\n"
         f"tool_name: {ref.tool_name}\n"
         f"original_length: {ref.original_length}\n"
-        f"reproducible: {str(ref.reproducible).lower()}\n"
         f"preview:\n{ref.preview}\n"
-        "Full output is available through RecoverContext or GetStoredToolOutput."
+        "recover: Use RecoverContext with this exact context_id and offset/limit."
     )

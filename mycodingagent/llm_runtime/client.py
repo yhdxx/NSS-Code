@@ -681,7 +681,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     ***Working Context Epoch Protocol***
                     Related user requests may share a multi-turn hot working context whose file contents and tool results remain visible.
                     Do not call CommitWorkingContext while the user is likely to continue the same implementation, debugging, review, or analysis task.
-                    Call CommitWorkingContext only when the current task is complete, the user has clearly changed topic, or a HOT WORKING CONTEXT NOTICE requests archival.
+                    You are responsible for semantic working-context switches. Call CommitWorkingContext when the current task is complete, the user explicitly closes/switches work, or several recent requests have clearly formed a new task that no longer needs the prior hot context.
+                    Runtime only forces CommitWorkingContext when the hot working context exceeds its budget; do not expect runtime to infer topic drift.
                     The commit is deferred until the current assistant turn is fully complete, so continue using the visible context normally after calling it.
                     Include completed work, decisions, verification results, unfinished items, important files, and any context_id values worth retaining.
 
@@ -705,7 +706,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     正确做法是：修复问题后创建一个新的 commit。
 
                     ***输出风格***
-                    直奔重点。先尝试最简单的方案。要极度简洁。
+                    对于简单问题，你可以直奔重点，但是对于稍显复杂的问题，你必须先列一个计划，然后按照计划执行，并根据计划的执行结果选择优化计划继续执行或直接回答。
                     工具调用之间的文字不超过 25 个词。默认最终回复不超过 100 个词。
                     当用户明确要求查看文件内容、代码、日志或命令输出时，可以完整展示必要内容，不受 100 个词限制。
                     先给出答案或行动，而不是推理过程。跳过填充词、开场白和不必要的过渡句。不要复述用户说过的话——直接做就行。
@@ -719,6 +720,12 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     session_id = ""
     if memory_runtime is not None and CONFIG.memory.enabled:
         session_id = memory_runtime.start_session(MODEL)
+
+    def current_context_mode() -> str:
+        if memory_runtime is None or not session_id:
+            return "raw"
+        mode = memory_runtime.context_mode(session_id)
+        return str(getattr(mode, "value", mode))
 
     begin_turn = getattr(skill_runtime, "begin_turn", None)
     if callable(begin_turn):
@@ -766,6 +773,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     capability_result = await capability_router.route(prompt) if capability_router is not None else None
     base_runtime_context = RuntimeContextBuilder(
         workspace_tracker=workspace_tracker,
+        context_mode=current_context_mode(),
         capabilities=capability_result,
     ).build()
     rendered_prompt = PromptRenderer.render_current_user_message(base_runtime_context, prompt)
@@ -801,7 +809,11 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 persist_snapshot=True,
                 current_turn_start=turn_start,
             )
-            runtime_context = replace(base_runtime_context, task_snapshot=summary_text or None)
+            runtime_context = replace(
+                base_runtime_context,
+                context_mode=current_context_mode(),
+                task_snapshot=summary_text or None,
+            )
             rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
             model_messages = render_current_turn_for_model(
                 prepared_messages,

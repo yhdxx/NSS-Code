@@ -294,7 +294,7 @@ class CheckpointManager:
         )
         new_session_id = uuid4().hex
         system_message = copy_system_message(system_prompt_source)
-        new_messages = [system_message, {"role": "system", "content": format_snapshot_prompt(snapshot)}]
+        new_messages = [system_message, *format_archive_tool_messages(snapshot)]
         self.memory_runtime.current_session_id = new_session_id
         self.memory_runtime.store.ensure_session(
             session_id=new_session_id,
@@ -335,6 +335,62 @@ def format_snapshot_prompt(snapshot: ConversationSnapshot) -> str:
     for field_name in SNAPSHOT_FIELD_ORDER:
         lines.append(f"{field_name}: {json.dumps(payload.get(field_name), ensure_ascii=False, default=str)}")
     return "\n".join(lines)
+
+
+def format_archive_tool_messages(snapshot: ConversationSnapshot) -> list[dict[str, Any]]:
+    tool_call_id = f"conversation_archive_{snapshot.snapshot_id}"
+    arguments = compact_payload(
+        {
+            "snapshot_id": snapshot.snapshot_id,
+            "snapshot_version": snapshot.snapshot_version,
+            "previous_snapshot_id": snapshot.previous_snapshot_id,
+            "source_session_id": snapshot.session_id,
+        }
+    )
+    return [
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": tool_call_id,
+                    "type": "function",
+                    "function": {
+                        "name": "ArchiveConversationSnapshot",
+                        "arguments": json.dumps(arguments, ensure_ascii=False, sort_keys=True),
+                    },
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": tool_call_id,
+            "content": "[Conversation archive snapshot]\n" + format_compact_snapshot_prompt(snapshot),
+            "metadata": {
+                "archive_snapshot": True,
+                "snapshot_id": snapshot.snapshot_id,
+                "source_session_id": snapshot.session_id,
+            },
+        },
+    ]
+
+
+def format_compact_snapshot_prompt(snapshot: ConversationSnapshot) -> str:
+    payload = asdict(snapshot)
+    lines = ["CONVERSATION SNAPSHOT"]
+    for field_name in SNAPSHOT_FIELD_ORDER:
+        value = payload.get(field_name)
+        if is_empty_prompt_value(value):
+            continue
+        lines.append(f"{field_name}: {json.dumps(value, ensure_ascii=False, default=str)}")
+    return "\n".join(lines)
+
+
+def compact_payload(payload: dict[str, Any]) -> dict[str, Any]:
+    return {key: value for key, value in payload.items() if not is_empty_prompt_value(value)}
+
+
+def is_empty_prompt_value(value: Any) -> bool:
+    return value is None or value == "" or value == [] or value == {}
 
 
 def copy_system_message(system_prompt_source: dict[str, Any] | None) -> dict[str, Any]:

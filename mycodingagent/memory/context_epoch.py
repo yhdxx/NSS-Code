@@ -80,6 +80,7 @@ class ContextEpochManager:
         active_files: list[str] | None = None,
         next_context_hint: str = "",
         trigger: str = "model",
+        next_start_message_index: int | None = None,
     ) -> ContextEpochState:
         state = self.get(session_id)
         if state is None:
@@ -93,6 +94,11 @@ class ContextEpochManager:
         retain_ids = dedupe_strings(retain_context_ids or [])
         files = dedupe_strings(active_files or [])
         next_hint = next_context_hint.strip()
+        next_start = (
+            max(state.start_message_index, next_start_message_index)
+            if next_start_message_index is not None
+            else None
+        )
         if state.status == ContextEpochStatus.PENDING_COMMIT:
             if (
                 state.reason == normalized_reason
@@ -100,6 +106,7 @@ class ContextEpochManager:
                 and state.retain_context_ids == retain_ids
                 and state.active_files == files
                 and state.next_context_hint == next_hint
+                and state.next_start_message_index == next_start
             ):
                 return state
             raise ValueError("working context commit is already pending")
@@ -110,6 +117,7 @@ class ContextEpochManager:
         state.retain_context_ids = retain_ids
         state.active_files = files
         state.next_context_hint = next_hint
+        state.next_start_message_index = next_start
         self.store.save_context_epoch(state)
         return state
 
@@ -123,7 +131,12 @@ class ContextEpochManager:
         state = self.get(session_id)
         if state is None or state.status != ContextEpochStatus.PENDING_COMMIT or pending_tool_call:
             return None
-        boundary = max(state.start_message_index, end_message_index)
+        requested_boundary = (
+            state.next_start_message_index
+            if state.next_start_message_index is not None
+            else end_message_index
+        )
+        boundary = max(state.start_message_index, min(requested_boundary, end_message_index))
         state.status = ContextEpochStatus.COMMITTED
         state.end_message_index = boundary
         state.committed_at = time()
@@ -180,9 +193,14 @@ def dedupe_strings(values: list[str]) -> list[str]:
     return result
 
 
-def collect_context_epoch_files(messages: list[dict[str, Any]], start_message_index: int) -> list[str]:
+def collect_context_epoch_files(
+    messages: list[dict[str, Any]],
+    start_message_index: int,
+    end_message_index: int | None = None,
+) -> list[str]:
     files: list[str] = []
-    for message in messages[max(0, start_message_index) :]:
+    end = len(messages) if end_message_index is None else max(0, min(end_message_index, len(messages)))
+    for message in messages[max(0, start_message_index) : end]:
         metadata = message.get("metadata")
         if not isinstance(metadata, dict):
             continue
@@ -197,10 +215,15 @@ def collect_context_epoch_files(messages: list[dict[str, Any]], start_message_in
     return dedupe_strings(files)
 
 
-def automatic_context_epoch_summary(messages: list[dict[str, Any]], start_message_index: int) -> str:
+def automatic_context_epoch_summary(
+    messages: list[dict[str, Any]],
+    start_message_index: int,
+    end_message_index: int | None = None,
+) -> str:
+    end = len(messages) if end_message_index is None else max(0, min(end_message_index, len(messages)))
     user_messages = [
         str(message.get("content", "")).strip()
-        for message in messages[max(0, start_message_index) :]
+        for message in messages[max(0, start_message_index) : end]
         if message.get("role") == "user" and str(message.get("content", "")).strip()
     ]
     if not user_messages:
@@ -211,12 +234,44 @@ def automatic_context_epoch_summary(messages: list[dict[str, Any]], start_messag
     return f"Automatic working-context commit. Latest user request: {latest}"
 
 
-def format_hot_context_notice(snapshot: HotContextBudgetSnapshot) -> str:
-    action = (
-        "A commit is already pending and will be applied after the current turn completes."
-        if snapshot.pending_commit
-        else "Call CommitWorkingContext when the current task or topic is complete."
+def retained_hot_start_index(
+    messages: list[dict[str, Any]],
+    *,
+    start_message_index: int,
+    retained_turns: int,
+) -> int:
+    turn_starts = user_turn_starts(
+        messages,
+        start_message_index=start_message_index,
+        end_message_index=len(messages),
     )
+    if not turn_starts:
+        return len(messages)
+    retained = max(1, retained_turns)
+    return turn_starts[-retained] if len(turn_starts) >= retained else turn_starts[0]
+
+
+def user_turn_starts(
+    messages: list[dict[str, Any]],
+    *,
+    start_message_index: int = 0,
+    end_message_index: int | None = None,
+) -> list[int]:
+    end = len(messages) if end_message_index is None else max(0, min(end_message_index, len(messages)))
+    return [
+        index
+        for index, message in enumerate(messages[max(0, start_message_index) : end], start=max(0, start_message_index))
+        if message.get("role") == "user"
+    ]
+
+
+def format_hot_context_notice(snapshot: HotContextBudgetSnapshot) -> str:
+    if snapshot.pending_commit:
+        action = "A commit is already pending and will be applied after the current turn completes."
+    elif snapshot.force_commit:
+        action = "Runtime has forced a working-context rotation. Do not call CommitWorkingContext again for this notice."
+    else:
+        action = "Call CommitWorkingContext when the current task or topic is complete."
     return (
         "HOT WORKING CONTEXT NOTICE\n"
         f"epoch_id: {snapshot.epoch_id}\n"
