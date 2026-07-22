@@ -188,5 +188,5 @@ def tool_output_reference_text(ref: ToolOutputRef) -> str:
         f"tool_name: {ref.tool_name}\n"
         f"original_length: {ref.original_length}\n"
         f"preview:\n{ref.preview}\n"
-        "recover: Use RecoverContext with this exact context_id and offset/limit."
+        "recover: Use BatchRecoverContext with this exact context_id in items."
     )

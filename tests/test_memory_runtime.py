@@ -51,10 +51,8 @@ from mycodingagent.tool_runtime import create_default_registry
 from mycodingagent.tool_runtime.memory_lookup import (
     CommitWorkingContext,
     CommitWorkingContextParams,
-    GetStoredToolOutput,
-    GetStoredToolOutputParams,
-    RecoverContext,
-    RecoverContextParams,
+    BatchRecoverContext,
+    BatchRecoverContextParams,
     RestoreSession,
     RestoreSessionParams,
     SearchRecoverableContext,
@@ -272,15 +270,13 @@ def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypa
 
 def test_recovery_tool_descriptions_emphasize_evidence_without_fixed_order():
     descriptions = {
-        "GetStoredToolOutput": GetStoredToolOutput.description,
-        "RecoverContext": RecoverContext.description,
+        "BatchRecoverContext": BatchRecoverContext.description,
         "SearchRecoverableContext": SearchRecoverableContext.description,
         "SearchSessionHistory": SearchSessionHistory.description,
         "GetRecentConversationTurns": GetRecentConversationTurns.description,
     }
 
-    assert "Do not use this for tool outputs already visible" in descriptions["GetStoredToolOutput"]
-    assert "Do not use this for evidence already shown" in descriptions["RecoverContext"]
+    assert "Do not use this for evidence already shown" in descriptions["BatchRecoverContext"]
     assert "you do not yet know the relevant context_id" in descriptions["SearchRecoverableContext"]
     assert "needed prior user request" in descriptions["SearchSessionHistory"]
     assert "recent task flow" in descriptions["GetRecentConversationTurns"]
@@ -312,8 +308,8 @@ def test_recovery_protocol_forbids_recovering_visible_context(monkeypatch):
 
         system_prompt = seen_messages[0][0]["content"]
         assert "answer from the visible context directly" in system_prompt
-        assert "do not call GetStoredToolOutput" in system_prompt
-        assert "Never invent output_id/context_id values" in system_prompt
+        assert "do not call BatchRecoverContext" in system_prompt
+        assert "Never invent context_id values" in system_prompt
 
     asyncio.run(scenario())
 
@@ -328,7 +324,13 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
             if len(tool_calls_seen) == 1:
                 assert messages[-1]["role"] == "tool"
                 assert "ctx_1" in messages[-1]["content"]
-                return "", [agent_client.PendingToolCall("call_2", "RecoverContext", '{"context_id":"ctx_1"}')], None
+                return "", [
+                    agent_client.PendingToolCall(
+                        "call_2",
+                        "BatchRecoverContext",
+                        '{"items":[{"context_id":"ctx_1"}]}',
+                    )
+                ], None
             assert messages[-1]["role"] == "tool"
             assert "exact recovered evidence" in messages[-1]["content"]
             return "final answer from evidence", [], None
@@ -337,7 +339,7 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
             tool_calls_seen.append(tool_name)
             if tool_name == "SearchRecoverableContext":
                 return '{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}'
-            if tool_name == "RecoverContext":
+            if tool_name == "BatchRecoverContext":
                 return "exact recovered evidence"
             return "unexpected"
 
@@ -352,7 +354,7 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
             messages=[{"role": "system", "content": "fixed"}],
         )
 
-        assert tool_calls_seen == ["SearchRecoverableContext", "RecoverContext"]
+        assert tool_calls_seen == ["SearchRecoverableContext", "BatchRecoverContext"]
         assert text == "final answer from evidence"
 
     asyncio.run(scenario())
@@ -970,7 +972,7 @@ def test_current_turn_small_tool_output_stays_inline(tmp_path):
     assert "metadata" not in compressed[-1]
 
 
-def test_get_stored_tool_output_returns_current_session_chunk(tmp_path):
+def test_batch_recover_context_returns_current_session_chunk(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -980,17 +982,26 @@ def test_get_stored_tool_output_returns_current_session_chunk(tmp_path):
         arguments='{"file_path":"a.py"}',
         output="0123456789abcdef",
     )
-    tool = GetStoredToolOutput(runtime)
+    tool = BatchRecoverContext(runtime)
 
-    result = asyncio.run(tool.execute(GetStoredToolOutputParams(output_id=output_id, offset=4, limit=6)))
+    result = asyncio.run(
+        tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id, "offset": 4, "limit": 6}]))
+    )
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
 
     assert not result.is_error
-    assert '"tool_name": "ReadFile"' in result.output
-    assert '"next_offset": 10' in result.output
-    assert result.output.endswith("456789")
+    assert "tool" not in payload
+    assert recovered["tool_name"] == "ReadFile"
+    assert "output_id" not in recovered
+    assert "arguments_json" not in recovered
+    assert "storage_key" not in recovered
+    assert "token_count" not in recovered
+    assert recovered["next_offset"] == 10
+    assert recovered["content"] == "456789"
 
 
-def test_recover_context_returns_partial_context_metadata(tmp_path):
+def test_batch_recover_context_returns_partial_context_metadata(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -1000,15 +1011,78 @@ def test_recover_context_returns_partial_context_metadata(tmp_path):
         arguments='{"file_path":"billing.py"}',
         output="0123456789abcdef",
     )
-    tool = RecoverContext(runtime)
+    tool = BatchRecoverContext(runtime)
 
-    result = asyncio.run(tool.execute(RecoverContextParams(context_id=output_id, offset=4, limit=6)))
+    result = asyncio.run(
+        tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id, "offset": 4, "limit": 6}]))
+    )
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
 
     assert not result.is_error
-    assert '"context_id":' in result.output
-    assert '"tool_name": "ReadFile"' in result.output
-    assert '"next_offset": 10' in result.output
-    assert result.output.endswith("456789")
+    assert recovered["context_id"] == output_id
+    assert recovered["tool_name"] == "ReadFile"
+    assert recovered["call_summary"] == "ReadFile output for billing.py; 16 chars"
+    assert "short_summary" not in recovered
+    assert "storage_key" not in recovered
+    assert "token_count" not in recovered
+    assert recovered["next_offset"] == 10
+    assert recovered["content"] == "456789"
+
+
+def test_batch_recover_context_returns_multiple_results_and_item_errors(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    first_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="call_1",
+        tool_name="ReadFile",
+        arguments='{"file_path":"a.py"}',
+        output="alpha-output",
+    )
+    second_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="call_2",
+        tool_name="Bash",
+        arguments='{"command":"pytest -q"}',
+        output="beta-output",
+    )
+    tool = BatchRecoverContext(runtime)
+
+    result = asyncio.run(
+        tool.execute(
+            BatchRecoverContextParams(
+                items=[
+                    {"context_id": first_id, "offset": 0, "limit": 5},
+                    {"context_id": "missing-context"},
+                    {"context_id": second_id},
+                ]
+            )
+        )
+    )
+    payload = json.loads(result.output)
+
+    assert not result.is_error
+    assert payload["request_count"] == 3
+    assert payload["result_count"] == 3
+    assert "tool" not in payload
+    assert payload["results"][0]["index"] == 0
+    assert payload["results"][0]["status"] == "ok"
+    assert payload["results"][0]["content"] == "alpha"
+    assert "output_id" not in payload["results"][0]
+    assert payload["results"][1]["index"] == 1
+    assert payload["results"][1]["status"] == "not_found"
+    assert payload["results"][2]["index"] == 2
+    assert payload["results"][2]["tool_name"] == "Bash"
+    assert payload["results"][2]["content"] == "beta-output"
+    assert payload["errors"] == [
+        {
+            "index": 1,
+            "context_id": "missing-context",
+            "status": "not_found",
+            "error": "recoverable context not found",
+        }
+    ]
 
 
 def test_search_recoverable_context_finds_metadata(tmp_path):
@@ -1030,7 +1104,7 @@ def test_search_recoverable_context_finds_metadata(tmp_path):
     assert "billing.py" in result.output
 
 
-def test_get_stored_tool_output_recovers_other_session_with_owner_metadata(tmp_path):
+def test_batch_recover_context_recovers_other_session_with_owner_metadata(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     first_session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -1042,13 +1116,15 @@ def test_get_stored_tool_output_recovers_other_session_with_owner_metadata(tmp_p
     )
     runtime.clear_current_session_id()
     runtime.start_session("test")
-    tool = GetStoredToolOutput(runtime)
+    tool = BatchRecoverContext(runtime)
 
-    result = asyncio.run(tool.execute(GetStoredToolOutputParams(output_id=output_id)))
+    result = asyncio.run(tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id}])))
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
 
     assert not result.is_error
-    assert f'"owner_session_id": "{first_session_id}"' in result.output
-    assert result.output.endswith("secret")
+    assert recovered["owner_session_id"] == first_session_id
+    assert recovered["content"] == "secret"
 
 
 def test_search_session_history_finds_virtualized_turns(tmp_path):
@@ -1079,19 +1155,79 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
 
     schemas = registry.get_all_schemas("openai")
     names = {schema["name"] for schema in schemas}
-    output_schema = next(schema for schema in schemas if schema["name"] == "GetStoredToolOutput")
+    output_schema = next(schema for schema in schemas if schema["name"] == "BatchRecoverContext")
 
     assert {
         "CommitWorkingContext",
-        "GetStoredToolOutput",
-        "RecoverContext",
+        "BatchRecoverContext",
         "RestoreSession",
         "SearchRecoverableContext",
         "SearchSessionHistory",
         "GetRecentConversationTurns",
         "SummarizeCurrentTurnMessage",
     } <= names
-    assert "output_id" in output_schema["parameters"]["properties"]
+    assert "GetStoredToolOutput" not in names
+    assert "RecoverContext" not in names
+    assert "items" in output_schema["parameters"]["properties"]
+    assert "context_id" not in output_schema["parameters"]["properties"]
+    assert "output_id" not in output_schema["parameters"]["properties"]
+
+
+def test_current_turn_summary_uses_single_recovery_path(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=1000),
+    )
+    session_id = runtime.start_session("test")
+    runtime.force_context_virtualized(session_id)
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="read_call",
+        tool_name="ReadFile",
+        arguments='{"file_path":"large.py"}',
+        output="important implementation details" * 100,
+    )
+    runtime.summarize_current_turn_message(
+        message_id="read_call",
+        context_id=output_id,
+        summary="The large file contains important implementation details.",
+        reason="keep current turn under budget",
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "inspect large file"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "read_call",
+                    "type": "function",
+                    "function": {"name": "ReadFile", "arguments": '{"file_path":"large.py"}'},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "read_call",
+            "content": "important implementation details" * 100,
+            "metadata": {"output_id": output_id, "tool_name": "ReadFile"},
+        },
+    ]
+
+    rendered = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="inspect large file",
+        current_turn_start=1,
+    )
+    tool_content = next(message["content"] for message in rendered if message.get("role") == "tool")
+
+    assert "[Current turn message summarized]" in tool_content
+    assert f"context_id: {output_id}" in tool_content
+    assert "recover: Use BatchRecoverContext with this exact context_id in items." in tool_content
+    assert "otherwise" not in tool_content
+    assert " or " not in tool_content
 
 
 def test_large_tool_output_becomes_recoverable_preview(tmp_path):
@@ -1122,7 +1258,7 @@ def test_large_tool_output_becomes_recoverable_preview(tmp_path):
     assert f"context_id: {output_id}" in prompt_content
     assert f"output_id: {output_id}" not in prompt_content
     assert "[... 139000 chars omitted; full output stored as recoverable context ...]" in prompt_content
-    assert "recover: Use RecoverContext with this exact context_id and offset/limit" in prompt_content
+    assert "recover: Use BatchRecoverContext with this exact context_id in items" in prompt_content
     assert "GetStoredToolOutput" not in prompt_content
     assert len(prompt_content) < len(output)
     assert runtime.context_mode(session_id) == ContextMode.RAW
@@ -1156,7 +1292,7 @@ def test_raw_mode_large_tool_output_uses_preview_without_virtualizing_session(tm
     assert "[Tool output preview]" in prompt_content
     assert f"context_id: {output_id}" in prompt_content
     assert f"output_id: {output_id}" not in prompt_content
-    assert "recover: Use RecoverContext with this exact context_id and offset/limit" in prompt_content
+    assert "recover: Use BatchRecoverContext with this exact context_id in items" in prompt_content
     assert "GetStoredToolOutput" not in prompt_content
     assert len(prompt_content) < len(output)
 
@@ -1272,7 +1408,7 @@ def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_
         ("assistant", ""),
     ]
     assert "HISTORICAL TOOL INDEX" not in "\n".join(str(message.get("content", "")) for message in rendered)
-    assert "Skill output is not recoverable with RecoverContext" in rendered[3]["content"]
+    assert "Skill output is not recoverable with BatchRecoverContext" in rendered[3]["content"]
     assert "Historical tool output virtualized" in rendered[4]["content"]
     assert output_id in rendered[4]["content"]
     assert '"call_summary": "ReadFile: app.py"' in rendered[4]["content"]
@@ -1455,7 +1591,7 @@ def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
     tool_content = rendered[3]["content"]
     assert "Historical tool output virtualized" in tool_content
     assert '"intent": "读取入口文件"' in tool_content
-    assert "Use RecoverContext with this exact context_id and offset/limit" in tool_content
+    assert "Use BatchRecoverContext with this exact context_id in items" in tool_content
     assert "GetStoredToolOutput" not in tool_content
     assert '"output_id"' not in tool_content
     assert '"token_count"' not in tool_content
@@ -1849,13 +1985,15 @@ def test_recover_context_works_after_session_rollover(tmp_path):
         snapshot=snapshot,
         system_prompt_source={"role": "system", "content": "sys"},
     )
-    tool = RecoverContext(runtime)
+    tool = BatchRecoverContext(runtime)
 
-    result = asyncio.run(tool.execute(RecoverContextParams(context_id=output_id)))
+    result = asyncio.run(tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id}])))
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
 
     assert not result.is_error
-    assert f'"owner_session_id": "{session_id}"' in result.output
-    assert result.output.endswith("historical content")
+    assert recovered["owner_session_id"] == session_id
+    assert recovered["content"] == "historical content"
 
 
 def test_restore_session_returns_snapshot_not_messages(tmp_path):
@@ -2016,15 +2154,17 @@ def test_recover_context_survives_multiple_rollovers(tmp_path):
         snapshot=second_snapshot,
         system_prompt_source=first_rollover.new_messages[0],
     )
-    tool = RecoverContext(runtime)
+    tool = BatchRecoverContext(runtime)
 
-    result = asyncio.run(tool.execute(RecoverContextParams(context_id=output_id)))
+    result = asyncio.run(tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id}])))
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
 
     assert not result.is_error
-    assert result.output.endswith("first session retained output")
+    assert recovered["content"] == "first session retained output"
 
 
-def test_recover_context_reports_missing_after_owner_session_delete(tmp_path):
+def test_batch_recover_context_reports_missing_after_owner_session_delete(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -2037,12 +2177,15 @@ def test_recover_context_reports_missing_after_owner_session_delete(tmp_path):
     runtime.clear_current_session_id()
     runtime.start_session("test")
     assert runtime.delete_session(session_id)
-    tool = RecoverContext(runtime)
+    tool = BatchRecoverContext(runtime)
 
-    result = asyncio.run(tool.execute(RecoverContextParams(context_id=output_id)))
+    result = asyncio.run(tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id}])))
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
 
-    assert result.is_error
-    assert "recoverable context not found" in result.output
+    assert not result.is_error
+    assert recovered["status"] == "not_found"
+    assert recovered["error"] == "recoverable context not found"
 
 
 def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(tmp_path):

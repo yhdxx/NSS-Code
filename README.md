@@ -170,7 +170,7 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
 - 热区达到模型窗口 30% 时，仅注入提示，不自动提交。
 - 热区达到 40% 时，Runtime 创建强制 pending 提交，并保留最近若干轮作为新热区。
 - pending 提交不会在 assistant/tool 调用链中途改变消息结构，而是在 `on_turn_completed` 确认当前回合完整后生效。
-- 提交后创建新的活动阶段，旧阶段工具输出转为 metadata；需要原文时仍可通过 `RecoverContext` 恢复。
+- 提交后创建新的活动阶段，旧阶段工具输出转为 metadata；需要原文时仍可通过 `BatchRecoverContext` 恢复。
 
 阶段状态持久化在 `context_epochs` 表中。旧数据库首次恢复会话时，以最后一个完整用户轮次作为活动阶段，避免突然把整个长会话重新放回 RAW 上下文。
 
@@ -203,7 +203,7 @@ LRFU（Least Recently / Frequently Used）是一种融合了 LRU（最近最少�
 - `tool_name`：工具名称
 - `content_length` / `omitted_chars`：原始输出和省略片段的体积统计
 - `preview`：首尾预览文本
-- `recover`：恢复指引文本，要求模型通过 `RecoverContext` 和精确 `context_id` 按偏移量分段读取原文
+- `recover`：恢复指引文本，要求模型通过 `BatchRecoverContext` 和精确 `context_id` 按偏移量分段读取原文
 
 引用对象同时记录 `reproducible`，但无论是否可重复执行，已持久化的原始输出都可以通过精确 `context_id` 分段恢复。
 
@@ -224,13 +224,13 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 ```
 
 - **WORKING**：当前轮刚创建，尚未进入持久化索引
-- **EXTERNAL**：已持久化到 SQLite，可通过 `RecoverContext` 恢复，占用存储空间
+- **EXTERNAL**：已持久化到 SQLite，可通过 `BatchRecoverContext` 恢复，占用存储空间
 - **ARCHIVED**：已归档，元数据仍可搜索但原文可能已被清理
 - **DELETED**：已彻底删除
 
 `WorkingContext` 管理当前轮的活跃对象池，支持添加、逐出、归档和清空操作。当对象从 WORKING 迁移到 EXTERNAL 时，同时写入 `recoverable_contexts` 表（存储完整对象）和 `session_tool_outputs` 表（存储原始输出）。
 
-**恢复接口**：模型通过 `RecoverContext(context_id, offset, limit)` 工具按需获取被指针化的输出内容。恢复时无需加载全文，可以通过 offset 和 limit 参数分段读取，进一步节省上下文。系统保留 `GetStoredToolOutput` 作为旧提示兼容别名，但模型可见的新引用只推荐 `RecoverContext`；`SearchRecoverableContext` 用于在没有精确 `context_id` 时按关键词搜索可恢复对象。恢复工具只用于当前工作上下文中不可见的历史/虚拟化证据；如果工具结果或事实已经在当前对话中可见，模型应直接基于可见内容回答，不能再调用恢复工具。`context_id` 必须来自可见的恢复引用或搜索结果，禁止根据工具名、参数、offset 或记忆猜测 ID。
+**恢复接口**：模型通过 `BatchRecoverContext(items=[{context_id, offset, limit}])` 工具按需获取被指针化的输出内容。恢复时无需加载全文，可以通过 offset 和 limit 参数分段读取，进一步节省上下文。系统保留 `SearchRecoverableContext` 用于在没有精确 `context_id` 时按关键词搜索可恢复对象。恢复工具只用于当前工作上下文中不可见的历史/虚拟化证据；如果工具结果或事实已经在当前对话中可见，模型应直接基于可见内容回答，不能再调用恢复工具。`context_id` 必须来自可见的恢复引用或搜索结果，禁止根据工具名、参数、offset 或记忆猜测 ID。
 
 ### 增量检查点与会话快照（`checkpoint.py`）
 
@@ -273,7 +273,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 **第三步：模型的主动摘要能力**。模型可以通过 `SummarizeCurrentTurnMessage` 工具主动将当前轮中某条过大的工具输出替换为紧凑摘要。摘要存储在 `_current_turn_summaries` 字典中，由 `apply_current_summaries` 在渲染时注入。这一机制让模型拥有了"自主管理上下文预算"的能力——当它发现某条输出虽然有用但细节不必全部保留时，可以主动压缩它，为后续推理腾出空间。
 
-**关键特征**：当前轮的工具输出即使被预览化，明确的 `context_id` 仍然出现在上下文窗口中，模型可以调用 `RecoverContext` 恢复所需部分，无需额外搜索。若原始工具输出或足够回答的预览已经可见，则模型不应调用恢复工具。
+**关键特征**：当前轮的工具输出即使被预览化，明确的 `context_id` 仍然出现在上下文窗口中，模型可以调用 `BatchRecoverContext` 恢复所需部分，无需额外搜索。若原始工具输出或足够回答的预览已经可见，则模型不应调用恢复工具。
 
 #### 冷历史的处理策略
 
@@ -291,7 +291,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 - **模型 answer**：以 `{"role": "assistant", "content": turn.assistant_content}` 形式完整原文注入。模型的文本回复是推理链条的节点，丢失任何一个节点都会导致推理断裂。
 
-- **工具输出**：保留原 assistant tool_calls / tool 拓扑，但历史 tool content 不再包含原始输出，只替换为简短 JSON 元数据：工具名、显式 `intent` 或启发式 `call_summary`、`context_id`、长度统计、错误状态和恢复方式。只有当这些元数据不足以回答且确实需要原始细节时，才通过 `RecoverContext(context_id, offset, limit)` 按需从 SQLite 存储中恢复。
+- **工具输出**：保留原 assistant tool_calls / tool 拓扑，但历史 tool content 不再包含原始输出，只替换为简短 JSON 元数据：工具名、显式 `intent` 或启发式 `call_summary`、`context_id`、长度统计、错误状态和恢复方式。只有当这些元数据不足以回答且确实需要原始细节时，才通过 `BatchRecoverContext(items=[{context_id, offset, limit}])` 按需从 SQLite 存储中恢复。
 
 #### 两种策略的设计逻辑
 

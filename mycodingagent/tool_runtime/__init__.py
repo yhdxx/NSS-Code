@@ -72,10 +72,9 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     from mycodingagent.tool_runtime.glob import Glob  # 导入当前模块需要的依赖。
     from mycodingagent.tool_runtime.grep import Grep  # 导入当前模块需要的依赖。
     from mycodingagent.tool_runtime.memory_lookup import (
+        BatchRecoverContext,
         CommitWorkingContext,
         GetRecentConversationTurns,
-        GetStoredToolOutput,
-        RecoverContext,
         RestoreSession,
         SearchRecoverableContext,
         SearchSessionHistory,
@@ -119,8 +118,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     registry.register(Grep(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
     if memory_runtime is not None:
         registry.register(CommitWorkingContext(memory_runtime))
-        registry.register(GetStoredToolOutput(memory_runtime))
-        registry.register(RecoverContext(memory_runtime))
+        registry.register(BatchRecoverContext(memory_runtime))
         registry.register(RestoreSession(memory_runtime))
         registry.register(SearchRecoverableContext(memory_runtime))
         registry.register(SearchSessionHistory(memory_runtime))

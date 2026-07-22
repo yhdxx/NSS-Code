@@ -710,7 +710,7 @@ class MemoryRuntime:
                 return (
                     "[Recoverable context stored]\n"
                     f"context_id: {context_id}\n"
-                    "recover: Use RecoverContext with this exact context_id and offset/limit."
+                    "recover: Use BatchRecoverContext with this exact context_id in items."
                 )
             return (
                 "[Recoverable context stored]\n"
@@ -718,7 +718,7 @@ class MemoryRuntime:
                 f"tool_name: {ref.tool_name}\n"
                 f"original_length: {ref.original_length}\n"
                 f"preview:\n{preview or ref.preview}\n"
-                "recover: Use RecoverContext with this exact context_id and offset/limit."
+                "recover: Use BatchRecoverContext with this exact context_id in items."
             )
         budget_text = ("\n" + snapshot.to_prompt_text()) if snapshot is not None else ""
         return (
@@ -731,7 +731,7 @@ class MemoryRuntime:
             f"content_length: {metadata.content_length}"
             f"{budget_text}\n"
             f"preview:\n{preview}\n"
-            "recover: Use RecoverContext with this exact context_id and offset/limit."
+            "recover: Use BatchRecoverContext with this exact context_id in items."
         )
     def prepare_messages_for_model(
         self,
@@ -1219,7 +1219,7 @@ def raw_tool_output_preview_text(
         f"tool_name: {tool_name}\n"
         f"content_length: {len(output)}\n"
         f"omitted_chars: {omitted_chars}\n"
-        "recover: Use RecoverContext with this exact context_id and offset/limit for non-preview content.\n"
+        "recover: Use BatchRecoverContext with this exact context_id in items for non-preview content.\n"
         f"preview:\n{preview}"
     )
 
@@ -1313,7 +1313,7 @@ def format_budget_notice(snapshot: PromptBudgetSnapshot) -> str:
         "CONTEXT BUDGET NOTICE",
         f"usage_ratio: {snapshot.usage_ratio:.2%}",
         f"stage: {snapshot.stage.value}",
-        "Historical tool outputs may be virtualized as metadata. Use RecoverContext only when an exact context_id is visible; otherwise use SearchRecoverableContext first.",
+        "Historical tool outputs may be virtualized as metadata. Use BatchRecoverContext only with visible exact context_id values. Use SearchRecoverableContext to locate missing context_id values.",
     ]
     if snapshot.usage_ratio >= CONFIG.memory.budget_working_ratio:
         lines.extend(
@@ -1460,7 +1460,7 @@ def historical_tool_content(metadata: ToolInvocationMetadata | None, message: di
         payload = {
             "tool_name": metadata.tool_name,
             **tool_summary_prompt_dict(metadata),
-            "recover": "Skill output is not recoverable with RecoverContext. Use listed reference_paths when present.",
+            "recover": "Skill output is not recoverable with BatchRecoverContext. Use listed reference_paths when present.",
         }
         if metadata.reference_paths:
             payload["reference_paths"] = metadata.reference_paths[:8]
@@ -1480,7 +1480,7 @@ def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any
     }
     if metadata.context_id:
         payload["context_id"] = metadata.context_id
-        payload["recover"] = "Use RecoverContext with this exact context_id and offset/limit."
+        payload["recover"] = "Use BatchRecoverContext with this exact context_id in items."
     else:
         payload["recover"] = "Use SearchSessionHistory with query terms from tool_name and call_summary."
     return payload
@@ -1526,12 +1526,11 @@ def apply_current_summaries(
             lines.append(f"source_message_id: {replacement.get('message_id')}")
         if replacement.get("focus"):
             lines.append(f"focus: {replacement.get('focus')}")
-        lines.extend(
-            [
-                f"summary:\n{replacement.get('summary')}",
-                "recover: Use RecoverContext with context_id when present; otherwise use the source_message_id only as a current-turn reference.",
-            ]
-        )
+        lines.append(f"summary:\n{replacement.get('summary')}")
+        if replacement.get("context_id"):
+            lines.append("recover: Use BatchRecoverContext with this exact context_id in items.")
+        else:
+            lines.append("recovery: no stored context_id; source_message_id is only a visible current-turn reference.")
         copied["content"] = "\n".join(lines)
         result.append(copied)
     return result

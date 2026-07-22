@@ -60,7 +60,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   ├── 模型调用 CommitWorkingContext -> pending_commit
   └── 热区 >= 40% -> Runtime 自动 pending_commit
 完整回合结束 -> 提交旧阶段 -> 创建新阶段 -> 旧工具输出 metadata 虚拟化
-需要精确信息 -> SearchRecoverableContext / RecoverContext
+需要精确信息 -> SearchRecoverableContext / BatchRecoverContext
 ```
 
 ## 5. 函数级模块索引
@@ -1205,7 +1205,7 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
   - `enable_all(self) -> None`（L35）；调用：`self._disabled.clear`
   - `list_tools(self) -> list[Tool]`（L39）；调用：`list`, `self._tools.values`
   - `get_all_schemas(self, protocol: str = 'anthropic') -> list[dict[str, Any]]`（L43）；调用：`schemas.append`, `self._tools.items`, `tool.get_schema`
-- 函数 `create_default_registry(file_cache: FileCache | None = None, file_history: Any = None, file_state_cache: Any = None, workspace_tracker: Any = None, memory_runtime: MemoryRuntime | None = None) -> ToolRegistry`（L61）：执行模块级业务逻辑。；调用：`AskUser`, `Bash`, `CommitWorkingContext`, `EditFile`, `FileStateCache`, `GetRecentConversationTurns`, `GetStoredToolOutput`, `Glob`, `Grep`, `ReadFile`, `RecoverContext`, `RestoreSession`, `SearchRecoverableContext`, `SearchSessionHistory`, `SummarizeCurrentTurnMessage`, `ToolRegistry`, `WriteFile`, `get_sandbox_root`, `registry.register`
+- 函数 `create_default_registry(file_cache: FileCache | None = None, file_history: Any = None, file_state_cache: Any = None, workspace_tracker: Any = None, memory_runtime: MemoryRuntime | None = None) -> ToolRegistry`（L61）：执行模块级业务逻辑。；调用：`AskUser`, `Bash`, `BatchRecoverContext`, `CommitWorkingContext`, `EditFile`, `FileStateCache`, `GetRecentConversationTurns`, `Glob`, `Grep`, `ReadFile`, `RestoreSession`, `SearchRecoverableContext`, `SearchSessionHistory`, `SummarizeCurrentTurnMessage`, `ToolRegistry`, `WriteFile`, `get_sandbox_root`, `registry.register`
 
 ### `mycodingagent/tool_runtime/ask_user.py`
 
@@ -1362,14 +1362,11 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 模块：`mycodingagent.tool_runtime.memory_lookup`
 - 职责：工具契约、注册表以及文件、Shell、记忆、MCP、Skill 工具适配器。
 - 内部依赖：`mycodingagent.memory`, `mycodingagent.memory.contracts`, `mycodingagent.tool_runtime.base`
-- 类 `class GetStoredToolOutputParams(BaseModel)`（L16）：封装该模块的状态与行为。
-- 类 `class GetStoredToolOutput(Tool)`（L22）：封装该模块的状态与行为。
-  - `__init__(self, memory_runtime: MemoryRuntime) -> None`（L35）；调用：无
-  - `async execute(self, params: GetStoredToolOutputParams) -> ToolResult`（L38）；调用：`recover_context_output`, `self._memory_runtime.drain`
-- 类 `class RecoverContextParams(BaseModel)`（L48）：封装该模块的状态与行为。
-- 类 `class RecoverContext(Tool)`（L54）：封装该模块的状态与行为。
-  - `__init__(self, memory_runtime: MemoryRuntime) -> None`（L67）；调用：无
-  - `async execute(self, params: RecoverContextParams) -> ToolResult`（L70）；调用：`recover_context_output`, `self._memory_runtime.drain`
+- 类 `class BatchRecoverContextItem(BaseModel)`（L20）：单个恢复请求项，包含 `context_id`、`offset` 和 `limit`。
+- 类 `class BatchRecoverContextParams(BaseModel)`（L26）：批量恢复请求，包含 `items` 数组。
+- 类 `class BatchRecoverContext(Tool)`（L37）：按精确 `context_id` 批量恢复可恢复上下文。
+  - `__init__(self, memory_runtime: MemoryRuntime) -> None`（L48）；调用：无
+  - `async execute(self, params: BatchRecoverContextParams) -> ToolResult`（L51）；调用：`recover_context_payload`, `json.dumps`, `self._memory_runtime.drain`
 - 类 `class SearchRecoverableContextParams(BaseModel)`（L80）：封装该模块的状态与行为。
 - 类 `class SearchRecoverableContext(Tool)`（L85）：封装该模块的状态与行为。
   - `__init__(self, memory_runtime: MemoryRuntime) -> None`（L98）；调用：无

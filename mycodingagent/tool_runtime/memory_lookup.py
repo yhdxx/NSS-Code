@@ -13,67 +13,100 @@ if TYPE_CHECKING:
     from mycodingagent.memory import MemoryRuntime
 
 
-class GetStoredToolOutputParams(BaseModel):
-    output_id: str = Field(description="Exact legacy output_id from older visible metadata. Prefer RecoverContext when a context_id is visible. Do not guess.")
-    offset: int = Field(default=0, ge=0, description="Character offset to start reading from.")
-    limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return.")
+MAX_BATCH_RECOVER_ITEMS = 8
+MAX_BATCH_RECOVER_TOTAL_CHARS = 60000
 
 
-class GetStoredToolOutput(Tool):
-    name = "GetStoredToolOutput"
-    description = (
-        "Legacy compatibility alias for RecoverContext. Prefer RecoverContext with exact context_id "
-        "for historical or virtualized evidence. Use this only when older visible metadata explicitly "
-        "names an output_id and no context_id is available. Do not use this for tool outputs already "
-        "visible in the current conversation, and do not invent ids from tool names, offsets, or arguments."
-    )
-    params_model = GetStoredToolOutputParams
-    category = "read"
-    is_concurrency_safe = True
-
-    def __init__(self, memory_runtime: MemoryRuntime) -> None:
-        self._memory_runtime = memory_runtime
-
-    async def execute(self, params: GetStoredToolOutputParams) -> ToolResult:
-        await self._memory_runtime.drain()
-        return recover_context_output(
-            self._memory_runtime,
-            context_id=params.output_id,
-            offset=params.offset,
-            limit=params.limit,
-        )
-
-
-class RecoverContextParams(BaseModel):
+class BatchRecoverContextItem(BaseModel):
     context_id: str = Field(description="Exact context_id from a visible recoverable reference or search result. Do not guess.")
     offset: int = Field(default=0, ge=0, description="Character offset to start reading from.")
-    limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return.")
+    limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return for this context_id.")
 
 
-class RecoverContext(Tool):
-    name = "RecoverContext"
-    description = (
-        "Recover full or partial stored context by exact context_id. Use only when your answer "
-        "depends on historical or virtualized evidence that is not currently visible and the "
-        "context_id is explicitly available. Do not use this for evidence already shown in the "
-        "current conversation. Prefer partial recovery with offset and limit when the prompt "
-        "budget is tight."
+class BatchRecoverContextParams(BaseModel):
+    items: list[BatchRecoverContextItem] = Field(
+        description=(
+            "Stored context chunks to recover. Submit exact context_id values only. "
+            f"The first {MAX_BATCH_RECOVER_ITEMS} items are processed per call; split larger batches into follow-up calls."
+        ),
+        min_length=1,
+        max_length=50,
     )
-    params_model = RecoverContextParams
+
+
+class BatchRecoverContext(Tool):
+    name = "BatchRecoverContext"
+    description = (
+        "Recover one or more stored context chunks by exact context_id. Use this only when "
+        "your answer depends on historical or virtualized evidence that is not currently visible "
+        "and each context_id is explicitly available from visible metadata or search results. "
+        "Provide all known relevant context_id values in items. Do not use this for evidence "
+        "already shown in the current conversation."
+    )
+    params_model = BatchRecoverContextParams
     category = "read"
     is_concurrency_safe = True
 
     def __init__(self, memory_runtime: MemoryRuntime) -> None:
         self._memory_runtime = memory_runtime
 
-    async def execute(self, params: RecoverContextParams) -> ToolResult:
+    async def execute(self, params: BatchRecoverContextParams) -> ToolResult:
         await self._memory_runtime.drain()
-        return recover_context_output(
-            self._memory_runtime,
-            context_id=params.context_id,
-            offset=params.offset,
-            limit=params.limit,
-        )
+        processed_items = params.items[:MAX_BATCH_RECOVER_ITEMS]
+        total_returned_chars = 0
+        results: list[dict[str, Any]] = []
+        for index, item in enumerate(processed_items):
+            remaining_chars = MAX_BATCH_RECOVER_TOTAL_CHARS - total_returned_chars
+            if remaining_chars <= 0:
+                results.append(
+                    {
+                        "index": index,
+                        "context_id": item.context_id,
+                        "status": "skipped_batch_limit",
+                        "error": "batch total returned character limit reached",
+                    }
+                )
+                continue
+            effective_limit = min(item.limit, remaining_chars)
+            payload = recover_context_payload(
+                self._memory_runtime,
+                context_id=item.context_id,
+                offset=item.offset,
+                limit=effective_limit,
+                requested_limit=item.limit,
+            )
+            payload["index"] = index
+            if payload.get("status") == "ok":
+                total_returned_chars += int(payload.get("returned_chars", 0))
+                if effective_limit < item.limit and payload.get("has_more"):
+                    payload["status"] = "truncated_by_batch_limit"
+            results.append(payload)
+
+        errors = [
+            {
+                "index": result.get("index"),
+                "context_id": result.get("context_id"),
+                "status": result.get("status"),
+                "error": result.get("error", ""),
+            }
+            for result in results
+            if result.get("status") not in {"ok", "truncated_by_batch_limit"}
+        ]
+        output = {
+            "request_count": len(params.items),
+            "processed_count": len(processed_items),
+            "skipped_count": max(0, len(params.items) - len(processed_items)),
+            "result_count": len(results),
+            "total_returned_chars": total_returned_chars,
+            "results": results,
+            "errors": errors,
+        }
+        if len(params.items) > len(processed_items):
+            output["limit_notice"] = (
+                f"Only the first {MAX_BATCH_RECOVER_ITEMS} items were processed. "
+                "Submit another BatchRecoverContext call for remaining context_ids if still needed."
+            )
+        return ToolResult(output=json.dumps(output, ensure_ascii=False, indent=2), is_error=False)
 
 
 class SearchRecoverableContextParams(BaseModel):
@@ -123,8 +156,8 @@ class SearchSessionHistory(Tool):
     description = (
         "Search prior conversation turns. Use this only when a needed prior user request, "
         "assistant decision, constraint, or reference is not visible enough in the current working "
-        "context. This does not return full historical tool outputs; use RecoverContext only when "
-        "an exact stored output is hidden and a concrete context_id is available."
+        "context. This does not return full historical tool outputs; use BatchRecoverContext only "
+        "when exact stored output context_id values are visible."
     )
     params_model = SearchSessionHistoryParams
     category = "read"
@@ -368,7 +401,7 @@ class RestoreSession(Tool):
             "snapshot": asdict(snapshot),
             "notice": (
                 "Snapshot restored as temporary working context only; full old session_messages were not restored. "
-                "Use RecoverContext(context_id, offset, limit) for specific stored tool outputs."
+                "Use BatchRecoverContext(items=[{context_id, offset, limit}]) for specific stored tool outputs."
             ),
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
@@ -386,61 +419,78 @@ def message_to_search_text(message: dict[str, Any]) -> str:
     return text
 
 
-def recover_context_output(
+def recover_context_payload(
     memory_runtime: MemoryRuntime,
     *,
     context_id: str,
     offset: int,
     limit: int,
-) -> ToolResult:
+    requested_limit: int | None = None,
+) -> dict[str, Any]:
+    context_id = context_id.strip()
+    if not context_id:
+        return {
+            "context_id": context_id,
+            "status": "invalid_request",
+            "error": "context_id is required",
+        }
     metadata = memory_runtime.get_context_metadata(context_id)
     if metadata is not None:
         partial = memory_runtime.load_partial_context(context_id, offset=offset, limit=limit)
         if partial is None:
-            return ToolResult(output=f"Error: recoverable context not found: {context_id}", is_error=True)
+            return {
+                "context_id": context_id,
+                "status": "not_found",
+                "error": "recoverable context not found",
+            }
         chunk, next_offset = partial
-        header = {
+        start = min(max(0, offset), metadata.content_length)
+        return {
             "context_id": metadata.id,
+            "status": "ok",
             "owner_session_id": metadata.session_id,
             "tool_call_id": metadata.tool_call_id,
             "tool_name": metadata.tool_name,
-            "storage_key": metadata.storage_key,
-            "short_summary": metadata.short_summary,
+            "call_summary": metadata.short_summary,
             "content_type": metadata.content_type.value,
             "content_length": metadata.content_length,
-            "token_count": metadata.token_count,
             "reproducible": metadata.reproducible,
-            "offset": offset,
+            "offset": start,
+            "requested_limit": requested_limit if requested_limit is not None else limit,
             "returned_chars": len(chunk),
             "next_offset": next_offset,
             "has_more": next_offset is not None,
+            "content": chunk,
         }
-        return ToolResult(output=json.dumps(header, ensure_ascii=False, indent=2) + "\n\n" + chunk)
 
     record = memory_runtime.get_tool_output(context_id)
     if record is None:
-        return ToolResult(output=f"Error: recoverable context not found: {context_id}", is_error=True)
+        return {
+            "context_id": context_id,
+            "status": "not_found",
+            "error": "recoverable context not found",
+        }
 
     output = record.output_text
-    start = min(offset, len(output))
+    start = min(max(0, offset), len(output))
     end = min(start + limit, len(output))
     chunk = output[start:end]
     has_more = end < len(output)
-    header = {
-        "output_id": record.output_id,
+    return {
         "context_id": record.output_id,
+        "status": "ok",
         "owner_session_id": record.session_id,
         "tool_call_id": record.tool_call_id,
         "tool_name": record.tool_name,
-        "arguments_json": record.arguments_json,
-        "output_size": record.output_size,
+        "content_length": record.output_size,
         "reproducible": record.reproducible,
         "offset": start,
+        "requested_limit": requested_limit if requested_limit is not None else limit,
         "returned_chars": len(chunk),
         "next_offset": end if has_more else None,
         "has_more": has_more,
+        "content": chunk,
     }
-    return ToolResult(output=json.dumps(header, ensure_ascii=False, indent=2) + "\n\n" + chunk)
 
 
 def truncate_one_line(text: str, *, max_chars: int) -> str:
