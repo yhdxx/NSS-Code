@@ -10,6 +10,8 @@ from multiAgent.tool_policy import schemas_for_role
 from multiAgent.tools import (
     ApprovePlan,
     ApprovePlanParams,
+    DelegateToMultiAgent,
+    DelegateToMultiAgentParams,
     InspectSubAgentWork,
     InspectSubAgentWorkParams,
     SubmitPlan,
@@ -219,3 +221,129 @@ def test_main_result_summary_does_not_include_full_approved_plan(tmp_path):
 
     assert summary["plan_summary"] == "Compact summary"
     assert "approved_plan" not in summary
+
+
+def test_delegate_rejects_low_complexity_without_starting_workflow(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    tool = DelegateToMultiAgent(
+        store=store,
+        registry=ToolRegistry(),
+        api_client=object(),
+        main_messages_provider=lambda: [{"role": "user", "content": "context"}],
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            DelegateToMultiAgentParams(
+                task="small edit",
+                complexity_score=6,
+                reason="Limited multi-file change with clear pattern.",
+            )
+        )
+    )
+
+    payload = json.loads(result.output)
+    assert payload["status"] == "rejected_low_complexity"
+    assert payload["provided_complexity_score"] == 6
+    assert store.list_recent() == []
+
+
+def test_delegate_rejects_blank_reason(tmp_path):
+    tool = DelegateToMultiAgent(
+        store=MultiAgentStore(tmp_path / "multi_agent.sqlite3"),
+        registry=ToolRegistry(),
+        api_client=object(),
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            DelegateToMultiAgentParams(
+                task="complex task",
+                complexity_score=7,
+                reason=" ",
+            )
+        )
+    )
+
+    payload = json.loads(result.output)
+    assert payload["status"] == "error"
+    assert payload["error"] == "missing_reason"
+
+
+def test_delegate_starts_workflow_for_complex_task(tmp_path, monkeypatch):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    captured = {}
+
+    class FakeOrchestrator:
+        def __init__(self, *, store, registry, api_client, memory_runtime=None, model=None):
+            self.store = store
+            captured["registry"] = registry
+            captured["api_client"] = api_client
+
+        async def start(self, *, task, main_messages):
+            captured["task"] = task
+            captured["main_messages"] = main_messages
+            run = MultiAgentRun.create(task=task)
+            run.status = RunStatus.COMPLETED
+            run.plan_summary = "Compact plan"
+            run.test_result = {"status": "approved"}
+            run.review_result = {"status": "approved", "summary": "ok"}
+            self.store.save_run(run)
+            return run
+
+    monkeypatch.setattr("multiAgent.orchestrator.MultiAgentOrchestrator", FakeOrchestrator)
+    tool = DelegateToMultiAgent(
+        store=store,
+        registry=ToolRegistry(),
+        api_client=object(),
+        main_messages_provider=lambda: [{"role": "user", "content": "visible context"}],
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            DelegateToMultiAgentParams(
+                task="cross-module refactor",
+                complexity_score=8,
+                reason="Cross-module behavior change requiring sequencing and review.",
+            )
+        )
+    )
+
+    payload = json.loads(result.output)
+    assert payload["status"] == "completed"
+    assert payload["plan_summary"] == "Compact plan"
+    assert payload["inspect_tool"] == "InspectSubAgentWork"
+    assert "subagent_messages" not in payload
+    assert captured["task"] == "cross-module refactor"
+    assert captured["main_messages"] == [{"role": "user", "content": "visible context"}]
+
+
+def test_subagent_schemas_do_not_include_delegate_tool(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    registry = ToolRegistry()
+    registry.register(
+        DelegateToMultiAgent(
+            store=store,
+            registry=registry,
+            api_client=object(),
+        )
+    )
+
+    for role in AgentRole:
+        names = {schema["name"] for schema in schemas_for_role(role=role, registry=registry, store=store)}
+        assert "DelegateToMultiAgent" not in names
+
+
+def test_main_registry_schema_includes_delegate_tool(tmp_path):
+    registry = ToolRegistry()
+    registry.register(
+        DelegateToMultiAgent(
+            store=MultiAgentStore(tmp_path / "multi_agent.sqlite3"),
+            registry=registry,
+            api_client=object(),
+        )
+    )
+
+    names = {schema["name"] for schema in registry.get_all_schemas("openai")}
+
+    assert "DelegateToMultiAgent" in names

@@ -35,7 +35,7 @@ from mycodingagent.mcp_integration.hooks import CLIApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from multiAgent import MultiAgentStore
-from multiAgent.tools import InspectSubAgentWork
+from multiAgent.tools import DelegateToMultiAgent, InspectSubAgentWork
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
 try:  # 开始可能抛出异常的保护代码块。
@@ -65,6 +65,10 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
             print(f"已清理 {deleted_count} 个超过 {CONFIG.memory.session_ttl_days} 天未访问的会话。", flush=True)
+    # 创建 OpenAI 客户端（复用连接）
+    api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
+    # 对话历史记录，跨轮次保持记忆
+    messages: list[dict] = []  # 保存配置值或中间计算结果。
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
@@ -72,6 +76,16 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     )
     multi_agent_store = MultiAgentStore()
     registry.register(InspectSubAgentWork(multi_agent_store))
+    registry.register(
+        DelegateToMultiAgent(
+            store=multi_agent_store,
+            registry=registry,
+            api_client=api_client,
+            memory_runtime=memory_runtime,
+            model=client.MODEL,
+            main_messages_provider=lambda: messages,
+        )
+    )
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
         skills_root=CONFIG.skills.root,
@@ -140,11 +154,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     tools = client.format_openai_tools(core_tool_schemas)  # 固定核心工具 schema；动态能力推荐进入 Runtime Context。
     command_registry = build_command_registry()
 
-    # 创建 OpenAI 客户端（复用连接）
-    api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
-
-    # 对话历史记录，跨轮次保持记忆
-    messages: list[dict] = []  # 保存配置值或中间计算结果。
     mcp_user_rounds = 0
 
     try:  # 开始可能抛出异常的保护代码块。

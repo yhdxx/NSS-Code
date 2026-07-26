@@ -644,6 +644,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -只有当 SKILL 兜底能力摘要明确覆盖你需要的能力，即你认为有 80% 可能存在你需要的skill，且三次中文 search_tool 都未命中时，才允许调用 Get_all_tool；若不确定摘要是否覆盖，禁止调用 Get_all_tool。
                     -Get_all_tool 主要用于用户询问“有哪些 skill/能力”或上述严格兜底场景；不要为了普通任务随意列出全部 skill。
                     -只有不存在相关 Business Skill、Skill 明显无法完成任务，或 Skill 指令明确要求执行时，才直接调用 Core Tool。
+                    -复杂代码任务（例如非平凡跨文件功能、跨模块重构、迁移、高风险行为变更）可以调用 DelegateToMultiAgent，由 plan、plan_review、execute、test、execute_review 子智能体闭环处理。
+                    -只有当 complexity_score >= 7 时才应调用 DelegateToMultiAgent；单文件小改、代码解释、查找信息、简单测试、简单 bug 修复不要委派。
+                    -调用 DelegateToMultiAgent 时，reason 必须用一句话解释评分依据；如果工具返回 rejected_low_complexity，必须直接处理任务，不要反复调用。
                     -前端页面/组件/Web App/UI/UX 需求优先调用 invoke_skill 且 skill_name=skill_frontend_design；
                      代码 Review 优先调用 invoke_skill 且 skill_name=skill_review；
                      后端面试优先调用 invoke_skill 且 skill_name=skill_backend_interview。

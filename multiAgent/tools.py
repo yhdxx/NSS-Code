@@ -1,7 +1,7 @@
 from __future__ import annotations
 
 import json
-from typing import Any
+from typing import Any, Callable
 
 from pydantic import BaseModel, Field
 
@@ -10,6 +10,94 @@ from mycodingagent.tool_runtime.base import Tool, ToolResult
 from multiAgent.models import AgentRole, RunStatus, StepStatus, executable_steps
 from multiAgent.store import MultiAgentStore
 from multiAgent.validators import validate_failed_steps, validate_plan_payload, validate_step_exists
+
+
+MIN_DELEGATION_COMPLEXITY = 7
+
+
+class DelegateToMultiAgentParams(BaseModel):
+    task: str = Field(description="Complex coding task to delegate to the multi-agent workflow.", min_length=1)
+    complexity_score: int = Field(
+        ge=0,
+        le=10,
+        description=(
+            "Task complexity from 0-10. Runtime rejects values below 7. "
+            "Use 7+ only for non-trivial multi-file or high-risk coding work needing plan, execution, test, and review."
+        ),
+    )
+    reason: str = Field(
+        description="One concise sentence justifying the selected complexity_score.",
+        min_length=1,
+        max_length=500,
+    )
+
+
+class DelegateToMultiAgent(Tool):
+    name = "DelegateToMultiAgent"
+    description = (
+        "Delegate complex coding work to the multi-agent workflow. Runtime rejects complexity_score < 7.\n\n"
+        "complexity_score guide:\n"
+        "0 casual chat/no task.\n"
+        "1 simple answer from visible context.\n"
+        "2 read-only lookup/explain one code area.\n"
+        "3 inspect one area and answer, no edits.\n"
+        "4 trivial single-file edit.\n"
+        "5 single-file bug fix/small feature with one test.\n"
+        "6 limited multi-file change with clear pattern.\n"
+        "7 non-trivial multi-file feature/fix needing plan + tests.\n"
+        "8 cross-module refactor/behavior change needing sequencing + review.\n"
+        "9 architecture/migration/high-risk change needing validation loops.\n"
+        "10 large-scale redesign/critical system change needing independent agents.\n\n"
+        "Use reason to justify the selected score in one concise sentence."
+    )
+    params_model = DelegateToMultiAgentParams
+    category = "command"
+
+    def __init__(
+        self,
+        *,
+        store: MultiAgentStore,
+        registry: Any,
+        api_client: Any,
+        memory_runtime: Any | None = None,
+        model: str = "",
+        main_messages_provider: Callable[[], list[dict[str, Any]]] | None = None,
+    ) -> None:
+        self._store = store
+        self._registry = registry
+        self._api_client = api_client
+        self._memory_runtime = memory_runtime
+        self._model = model
+        self._main_messages_provider = main_messages_provider or (lambda: [])
+
+    async def execute(self, params: DelegateToMultiAgentParams) -> ToolResult:
+        task = params.task.strip()
+        reason = params.reason.strip()
+        if not task:
+            return _json_error("missing_task", "task is required")
+        if not reason:
+            return _json_error("missing_reason", "reason is required to justify complexity_score")
+        if params.complexity_score < MIN_DELEGATION_COMPLEXITY:
+            return _json(
+                {
+                    "status": "rejected_low_complexity",
+                    "minimum_complexity_score": MIN_DELEGATION_COMPLEXITY,
+                    "provided_complexity_score": params.complexity_score,
+                    "message": "Handle this task directly instead of delegating to multi-agent workflow.",
+                }
+            )
+
+        from multiAgent.orchestrator import MultiAgentOrchestrator
+
+        orchestrator = MultiAgentOrchestrator(
+            store=self._store,
+            registry=self._registry,
+            api_client=self._api_client,
+            memory_runtime=self._memory_runtime,
+            model=self._model,
+        )
+        run = await orchestrator.start(task=task, main_messages=list(self._main_messages_provider()))
+        return _json(_delegate_result_payload(run))
 
 
 class SubmitPlanParams(BaseModel):
@@ -341,6 +429,20 @@ def _render_agent_work(run: Any, role: AgentRole, step_id: str = "") -> str:
     if rendered_messages:
         parts.append("Messages:\n" + "\n".join(rendered_messages))
     return "\n\n".join(parts)
+
+
+def _delegate_result_payload(run: Any) -> dict[str, Any]:
+    payload = {
+        "status": str(run.status.value if hasattr(run.status, "value") else run.status),
+        "run_id": run.run_id,
+        "plan_summary": run.plan_summary,
+        "test_result": run.test_result,
+        "execute_review_result": run.review_result,
+        "inspect_tool": "InspectSubAgentWork",
+    }
+    if str(payload["status"]) == RunStatus.FAILED.value:
+        payload["error"] = run.error
+    return payload
 
 
 def _json(payload: dict[str, Any]) -> ToolResult:
