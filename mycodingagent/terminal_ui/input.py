@@ -22,6 +22,8 @@ ANSI_ESCAPE_RE = re.compile(r"\x1b\[[0-?]*[ -/]*[@-~]")
 READLINE_MARKER_RE = re.compile(r"[\x01\x02]")
 MIN_RENDER_COLUMNS = 1
 SAFE_COLUMN_MARGIN = 1
+BRACKETED_PASTE_START = "[200~"
+BRACKETED_PASTE_END = "\x1b[201~"
 
 
 def read_user_prompt(prompt: str, command_registry: CommandRegistry | None = None) -> str:
@@ -36,7 +38,8 @@ class InteractivePrompt:
         self.prompt = strip_readline_markers(prompt)
         self.prompt_width = visible_width(self.prompt)
         self.command_registry = command_registry
-        self.buffer = ""
+        self._buffer = ""
+        self.cursor_index = 0
         self.rendered_screen_lines: list[str] = []
         self.cursor_row = 0
         self.cursor_column = 0
@@ -44,37 +47,54 @@ class InteractivePrompt:
         self._input_fd: int | None = None
         self._decoder = codecs.getincrementaldecoder(sys.stdin.encoding or "utf-8")()
 
+    @property
+    def buffer(self) -> str:
+        return self._buffer
+
+    @buffer.setter
+    def buffer(self, value: str) -> None:
+        self._set_buffer(value, len(value))
+
     def read(self) -> str:
         self._input_fd = sys.stdin.fileno()
         old_settings = termios.tcgetattr(sys.stdin)
         try:
             tty.setraw(self._input_fd)
+            self._enable_bracketed_paste()
             self._render()
             while True:
                 char = self._read_char()
                 if not char:
                     continue
-                if char in {"\r", "\n"}:
+                if char == "\n":
+                    self._insert_text("\n")
+                    continue
+                if char == "\r":
                     if self.accept_selected_suggestion():
                         continue
                     return self._finish()
                 if char == "\x03":
                     raise KeyboardInterrupt
+                if char == "\x01":
+                    self._move_cursor_to_line_start()
+                    continue
+                if char == "\x05":
+                    self._move_cursor_to_line_end()
+                    continue
                 if char == "\x04":
                     if not self.buffer:
                         raise EOFError
                     continue
                 if char in {"\x7f", "\b"}:
-                    self.buffer = self.buffer[:-1]
-                    self._render()
+                    self._backspace()
                     continue
                 if char == "\x1b":
                     self._handle_escape_sequence()
                     continue
                 if char.isprintable() or char == "\t":
-                    self.buffer += char
-                    self._render()
+                    self._insert_text(char)
         finally:
+            self._disable_bracketed_paste()
             termios.tcsetattr(sys.stdin, termios.TCSADRAIN, old_settings)
             self._input_fd = None
             self._decoder.reset()
@@ -82,7 +102,7 @@ class InteractivePrompt:
     def _finish(self) -> str:
         final_text = self.buffer
         self._clear_render()
-        sys.stdout.write(self.prompt + final_text + "\r\n")
+        sys.stdout.write(format_prompt_echo(self.prompt, self.prompt_width, final_text) + "\r\n")
         sys.stdout.flush()
         return final_text
 
@@ -95,9 +115,15 @@ class InteractivePrompt:
         suggestions = self._suggestions()
         self.selected_suggestion_index = clamp_selection(self.selected_suggestion_index, len(suggestions))
         hint_lines = self._hint_lines(suggestions)
-        lines = [self.prompt + self.buffer, *hint_lines]
         render_columns = safe_render_columns()
-        screen = render_screen(lines, render_columns)
+        screen = render_prompt_buffer(
+            self.prompt,
+            self.prompt_width,
+            self.buffer,
+            self.cursor_index,
+            hint_lines,
+            render_columns,
+        )
         self._clear_render()
         sys.stdout.write("\r\n".join(screen.lines))
         sys.stdout.flush()
@@ -151,11 +177,35 @@ class InteractivePrompt:
 
     def _handle_escape_sequence(self) -> None:
         sequence = self._read_escape_sequence()
+        if sequence == BRACKETED_PASTE_START:
+            self._insert_text(normalize_pasted_text(self._read_bracketed_paste()))
+            return
         if sequence in {"[A", "OA"}:
-            self.move_selection(-1)
+            if self._suggestions():
+                self.move_selection(-1)
+            else:
+                self._move_cursor_vertical(-1)
             return
         if sequence in {"[B", "OB"}:
-            self.move_selection(1)
+            if self._suggestions():
+                self.move_selection(1)
+            else:
+                self._move_cursor_vertical(1)
+            return
+        if sequence in {"[D", "OD"}:
+            self._move_cursor(-1)
+            return
+        if sequence in {"[C", "OC"}:
+            self._move_cursor(1)
+            return
+        if sequence in {"[H", "OH", "[1~", "[7~"}:
+            self._move_cursor_to_line_start()
+            return
+        if sequence in {"[F", "OF", "[4~", "[8~"}:
+            self._move_cursor_to_line_end()
+            return
+        if sequence == "[3~":
+            self._delete_at_cursor()
             return
         if sequence:
             self._drain_escape_sequence()
@@ -165,10 +215,25 @@ class InteractivePrompt:
         first = self._read_pending_char(timeout=ESC_SEQUENCE_TIMEOUT_SECONDS)
         if first not in {"[", "O"}:
             return first
-        second = self._read_pending_char(timeout=ESC_SEQUENCE_TIMEOUT_SECONDS)
-        if not second:
-            return first
-        return first + second
+        sequence = first
+        for _ in range(12):
+            char = self._read_pending_char(timeout=ESC_SEQUENCE_TIMEOUT_SECONDS)
+            if not char:
+                return sequence
+            sequence += char
+            if is_escape_sequence_final_char(char):
+                return sequence
+        return sequence
+
+    def _read_bracketed_paste(self) -> str:
+        text = ""
+        while True:
+            char = self._read_char()
+            if not char:
+                continue
+            text += char
+            if text.endswith(BRACKETED_PASTE_END):
+                return text[: -len(BRACKETED_PASTE_END)]
 
     def _read_pending_char(self, *, timeout: float = 0.0) -> str:
         input_source = self._input_fd if self._input_fd is not None else sys.stdin
@@ -207,10 +272,76 @@ class InteractivePrompt:
         completed = spec.name + " "
         if self.buffer == completed:
             return False
-        self.buffer = completed
+        self._set_buffer(completed, len(completed))
         self.selected_suggestion_index = 0
         self._render()
         return True
+
+    def _set_buffer(self, value: str, cursor_index: int | None = None) -> None:
+        self._buffer = value
+        if cursor_index is None:
+            cursor_index = self.cursor_index
+        self.cursor_index = clamp_cursor_index(cursor_index, len(self._buffer))
+
+    def _insert_text(self, text: str) -> None:
+        if not text:
+            return
+        cursor = self.cursor_index
+        self._set_buffer(self.buffer[:cursor] + text + self.buffer[cursor:], cursor + len(text))
+        self.selected_suggestion_index = 0
+        self._render()
+
+    def _backspace(self) -> None:
+        if self.cursor_index <= 0:
+            return
+        cursor = self.cursor_index
+        self._set_buffer(self.buffer[: cursor - 1] + self.buffer[cursor:], cursor - 1)
+        self._render()
+
+    def _delete_at_cursor(self) -> None:
+        if self.cursor_index >= len(self.buffer):
+            return
+        cursor = self.cursor_index
+        self._set_buffer(self.buffer[:cursor] + self.buffer[cursor + 1 :], cursor)
+        self._render()
+
+    def _move_cursor(self, delta: int) -> None:
+        new_index = clamp_cursor_index(self.cursor_index + delta, len(self.buffer))
+        if new_index == self.cursor_index:
+            return
+        self.cursor_index = new_index
+        self._render()
+
+    def _move_cursor_to_line_start(self) -> None:
+        line_start = self.buffer.rfind("\n", 0, self.cursor_index) + 1
+        if line_start == self.cursor_index:
+            return
+        self.cursor_index = line_start
+        self._render()
+
+    def _move_cursor_to_line_end(self) -> None:
+        line_end = self.buffer.find("\n", self.cursor_index)
+        if line_end < 0:
+            line_end = len(self.buffer)
+        if line_end == self.cursor_index:
+            return
+        self.cursor_index = line_end
+        self._render()
+
+    def _move_cursor_vertical(self, delta: int) -> None:
+        target_index = vertical_cursor_index(self.buffer, self.cursor_index, delta)
+        if target_index == self.cursor_index:
+            return
+        self.cursor_index = target_index
+        self._render()
+
+    def _enable_bracketed_paste(self) -> None:
+        sys.stdout.write("\033[?2004h")
+        sys.stdout.flush()
+
+    def _disable_bracketed_paste(self) -> None:
+        sys.stdout.write("\033[?2004l")
+        sys.stdout.flush()
 
 
 def format_command_suggestion(spec: CommandSpec, *, selected: bool = False) -> str:
@@ -274,6 +405,14 @@ def clamp_selection(index: int, suggestion_count: int) -> int:
     return index
 
 
+def clamp_cursor_index(index: int, buffer_length: int) -> int:
+    if index < 0:
+        return 0
+    if index > buffer_length:
+        return buffer_length
+    return index
+
+
 def strip_readline_markers(text: str) -> str:
     return READLINE_MARKER_RE.sub("", text)
 
@@ -318,7 +457,29 @@ def read_escape_sequence_from_fd(
     ready, _, _ = select.select([input_fd], [], [], timeout)
     if not ready:
         return first
-    return first + read_char_from_fd(input_fd, decoder)
+    sequence = first
+    for _ in range(12):
+        char = read_char_from_fd(input_fd, decoder)
+        sequence += char
+        if is_escape_sequence_final_char(char):
+            return sequence
+        ready, _, _ = select.select([input_fd], [], [], timeout)
+        if not ready:
+            return sequence
+    return sequence
+
+
+def is_escape_sequence_final_char(char: str) -> bool:
+    return len(char) == 1 and 0x40 <= ord(char) <= 0x7E
+
+
+def normalize_pasted_text(text: str) -> str:
+    return text.replace("\r\n", "\n").replace("\r", "\n")
+
+
+def format_prompt_echo(prompt: str, prompt_width: int, text: str) -> str:
+    continuation = " " * prompt_width
+    return prompt + normalize_pasted_text(text).replace("\n", "\r\n" + continuation)
 
 
 def safe_render_columns() -> int:
@@ -343,6 +504,72 @@ def render_screen(lines: list[str], columns: int) -> RenderedScreen:
             cursor_column = visible_width(wrapped[-1]) if wrapped else 0
         screen_lines.extend(wrapped)
     return RenderedScreen(lines=screen_lines, cursor_row=cursor_row, cursor_column=cursor_column)
+
+
+def render_prompt_buffer(
+    prompt: str,
+    prompt_width: int,
+    buffer: str,
+    cursor_index: int,
+    hint_lines: list[str],
+    columns: int,
+) -> RenderedScreen:
+    buffer_lines = buffer.split("\n")
+    cursor_index = clamp_cursor_index(cursor_index, len(buffer))
+    before_cursor = buffer[:cursor_index]
+    cursor_buffer_line = before_cursor.count("\n")
+    cursor_line_prefix = before_cursor.rsplit("\n", 1)[-1]
+    screen_lines: list[str] = []
+    cursor_row = 0
+    cursor_column = 0
+
+    for index, line in enumerate(buffer_lines):
+        prefix = prompt if index == 0 else " " * prompt_width
+        if index == cursor_buffer_line:
+            cursor_wrapped = hard_wrap_ansi(prefix + cursor_line_prefix, columns)
+            cursor_row = len(screen_lines) + max(0, len(cursor_wrapped) - 1)
+            cursor_column = visible_width(cursor_wrapped[-1]) if cursor_wrapped else 0
+        screen_lines.extend(hard_wrap_ansi(prefix + line, columns))
+
+    for hint_line in hint_lines:
+        screen_lines.extend(hard_wrap_ansi(hint_line, columns))
+
+    return RenderedScreen(lines=screen_lines, cursor_row=cursor_row, cursor_column=cursor_column)
+
+
+def vertical_cursor_index(buffer: str, cursor_index: int, delta: int) -> int:
+    if delta == 0 or "\n" not in buffer:
+        return cursor_index
+    lines = buffer.split("\n")
+    cursor_index = clamp_cursor_index(cursor_index, len(buffer))
+    line_index, column_offset = cursor_line_and_offset(buffer, cursor_index)
+    target_line_index = line_index + delta
+    if target_line_index < 0 or target_line_index >= len(lines):
+        return cursor_index
+    desired_column = visible_width(lines[line_index][:column_offset])
+    target_offset = char_index_for_visible_column(lines[target_line_index], desired_column)
+    return absolute_index_for_line_offset(lines, target_line_index, target_offset)
+
+
+def cursor_line_and_offset(buffer: str, cursor_index: int) -> tuple[int, int]:
+    before_cursor = buffer[:cursor_index]
+    line_index = before_cursor.count("\n")
+    line_start = before_cursor.rfind("\n") + 1
+    return line_index, cursor_index - line_start
+
+
+def char_index_for_visible_column(text: str, column: int) -> int:
+    width = 0
+    for index, char in enumerate(text):
+        char_width = visible_width(char)
+        if width + char_width > column:
+            return index
+        width += char_width
+    return len(text)
+
+
+def absolute_index_for_line_offset(lines: list[str], line_index: int, offset: int) -> int:
+    return sum(len(line) + 1 for line in lines[:line_index]) + offset
 
 
 def hard_wrap_ansi(text: str, columns: int) -> list[str]:

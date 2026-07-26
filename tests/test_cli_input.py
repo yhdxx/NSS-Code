@@ -6,14 +6,18 @@ import os
 from mycodingagent.terminal_ui.input import (
     InteractivePrompt,
     clamp_selection,
+    format_prompt_echo,
     format_command_argument_usage_panel,
     format_command_suggestion,
     format_command_usage_panel,
     hard_wrap_ansi,
+    normalize_pasted_text,
     read_escape_sequence_from_fd,
+    render_prompt_buffer,
     render_screen,
     safe_render_columns,
     strip_readline_markers,
+    vertical_cursor_index,
     visible_width,
 )
 from mycodingagent.commands import CommandRegistry, CommandResult, CommandSpec
@@ -285,6 +289,72 @@ def test_escape_sequence_helper_reads_arrow_suffix_from_fd():
         os.close(write_fd)
 
 
+def test_escape_sequence_helper_reads_full_tilde_sequence_from_fd():
+    decoder = codecs.getincrementaldecoder("utf-8")()
+    read_fd, write_fd = os.pipe()
+    try:
+        os.write(write_fd, b"[200~")
+
+        assert read_escape_sequence_from_fd(read_fd, decoder, timeout=0.01) == "[200~"
+    finally:
+        os.close(read_fd)
+        os.close(write_fd)
+
+
+def test_left_right_home_end_and_delete_edit_buffer(monkeypatch):
+    prompt = InteractivePrompt(prompt="User: ", command_registry=None)
+    monkeypatch.setattr(prompt, "_render", lambda: None)
+    prompt.buffer = "abcd"
+    sequences = iter(["[D", "[D", "[3~", "[H", "[C", "[F"])
+    monkeypatch.setattr(prompt, "_read_escape_sequence", lambda: next(sequences))
+
+    prompt._handle_escape_sequence()
+    prompt._handle_escape_sequence()
+    assert prompt.cursor_index == 2
+
+    prompt._handle_escape_sequence()
+    assert prompt.buffer == "abd"
+    assert prompt.cursor_index == 2
+
+    prompt._handle_escape_sequence()
+    assert prompt.cursor_index == 0
+
+    prompt._handle_escape_sequence()
+    assert prompt.cursor_index == 1
+
+    prompt._handle_escape_sequence()
+    assert prompt.cursor_index == len(prompt.buffer)
+
+
+def test_insert_and_backspace_apply_at_cursor(monkeypatch):
+    prompt = InteractivePrompt(prompt="User: ", command_registry=None)
+    monkeypatch.setattr(prompt, "_render", lambda: None)
+    prompt.buffer = "acd"
+    prompt.cursor_index = 1
+
+    prompt._insert_text("b")
+    assert prompt.buffer == "abcd"
+    assert prompt.cursor_index == 2
+
+    prompt._backspace()
+    assert prompt.buffer == "acd"
+    assert prompt.cursor_index == 1
+
+
+def test_bracketed_paste_preserves_multiline_text(monkeypatch):
+    prompt = InteractivePrompt(prompt="User: ", command_registry=None)
+    monkeypatch.setattr(prompt, "_render", lambda: None)
+    prompt.buffer = "prefix "
+    chars = iter("line1\r\nline2\x1b[201~")
+    monkeypatch.setattr(prompt, "_read_escape_sequence", lambda: "[200~")
+    monkeypatch.setattr(prompt, "_read_char", lambda: next(chars))
+
+    prompt._handle_escape_sequence()
+
+    assert prompt.buffer == "prefix line1\nline2"
+    assert prompt.cursor_index == len(prompt.buffer)
+
+
 def test_render_clears_relative_lines_and_returns_cursor_to_input(monkeypatch):
     registry = CommandRegistry()
     registry.register(CommandSpec(name="/resume", description="恢复历史会话", handler=noop_handler))
@@ -343,6 +413,29 @@ def test_render_screen_tracks_input_cursor_after_hard_wrap(monkeypatch):
     assert screen.lines == ["User: 123", "45", "hint"]
     assert screen.cursor_row == 1
     assert screen.cursor_column == 2
+
+
+def test_render_prompt_buffer_tracks_mid_buffer_cursor_and_multiline():
+    screen = render_prompt_buffer("User: ", 6, "first\nsecond", len("first\nse"), [], 80)
+
+    assert screen.lines == ["User: first", "      second"]
+    assert screen.cursor_row == 1
+    assert screen.cursor_column == len("      se")
+
+
+def test_vertical_cursor_index_moves_between_buffer_lines():
+    buffer = "abcd\nxy\n12345"
+
+    assert vertical_cursor_index(buffer, 3, 1) == len("abcd\nxy")
+    assert vertical_cursor_index(buffer, len("abcd\nxy"), -1) == 2
+
+
+def test_format_prompt_echo_uses_crlf_and_continuation_indent():
+    assert format_prompt_echo("User: ", 6, "one\ntwo") == "User: one\r\n      two"
+
+
+def test_normalize_pasted_text_converts_line_endings():
+    assert normalize_pasted_text("a\r\nb\rc") == "a\nb\nc"
 
 
 def test_render_uses_crlf_in_raw_mode(monkeypatch):
