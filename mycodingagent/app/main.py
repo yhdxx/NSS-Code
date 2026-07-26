@@ -21,6 +21,7 @@ from mycodingagent.terminal_ui.input import read_user_prompt
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration import CONFIG  # 统一读取项目运行配置。
+from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.memory import MemoryRuntime
 from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的 SKILL，并按需动态暴露给模型。
 from mycodingagent.tool_runtime import create_default_registry  # 导入当前模块需要的依赖。
@@ -86,6 +87,16 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             main_messages_provider=lambda: messages,
         )
     )
+    long_term_memory_runtime = None
+    if memory_runtime is not None and CONFIG.long_term_memory.enabled:
+        long_term_memory_runtime = LongTermMemoryRuntime(
+            memory_runtime=memory_runtime,
+            registry=registry,
+            api_client=api_client,
+            user_id=CONFIG.skills.user_id,
+            storage_model=CONFIG.long_term_memory.storage_model or client.MODEL,
+            query_model=CONFIG.long_term_memory.query_model or client.MODEL,
+        )
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
         skills_root=CONFIG.skills.root,
@@ -153,6 +164,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     core_tool_schemas = base_tool_schemas + skill_management_tool_schemas + discovery_tool_schemas
     tools = client.format_openai_tools(core_tool_schemas)  # 固定核心工具 schema；动态能力推荐进入 Runtime Context。
     command_registry = build_command_registry()
+    if long_term_memory_runtime is not None:
+        long_term_memory_runtime.schedule_startup_backfill()
 
     mcp_user_rounds = 0
 
@@ -188,6 +201,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     registry=registry,
                     api_client=api_client,
                     multi_agent_store=multi_agent_store,
+                    long_term_memory_runtime=long_term_memory_runtime,
                 ),
             )
             if command_result.handled:
@@ -220,6 +234,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 workspace_tracker=workspace_tracker,
                 memory_runtime=memory_runtime,
                 capability_router=capability_router,
+                long_term_memory_runtime=long_term_memory_runtime,
             )  # 结束上方的多行结构。
             if memory_runtime is not None:
                 rollover = await memory_runtime.on_turn_completed(
@@ -238,6 +253,16 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 if mcp_user_rounds % CONFIG.mcp.reconnect_server_step == 0:
                     mcp_manager.schedule_reconnect_unavailable_servers()
     finally:  # 执行无论是否异常都需要收尾的逻辑。
+        if long_term_memory_runtime is not None and memory_runtime is not None:
+            session_id = memory_runtime.get_current_session_id()
+            if session_id and messages:
+                memory_runtime.save_messages_now(session_id, messages)
+                await memory_runtime.drain()
+                await long_term_memory_runtime.extract_session_now(
+                    session_id,
+                    timeout_seconds=CONFIG.long_term_memory.graceful_exit_extract_timeout_seconds,
+                )
+            await long_term_memory_runtime.close()
         if memory_runtime is not None:
             await memory_runtime.close()
         if mcp_manager is not None:

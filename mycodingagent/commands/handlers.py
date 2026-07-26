@@ -15,6 +15,15 @@ from multiAgent import MultiAgentStore
 from multiAgent.context import run_summary_for_main_context
 
 
+def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
+    if not session_id or context.long_term_memory_runtime is None:
+        return
+    try:
+        context.long_term_memory_runtime.mark_session_pending(session_id)
+    except Exception as exc:  # pragma: no cover - memory extraction must not break commands
+        print(f"长期记忆待抽取标记失败：{exc}", flush=True)
+
+
 def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
     registry.register(
@@ -207,6 +216,8 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         skill_runtime=context.skill_runtime,
         file_state_cache=context.file_state_cache,
     )
+    await memory_runtime.drain()
+    mark_long_term_memory_pending(context, current_session_id)
     include_all = arguments.strip() == "--all"
     resume_session_id = "" if include_all else arguments.strip()
     if not resume_session_id:
@@ -260,6 +271,7 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         file_state_cache=context.file_state_cache,
     )
     await memory_runtime.drain()
+    mark_long_term_memory_pending(context, current_session_id)
 
     include_all = argument == "--all"
     source_session_id = "" if include_all else argument
@@ -326,6 +338,7 @@ async def handle_clear_command(context: CommandContext, arguments: str) -> Comma
         file_state_cache=context.file_state_cache,
     )
     await memory_runtime.drain()
+    mark_long_term_memory_pending(context, saved_session_id)
     memory_runtime.clear_current_session_id()
     new_session_id = memory_runtime.start_session(client.MODEL)
     await memory_runtime.drain()

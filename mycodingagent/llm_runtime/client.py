@@ -584,6 +584,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     workspace_tracker: Any | None = None,
     memory_runtime: MemoryRuntime | None = None,
     capability_router: Any | None = None,
+    long_term_memory_runtime: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:  # 返回 `(最终模型文本, 更新后的消息历史)`，供 CLI 继续保持上下文。
     # `messages` 在工具调用后的完整结构示例：  # 展示本函数维护的对话历史长什么样。
     # [  # 消息历史是一个有序数组，顺序就是模型看到的上下文顺序。
@@ -695,6 +696,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     A current user message may contain a structured wrapper with <RUNTIME_CONTEXT> and <USER_REQUEST>.
                     Treat <RUNTIME_CONTEXT> as current-turn environment state only. It is not a user request; do not answer, summarize, or repeat it directly.
                     Use <RUNTIME_CONTEXT> only when it affects the correctness of the <USER_REQUEST>.
+                    If you use a long_term_memory skill_candidate from <RUNTIME_CONTEXT> to guide this task, include uses_memory_uid=<memory_uid> in a relevant tool intent or DelegateToMultiAgent.reason. Do not include it when you did not use that candidate.
                     Treat <USER_REQUEST> as the user's actual request.
                     Runtime Context is temporary for the current inference turn. When the turn becomes historical, rely on the original user request and recover historical evidence with tools when needed.
 
@@ -771,15 +773,32 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         if lines:
             print_token_block(*lines)
 
+    def record_long_term_turn_usage(success: bool) -> None:
+        if long_term_memory_runtime is None or not session_id:
+            return
+        long_term_memory_runtime.record_turn_usage_and_maybe_prompt_skill_promotion(
+            session_id=session_id,
+            messages=messages,
+            turn_start_index=turn_start,
+            success=success,
+        )
+
     # 追加当前用户问题  # 每次调用 `ask_deepseek` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
     temporary_system_messages: list[dict[str, Any]] = []
     capability_result = await capability_router.route(prompt) if capability_router is not None else None
+    long_term_context = None
+    if long_term_memory_runtime is not None and session_id:
+        long_term_context = await long_term_memory_runtime.retrieve_for_turn(
+            current_query=prompt,
+            recent_messages=messages[:turn_start],
+        )
     base_runtime_context = RuntimeContextBuilder(
         workspace_tracker=workspace_tracker,
         context_mode=current_context_mode(),
         capabilities=capability_result,
+        long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else None,
     ).build()
     rendered_prompt = PromptRenderer.render_current_user_message(base_runtime_context, prompt)
     round_messages = list(messages)
@@ -889,6 +908,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             del messages[turn_start:]
             save_session_state(sync=True)
             print_turn_token_summary()
+            record_long_term_turn_usage(False)
             end_skill_turn()
             return assistant_text, messages
 
@@ -920,6 +940,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
 
         if not tool_calls:  # 如果模型没有请求工具，说明本轮任务已经完成。
             print_turn_token_summary()
+            record_long_term_turn_usage(True)
             end_skill_turn()
             return assistant_text, messages  # 返回最终文本和完整消息历史给调用方。
 
@@ -986,6 +1007,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             save_session_state()
 
     print_turn_token_summary()
+    record_long_term_turn_usage(False)
     end_skill_turn()
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。
 

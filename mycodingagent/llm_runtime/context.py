@@ -32,6 +32,7 @@ class RuntimeContext:
     context_budget: ContextBudgetState | None = None
     capabilities: dict[str, Any] | None = None
     task_snapshot: str | None = None
+    long_term_memory: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"context_mode": self.context_mode}
@@ -44,6 +45,8 @@ class RuntimeContext:
             payload["capabilities"] = self.capabilities
         if self.task_snapshot:
             payload["task_snapshot"] = self.task_snapshot
+        if self.long_term_memory:
+            payload["long_term_memory"] = self.long_term_memory
         return payload
 
 
@@ -79,12 +82,14 @@ class RuntimeContextBuilder:
         context_budget: ContextBudgetState | None = None,
         capabilities: Any | None = None,
         task_snapshot: str | None = None,
+        long_term_memory: dict[str, Any] | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
         self.context_budget = context_budget
         self.capabilities = capabilities
         self.task_snapshot = task_snapshot
+        self.long_term_memory = long_term_memory
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
@@ -93,6 +98,7 @@ class RuntimeContextBuilder:
             context_budget=self.context_budget,
             capabilities=self._capability_payload(),
             task_snapshot=self.task_snapshot or None,
+            long_term_memory=self.long_term_memory,
         )
 
     def _workspace_changes(self) -> WorkspaceChanges:

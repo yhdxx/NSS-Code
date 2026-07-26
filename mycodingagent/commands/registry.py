@@ -14,6 +14,7 @@ class CommandContext:
     registry: Any = None
     api_client: Any = None
     multi_agent_store: Any = None
+    long_term_memory_runtime: Any = None
 
 
 @dataclass

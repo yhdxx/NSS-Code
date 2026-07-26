@@ -149,6 +149,43 @@ class MultiAgentConfig:
 
 
 @dataclass(frozen=True)
+class LongTermMemoryConfig:
+    enabled: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED", True))
+    storage_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL", ""))
+    query_model: str = field(default_factory=lambda: os.getenv("MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL", ""))
+    query_recent_turns: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_RECENT_TURNS", 5))
+    )
+    max_memories: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_MAX_MEMORIES", 8))
+    )
+    max_workflow_candidates: int = field(
+        default_factory=lambda: max(0, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_MAX_WORKFLOW_CANDIDATES", 3))
+    )
+    max_skill_candidates: int = field(
+        default_factory=lambda: max(0, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_MAX_SKILL_CANDIDATES", 2))
+    )
+    skill_candidate_success_threshold: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_SKILL_SUCCESS_THRESHOLD", 2))
+    )
+    skill_candidate_prompt_cooldown_days: int = field(
+        default_factory=lambda: max(0, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_SKILL_PROMPT_COOLDOWN_DAYS", 7))
+    )
+    lock_ttl_seconds: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_LOCK_TTL_SECONDS", 600))
+    )
+    graceful_exit_extract_timeout_seconds: int = field(
+        default_factory=lambda: max(
+            1,
+            _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_GRACEFUL_EXIT_TIMEOUT_SECONDS", 30),
+        )
+    )
+    startup_backfill_enabled: bool = field(
+        default_factory=lambda: _env_bool("MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED", True)
+    )
+
+
+@dataclass(frozen=True)
 class MemoryConfig:
     enabled: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_MEMORY_ENABLED", True))
     output_context_compression: bool = field(default_factory=lambda: _env_bool("OUTPUT_CONTEXT_COMPRESSION", True))
@@ -425,6 +462,7 @@ class AppConfig:
     api: ApiConfig = field(default_factory=ApiConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
     multi_agent: MultiAgentConfig = field(default_factory=MultiAgentConfig)
+    long_term_memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)
