@@ -14,21 +14,10 @@ from multiAgent.store import MultiAgentStore
 from multiAgent.validators import validate_failed_steps, validate_plan_payload, validate_step_exists
 
 
-MIN_DELEGATION_COMPLEXITY = 7
-
-
 class DelegateToMultiAgentParams(BaseModel):
-    task: str = Field(description="Complex coding task to delegate to the multi-agent workflow.", min_length=1)
-    complexity_score: int = Field(
-        ge=0,
-        le=10,
-        description=(
-            "Task complexity from 0-10. Runtime rejects values below 7. "
-            "Use 7+ only for non-trivial multi-file or high-risk coding work needing plan, execution, test, and review."
-        ),
-    )
+    task: str = Field(description="Engineering task to delegate to the multi-agent workflow.", min_length=1)
     reason: str = Field(
-        description="One concise sentence justifying the selected complexity_score.",
+        description="One concise audit reason explaining why this task requires multi-agent execution.",
         min_length=1,
         max_length=500,
     )
@@ -37,20 +26,16 @@ class DelegateToMultiAgentParams(BaseModel):
 class DelegateToMultiAgent(Tool):
     name = "DelegateToMultiAgent"
     description = (
-        "Delegate complex coding work to the multi-agent workflow. Runtime rejects complexity_score < 7.\n\n"
-        "complexity_score guide:\n"
-        "0 casual chat/no task.\n"
-        "1 simple answer from visible context.\n"
-        "2 read-only lookup/explain one code area.\n"
-        "3 inspect one area and answer, no edits.\n"
-        "4 trivial single-file edit.\n"
-        "5 single-file bug fix/small feature with one test.\n"
-        "6 limited multi-file change with clear pattern.\n"
-        "7 non-trivial multi-file feature/fix needing plan + tests.\n"
-        "8 cross-module refactor/behavior change needing sequencing + review.\n"
-        "9 architecture/migration/high-risk change needing validation loops.\n"
-        "10 large-scale redesign/critical system change needing independent agents.\n\n"
-        "Use reason to justify the selected score in one concise sentence."
+        "Delegate non-local engineering work to the multi-agent workflow.\n\n"
+        "Handle work directly only when all are true: the task is local, clear, low-risk, "
+        "does not cross module/state/interface/data/security/runtime/build boundaries, "
+        "does not reorganize multiple project parts, does not require independent plan/review/test "
+        "separation, and failure would be easy to detect and fix locally.\n\n"
+        "Call this tool when any are true: the task needs planning before execution, spans multiple "
+        "related parts, changes or reorganizes project structure, must preserve behavior while changing "
+        "implementation, needs test/review loops, affects broad behavior or high-risk state, or the "
+        "impact is not clearly local.\n\n"
+        "The reason field is required for auditability."
     )
     params_model = DelegateToMultiAgentParams
     category = "command"
@@ -72,22 +57,22 @@ class DelegateToMultiAgent(Tool):
         self._model = model
         self._main_messages_provider = main_messages_provider or (lambda: [])
 
+    def get_schema(self) -> dict[str, Any]:
+        schema = self.params_model.model_json_schema()
+        schema.pop("title", None)
+        return {
+            "name": self.name,
+            "description": self.description,
+            "input_schema": schema,
+        }
+
     async def execute(self, params: DelegateToMultiAgentParams) -> ToolResult:
         task = params.task.strip()
         reason = params.reason.strip()
         if not task:
             return _json_error("missing_task", "task is required")
         if not reason:
-            return _json_error("missing_reason", "reason is required to justify complexity_score")
-        if params.complexity_score < MIN_DELEGATION_COMPLEXITY:
-            return _json(
-                {
-                    "status": "rejected_low_complexity",
-                    "minimum_complexity_score": MIN_DELEGATION_COMPLEXITY,
-                    "provided_complexity_score": params.complexity_score,
-                    "message": "Handle this task directly instead of delegating to multi-agent workflow.",
-                }
-            )
+            return _json_error("missing_reason", "reason is required for delegation auditability")
 
         from multiAgent.orchestrator import MultiAgentOrchestrator
 

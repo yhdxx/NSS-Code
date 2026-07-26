@@ -277,29 +277,22 @@ def test_main_result_summary_does_not_include_full_approved_plan(tmp_path):
     assert "approved_plan" not in summary
 
 
-def test_delegate_rejects_low_complexity_without_starting_workflow(tmp_path):
-    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+def test_delegate_schema_uses_binary_routing_inputs(tmp_path):
     tool = DelegateToMultiAgent(
-        store=store,
+        store=MultiAgentStore(tmp_path / "multi_agent.sqlite3"),
         registry=ToolRegistry(),
         api_client=object(),
-        main_messages_provider=lambda: [{"role": "user", "content": "context"}],
     )
 
-    result = asyncio.run(
-        tool.execute(
-            DelegateToMultiAgentParams(
-                task="small edit",
-                complexity_score=6,
-                reason="Limited multi-file change with clear pattern.",
-            )
-        )
-    )
+    schema = tool.get_schema()["input_schema"]
+    description = tool.get_schema()["description"]
 
-    payload = json.loads(result.output)
-    assert payload["status"] == "rejected_low_complexity"
-    assert payload["provided_complexity_score"] == 6
-    assert store.list_recent() == []
+    assert set(schema["properties"]) == {"task", "reason"}
+    assert schema["required"] == ["task", "reason"]
+    assert "complexity_score" not in json.dumps(schema)
+    assert "Delegate non-local engineering work" in description
+    assert "Handle work directly only when all are true" in description
+    assert "complexity_score" not in description
 
 
 def test_delegate_rejects_blank_reason(tmp_path):
@@ -313,7 +306,6 @@ def test_delegate_rejects_blank_reason(tmp_path):
         tool.execute(
             DelegateToMultiAgentParams(
                 task="complex task",
-                complexity_score=7,
                 reason=" ",
             )
         )
@@ -357,7 +349,6 @@ def test_delegate_starts_workflow_for_complex_task(tmp_path, monkeypatch):
         tool.execute(
             DelegateToMultiAgentParams(
                 task="cross-module refactor",
-                complexity_score=8,
                 reason="Cross-module behavior change requiring sequencing and review.",
             )
         )
