@@ -11,7 +11,7 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - `mycodingagent/app/`：应用启动、依赖组装、资源生命周期和交互主循环。
 - `mycodingagent/configuration/`：环境变量和应用配置。
 - `mycodingagent/llm_runtime/`：模型请求、流式响应、工具循环、Prompt 上下文和 Token 统计。
-- `mycodingagent/terminal_ui/`：终端输入、历史展示、会话选择与确认。
+- `mycodingagent/terminal_ui/`：终端输入、raw TTY 行编辑、多行粘贴、历史展示、会话选择与确认。
 - `mycodingagent/commands/`：命令注册和 `/resume`、`/fork`、`/clear`、`/delete` 处理器。
 - `mycodingagent/workspace/`：工作区身份和文件缓存。
 - `mycodingagent/tool_runtime/`：工具契约、注册表及文件、Shell、记忆、MCP、Skill 工具适配器。
@@ -19,6 +19,7 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - `mycodingagent/capability_discovery/`：基于抽象 Skill/MCP 能力源的统一推荐。
 - `mycodingagent/mcp_integration/`：MCP 配置、连接、发现、执行和审批。
 - `mycodingagent/skill_runtime/`：Skill 发现、索引、检索、路由和缓存；`skills/` 仅保存插件资产。
+- `multiAgent/`：多智能体编排模块，提供主智能体委托、子智能体上下文、工具权限隔离、步骤门控和运行持久化。
 
 ---
 
@@ -57,6 +58,62 @@ MCP 配置采用多层 JSON：
 当模型缺少用户账号、用户名、仓库范围等无法从工具可靠确定的信息时，可以调用 `ask_user` 询问终端用户。`ask_user` 参数为 `query`、可选 `choice` 和 `intent`：`choice` 为空时只展示问题；`choice` 非空时展示 `query` 加换行后的选项文本，并把用户输入原样作为工具结果返回模型。
 
 当前实现已用 GitHub MCP server 做过真实 stdio discovery 验证：在临时配置中通过 `npx -y @modelcontextprotocol/server-github` 启动 server，可成功返回 26 个 GitHub tool summary。由于本地环境没有 `GITHUB_PERSONAL_ACCESS_TOKEN` / `GITHUB_TOKEN` / `GH_TOKEN`，该验证只覆盖 discovery，不覆盖真实 GitHub API 写入调用；真实 MCP execution 路径由测试中的 FastMCP stdio server 覆盖。
+
+---
+
+## 多智能体模块设计
+
+多智能体模块用于处理非局部工程任务。主智能体直接回答或修改的前提是任务范围清晰、局部、低风险，并且不跨模块、状态、接口、数据、安全、运行时或构建边界。只要任务需要先规划再执行、涉及多个相关部分、改变或重组项目结构、要求保持行为兼容、需要测试/审查循环、影响范围不清楚，主智能体必须在代码修改前调用 `DelegateToMultiAgent`。
+
+### 主智能体入口
+
+`DelegateToMultiAgent` 是主智能体可见的委托工具，参数只有 `task` 和 `reason`。`task` 描述要交给多智能体的工程任务；`reason` 是一句审计原因，说明为什么该任务满足委托条件。工具返回精简结果：`status`、`run_id`、`plan_summary`、`test_result`、`execute_review_result` 和 `inspect_tool=InspectSubAgentWork`。主智能体默认只看到这些最终结果，不把所有子智能体工具调用直接塞回主上下文，避免污染主智能体窗口。
+
+`InspectSubAgentWork` 是主智能体按需查看子智能体完整工作的只读工具，参数包括 `run_id`、`agent`、可选 `step_id`、`offset` 和 `limit`。它读取持久化的子智能体消息，分页返回 inspection 内容；`has_more_inspection_content` 只表示检查结果还有下一页，不表示模型上下文被截断。
+
+### 工作流
+
+多智能体按照固定状态机运行：
+
+```text
+PLANNING
+  -> plan 调用 SubmitPlan 提交结构化计划
+PLAN_REVIEW
+  -> plan_review 调用 ApprovePlan 或 RejectPlan
+EXECUTING
+  -> execute 按 approved_plan 的叶子步骤顺序执行，每步完成后调用 SubmitSubAgentStep
+TESTING
+  -> test 调用 ApproveTest 或 ReportTestFailure
+EXECUTE_REVIEW
+  -> execute_review 调用 ApproveExecution 或 RejectExecution
+COMPLETED / FAILED
+```
+
+`RejectPlan`、`ReportTestFailure` 和 `RejectExecution` 不只是改变状态，还会写入 `feedback_events`。当目标子智能体下一次恢复运行时，Runtime 会把这些拒绝/失败反馈模拟为上一轮工具调用结果插入其上下文，实现续接式修正，而不是丢弃上一次子智能体上下文重跑。
+
+### 子智能体职责与工具权限
+
+每个子智能体有独立系统提示词，位于 `multiAgent/prompts/{role}/SYSTEM.md`：
+
+| 子智能体 | 职责 | 工具权限 |
+|---|---|---|
+| `plan` | 理解任务和近期主对话，调用 `SubmitPlan` 提交结构化计划 | 只读工具 + `SubmitPlan` |
+| `plan_review` | 审查计划的覆盖、顺序、安全性和可测试性 | 只读工具 + `ApprovePlan` / `RejectPlan` |
+| `execute` | 只依据 approved_plan 执行当前步骤 | 读写工具 + Bash + `SubmitSubAgentStep` |
+| `test` | 根据验收标准验证执行结果 | 只读工具 + Bash + `ApproveTest` / `ReportTestFailure` |
+| `execute_review` | 审查实现质量、完整性、可维护性和剩余风险 | 只读工具 + Bash + `ApproveExecution` / `RejectExecution` |
+
+`execute` 子智能体有额外步骤门控：所有普通工具调用都会被 schema 注入 `step_id`，且必须等于当前 `current_step_id`。如果 step_id 缺失或不匹配，Runtime 拒绝该工具调用。这样即使会话中断，下次恢复也能根据 `step_submissions` 和 `current_step_id` 继续执行，避免步骤跳跃或重复提交。
+
+### 上下文与输出控制
+
+子智能体上下文由 `multiAgent/context.py` 生成。`plan` 能看到任务和最近主对话文本，保证"上一轮让制定计划、下一轮让执行计划"这类场景不会丢失关键要求；`execute` 不直接使用用户原始请求，它只接收 approved_plan、当前步骤、已完成步骤、测试/审查反馈和轮次预算，防止重新解释需求。`test` 和 `execute_review` 只看 approved_plan、步骤提交摘要、execute 最终回答及必要结果。
+
+子智能体普通工具输出沿用主运行时的大输出策略：输出全文先保存到 MemoryRuntime，短输出直接返回，超过 `raw_tool_output_preview_chars` 的输出返回首尾预览和 `context_id` 恢复方式。没有 MemoryRuntime 时退化为 500 字符头部 + 500 字符尾部预览。多智能体 run 自身保存在 `multi_agent.sqlite3` 的 `multi_agent_runs` 表中，字段 `payload` 包含计划、状态、步骤提交、子智能体消息、最终回答、反馈事件、轮次统计和错误信息。
+
+### 反重复读取策略
+
+多智能体提示词和审查规则明确约束大型单文件拆分、迁移、模块抽取类任务：应优先"读一次、批量生成、批量验证"，避免每个叶子步骤反复 `ReadFile` / `Grep` 同一个大文件。`plan` 提示词要求这类任务合并为更可靠的批处理步骤；`plan_review` 会拒绝按模块逐步重复读取大文件的计划；`execute` 提示词要求在大文件抽取/重构中优先使用 Bash/Python 批处理脚本并输出精简验证证据。
 
 ---
 
@@ -329,13 +386,13 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 ### 入口模块（`__main__.py`）
 
-启动时首先清理代理环境变量以避免干扰 API 连接，随后打印 ASCII 艺术欢迎界面，检查并确保 Docker 沙箱镜像可用。然后依次初始化文件状态缓存、工作区变更追踪器、记忆运行时、核心工具注册表和 Skill 运行时，并打印 Skill 索引同步报告。
+启动时首先清理代理环境变量以避免干扰 API 连接，随后打印 ASCII 艺术欢迎界面，检查并确保 Docker 沙箱镜像可用。然后依次初始化文件状态缓存、工作区变更追踪器、记忆运行时、核心工具注册表、多智能体运行存储和 Skill 运行时，并打印 Skill 索引同步报告。多智能体启动时会注册 `InspectSubAgentWork` 和 `DelegateToMultiAgent`；后者持有工具注册表、API 客户端、记忆运行时和主消息读取器，用于在需要时启动子智能体编排。
 
-主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。输入首先经过命令系统匹配；普通输入统一进入模型交互循环。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、MCP、Skill 文件监听、工作区变更追踪和 API 连接。
+主循环中读取用户输入，支持输入 `exit` 退出、空输入跳过、Ctrl+C/D 安全退出。交互式终端下输入由自定义 raw TTY 输入器处理，支持光标移动、行内编辑和带换行文本粘贴；非交互式终端退化为普通 `input()`。输入首先经过命令系统匹配；普通输入统一进入模型交互循环。每轮对话结束后触发记忆模块的会话保存和检查点评估。退出时依次关闭记忆运行时、MCP、Skill 文件监听、工作区变更追踪和 API 连接。
 
 ### 配置模块（`mycodingagent/configuration/settings.py`）
 
-将所有配置抽象为不可变数据类，按功能域划分为八个子配置：`ApiConfig`（API 密钥、基础地址、模型名）、`ClientConfig`（工具循环上限、输出截断长度、`DEBUG`/`MYCODINGAGENT_DEBUG` 调试开关，以及 `STEP_TOKEN` / `ROUND_TOKEN` / `CONVERSATION_TOKEN` 终端 token 输出开关）、`MemoryConfig`（上下文预算比例、会话过期天数、检查点参数）、`SandboxConfig`（沙箱根目录、跳过目录）、`DockerConfig`（镜像名、资源限制、超时）、`SkillConfig`（Skill 根目录、检索参数、路由权重、LRFU 缓存参数）、`EmbeddingConfig`（BGE 模型、向量维度）和 `MilvusConfig`（连接参数、索引类型、RRF 融合参数）。所有配置值均支持通过环境变量覆盖，在模块加载时生成全局单例 `CONFIG`。
+将所有配置抽象为不可变数据类，按功能域划分为九个子配置：`ApiConfig`（API 密钥、基础地址、模型名）、`ClientConfig`（工具循环上限、输出截断长度、`DEBUG`/`MYCODINGAGENT_DEBUG` 调试开关，以及 `STEP_TOKEN` / `ROUND_TOKEN` / `CONVERSATION_TOKEN` 终端 token 输出开关）、`MultiAgentConfig`（子智能体单次运行工具轮次上限，默认 `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS=50`）、`MemoryConfig`（上下文预算比例、会话过期天数、检查点参数）、`SandboxConfig`（沙箱根目录、跳过目录）、`DockerConfig`（镜像名、资源限制、超时）、`SkillConfig`（Skill 根目录、检索参数、路由权重、LRFU 缓存参数）、`EmbeddingConfig`（BGE 模型、向量维度）和 `MilvusConfig`（连接参数、索引类型、RRF 融合参数）。所有配置值均支持通过环境变量覆盖，在模块加载时生成全局单例 `CONFIG`。
 
 ### 模型交互模块（`mycodingagent/llm_runtime/client.py`）
 
@@ -361,13 +418,17 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 ### 命令系统（`commands/`）
 
-`CommandRegistry` 提供命令注册、前缀匹配、精确匹配和参数解析。`InteractivePrompt` 在用户输入 `/` 开头的内容时实时弹出候选命令列表，支持方向键选择、Tab 补全和用法面板展示。
+`CommandRegistry` 提供命令注册、前缀匹配、精确匹配和参数解析。`InteractivePrompt` 在用户输入 `/` 开头的内容时实时弹出候选命令列表，支持方向键选择、Enter 接受当前候选和用法面板展示。
 
 内置 `/resume` 命令列出当前工作目录下的历史会话，支持方向键交互选择、跨工作目录恢复确认和会话 ID 直接恢复。恢复后加载完整消息历史、LRFU 快照和文件状态快照。`/delete` 命令支持交互式选择删除、按会话 ID 删除和 `--expired` 批量清理过期会话。
 
 ### 终端交互（`mycodingagent/terminal_ui/input.py`）
 
-`InteractivePrompt` 在非交互式终端（管道/重定向）下退化为普通 `input()` 调用。在交互式终端中，使用 `tty.setraw` 进入原始模式，逐字符处理键盘输入——支持退格删除、Ctrl+C 中断、Ctrl+D 退出、回车提交，以及 ANSI 转义序列的方向键导航。渲染层处理 ANSI 颜色的可见宽度计算（依赖 `wcwidth`）、多行文本自动换行和光标定位。命令建议下拉菜单支持动态刷新而不会造成终端闪烁。
+`InteractivePrompt` 在非交互式终端（管道/重定向）下退化为普通 `input()` 调用。在交互式终端中，使用 `tty.setraw` 进入原始模式并启用 bracketed paste，逐字符处理键盘输入。输入缓冲区维护 `cursor_index`，因此支持左右方向键移动光标、Home/End 跳转到当前行首尾、退格和 Delete 按光标位置删除、Ctrl+C 中断、Ctrl+D 空缓冲退出、回车提交。
+
+粘贴带换行文本时，终端会通过 bracketed paste 序列包裹粘贴内容；输入器将 `\r\n` / `\r` 统一归一化为 `\n` 并作为正文插入，而不会把第一行当作完整用户输入提前提交。多行输入渲染时，首行显示真实提示符，后续行按提示符可见宽度缩进；回显同样使用 CRLF 和等宽缩进，避免 raw mode 下显示错位。命令建议列表仍使用上下方向键选择；当没有可选命令建议时，上下方向键用于在多行输入中垂直移动光标。
+
+渲染层处理 ANSI 颜色的可见宽度计算（依赖 `wcwidth`）、硬换行、提示符宽度缩进和光标定位。命令建议下拉菜单支持动态刷新而不会造成终端闪烁。
 
 ### 会话管理（`session_switch.py`、`conversation_history.py`）
 

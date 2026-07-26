@@ -6,6 +6,7 @@
 
 - 项目：`myCodingAgent`
 - 运行时代码：`mycodingagent/`
+- 多智能体代码：`multiAgent/`
 - 插件资产：`skills/`，仅保存独立 Skill 定义、脚本和资源。
 - 启动入口：根目录 `__main__.py` -> `mycodingagent.app.main.main()`。
 - 架构原则：应用层负责组装；业务模块依赖 Protocol；基础设施适配器依赖具体 SDK、数据库和工具框架。
@@ -27,6 +28,7 @@ mycodingagent/
 ├── terminal_ui/  # 终端输入、历史展示、会话选择与确认交互。
 ├── tool_runtime/  # 工具契约、注册表以及文件、Shell、记忆、MCP、Skill 工具适配器。
 ├── workspace/  # 工作区身份、文件缓存和工作区状态。
+multiAgent/             # 多智能体编排、子智能体上下文、权限隔离和持久化
 skills/                 # 独立 Skill 插件资产，不属于核心运行时包
 tests/                  # 单元、集成和架构边界测试
 ```
@@ -34,11 +36,12 @@ tests/                  # 单元、集成和架构边界测试
 ## 3. 跨模块依赖图
 
 ```text
-app -> capability_discovery, commands, configuration, llm_runtime, mcp_integration, memory, skill_runtime, terminal_ui, tool_runtime
+app -> capability_discovery, commands, configuration, llm_runtime, mcp_integration, memory, multiAgent, skill_runtime, terminal_ui, tool_runtime
 capability_discovery -> relevance
-commands -> configuration, llm_runtime, memory, terminal_ui
+commands -> configuration, llm_runtime, memory, multiAgent, terminal_ui
 llm_runtime -> configuration, memory, tool_runtime
 memory -> configuration, workspace
+multiAgent -> configuration, llm_runtime, tool_runtime
 skill_runtime -> configuration, relevance, tool_runtime
 terminal_ui -> commands, memory
 tool_runtime -> capability_discovery, configuration, mcp_integration, memory, skill_runtime, workspace
@@ -63,6 +66,27 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 需要精确信息 -> SearchRecoverableContext / BatchRecoverContext
 ```
 
+### 4.2 多智能体执行
+
+```text
+主智能体判断任务非局部 / 跨边界 / 需计划审查测试闭环
+  ├── 工具入口：DelegateToMultiAgent(task, reason)
+  └── 显式命令：/multiAgent <task> / status / resume <run_id> / inspect <run_id>
+
+PLANNING -> plan 调用 SubmitPlan
+PLAN_REVIEW -> plan_review 调用 ApprovePlan 或 RejectPlan
+EXECUTING -> execute 按 current_step_id 执行并调用 SubmitSubAgentStep
+TESTING -> test 调用 ApproveTest 或 ReportTestFailure
+EXECUTE_REVIEW -> execute_review 调用 ApproveExecution 或 RejectExecution
+COMPLETED / FAILED -> 主智能体只接收精简 run summary
+需要细节 -> InspectSubAgentWork(run_id, agent, step_id?, offset, limit)
+```
+
+- `plan` 可读取最近主对话，保证跨轮计划/执行场景保留用户要求；`execute` 只以 `approved_plan` 为权威，不重新解释用户原始请求。
+- `tool_policy.py` 按角色隔离工具 schema；`execute` 的普通工具 schema 会强制注入 `step_id`，Runtime 校验其等于当前 `current_step_id`。
+- 子智能体消息、最终回答、步骤提交、反馈事件和轮次预算持久化在 `multi_agent.sqlite3` 的 `multi_agent_runs` 表。
+- 子智能体普通工具输出复用 MemoryRuntime 大输出预览/恢复策略；没有 MemoryRuntime 时退化为首尾 500 字符预览。
+
 ## 5. 函数级模块索引
 
 ### `mycodingagent/__init__.py`
@@ -83,8 +107,145 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 
 - 模块：`mycodingagent.app.main`
 - 职责：应用启动、依赖组装、资源生命周期和交互主循环。
-- 内部依赖：`mycodingagent.capability_discovery`, `mycodingagent.commands`, `mycodingagent.commands.handlers`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.mcp_integration`, `mycodingagent.mcp_integration.hooks`, `mycodingagent.mcp_integration.policy`, `mycodingagent.memory`, `mycodingagent.skill_runtime`, `mycodingagent.terminal_ui.input`, `mycodingagent.tool_runtime`, `mycodingagent.tool_runtime.base`, `mycodingagent.tool_runtime.bash`, `mycodingagent.tool_runtime.file_state_cache`, `mycodingagent.tool_runtime.mcp_discovery`, `mycodingagent.tool_runtime.mcp_execution`, `mycodingagent.tool_runtime.workspace_change_tracker`
-- 函数 `async main() -> None`（L39）：执行模块级业务逻辑。；调用：`AsyncOpenAI`, `CLIApprovalHook`, `CapabilityRouter`, `CommandContext`, `FileStateCache`, `MCPClientManager`, `MCPConfigLoader`, `MCPToolPermissionPolicy`, `MemoryRuntime`, `SkillRuntime`, `WorkspaceChangeTracker`, `api_client.close`, `build_command_registry`, `client.ask_deepseek`, `client.format_openai_tools`, `command_registry.execute`, `create_default_registry`, `ensure_docker_image`, `get_docker_image`, `get_sandbox_root`, `mcp_manager.close`, `mcp_manager.initialize`, `mcp_manager.schedule_reconnect_unavailable_servers`, `mcp_manager.server_count`, `memory_runtime.await_pending_rollover`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.close`, `memory_runtime.on_turn_completed`, `print`, `prompt.strip`, `pyfiglet.figlet_format`, `read_user_prompt`, `register_mcp_discovery_tools`, `register_mcp_execution_tools`, `registry.get_all_schemas`, `schema.get`, `skill_report.summary`, `skill_runtime.close`, `skill_runtime.initialize`, `str`, `workspace_tracker.close`, `workspace_tracker.start`
+- 内部依赖：`multiAgent`, `multiAgent.tools`, `mycodingagent.capability_discovery`, `mycodingagent.commands`, `mycodingagent.commands.handlers`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.mcp_integration`, `mycodingagent.mcp_integration.hooks`, `mycodingagent.mcp_integration.policy`, `mycodingagent.memory`, `mycodingagent.skill_runtime`, `mycodingagent.terminal_ui.input`, `mycodingagent.tool_runtime`, `mycodingagent.tool_runtime.base`, `mycodingagent.tool_runtime.bash`, `mycodingagent.tool_runtime.file_state_cache`, `mycodingagent.tool_runtime.mcp_discovery`, `mycodingagent.tool_runtime.mcp_execution`, `mycodingagent.tool_runtime.workspace_change_tracker`
+- 函数 `async main() -> None`（L47）：执行模块级业务逻辑。；调用：`AsyncOpenAI`, `CLIApprovalHook`, `CapabilityRouter`, `CommandContext`, `DelegateToMultiAgent`, `FileStateCache`, `InspectSubAgentWork`, `MCPClientManager`, `MCPConfigLoader`, `MCPToolPermissionPolicy`, `MemoryRuntime`, `MultiAgentStore`, `SkillRuntime`, `WorkspaceChangeTracker`, `api_client.close`, `build_command_registry`, `client.ask_deepseek`, `client.format_openai_tools`, `command_registry.execute`, `create_default_registry`, `ensure_docker_image`, `get_docker_image`, `get_sandbox_root`, `mcp_manager.close`, `mcp_manager.initialize`, `mcp_manager.schedule_reconnect_unavailable_servers`, `mcp_manager.server_count`, `memory_runtime.await_pending_rollover`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.close`, `memory_runtime.on_turn_completed`, `print`, `prompt.strip`, `pyfiglet.figlet_format`, `read_user_prompt`, `register_mcp_discovery_tools`, `register_mcp_execution_tools`, `registry.get_all_schemas`, `registry.register`, `schema.get`, `skill_report.summary`, `skill_runtime.close`, `skill_runtime.initialize`, `str`, `workspace_tracker.close`, `workspace_tracker.start`
+
+### `multiAgent/__init__.py`
+
+- 模块：`multiAgent`
+- 职责：多智能体编排包导出。
+- 内部依赖：`multiAgent.models`, `multiAgent.store`
+- 定义：导出 `AgentRole`, `MultiAgentRun`, `MultiAgentStore`, `PlanNode`, `RunStatus`, `StepStatus`。
+
+### `multiAgent/models.py`
+
+- 模块：`multiAgent.models`
+- 职责：多智能体运行状态、结构化计划和状态机数据模型。
+- 内部依赖：无
+- 类 `class AgentRole(str, Enum)`（L10）：定义 `plan`, `plan_review`, `execute`, `test`, `execute_review` 五类子智能体。
+- 类 `class RunStatus(str, Enum)`（L18）：定义 `planning`, `plan_review`, `executing`, `testing`, `execute_review`, `completed`, `failed` 状态。
+- 类 `class StepStatus(str, Enum)`（L28）：定义步骤 `pending`, `completed`, `needs_fix` 状态。
+- 类 `class PlanNode`（L38）：结构化计划节点。
+  - `to_dict(self) -> dict[str, Any]`（L46）；调用：`child.to_dict`, `list`
+  - `from_dict(cls, payload: dict[str, Any]) -> PlanNode`（L57）；调用：`cls.from_dict`, `str`
+- 类 `class MultiAgentRun`（L73）：多智能体一次任务运行的完整持久化状态。
+  - `create(cls, *, task: str, source_request_ref: str = "", source_request_preview: str = "") -> MultiAgentRun`（L106）；调用：`uuid4().hex`
+  - `to_dict(self) -> dict[str, Any]`（L114）；调用：`asdict`, `node.to_dict`
+  - `from_dict(cls, payload: dict[str, Any]) -> MultiAgentRun`（L123）；调用：`PlanNode.from_dict`, `RunStatus`, `StepStatus`, `dict`, `float`, `int`, `list`, `str`, `time`
+  - `add_event(self, kind: str, **payload: Any) -> None`（L180）；调用：`self.events.append`, `time`
+- 函数 `flatten_plan(nodes: list[PlanNode]) -> list[PlanNode]`（L185）：递归展开所有计划节点。；调用：`flatten_plan`, `result.append`, `result.extend`
+- 函数 `executable_steps(nodes: list[PlanNode]) -> list[PlanNode]`（L193）：返回无子节点的可执行叶子步骤。；调用：`executable_steps`, `result.append`, `result.extend`
+- 函数 `plan_to_compact_text(nodes: list[PlanNode]) -> str`（L203）：把计划压缩为文本摘要。；调用：`flatten_plan`, `join`, `lines.append`
+
+### `multiAgent/context.py`
+
+- 模块：`multiAgent.context`
+- 职责：构造/恢复子智能体消息、角色上下文、反馈注入和主上下文摘要。
+- 内部依赖：`multiAgent.models`, `mycodingagent.configuration`
+- 函数 `build_subagent_messages(...)`（L16）：创建子智能体初始 system + user 上下文。；调用：`build_role_context`, `load_system_prompt`
+- 函数 `build_or_resume_subagent_messages(...)`（L28）：续接已有子智能体上下文，追加 Runtime state update。；调用：`append_pending_feedback_messages`, `build_role_context`, `build_subagent_messages`, `copy.deepcopy`
+- 函数 `append_pending_feedback_messages(...)`（L50）：将拒绝/失败反馈模拟成工具调用结果交付给目标子智能体。；调用：`json.dumps`, `len`, `messages.append`, `time`
+- 函数 `load_system_prompt(role: AgentRole) -> str`（L92）：读取 `multiAgent/prompts/{role}/SYSTEM.md`。；调用：`path.read_text`
+- 函数 `build_role_context(...) -> str`（L100）：按角色分发上下文构建逻辑。；调用：`_execute_context`, `_execute_review_context`, `_plan_context`, `_plan_review_context`, `_test_context`, `json.dumps`
+- 函数 `_plan_context(...) -> str`（L119）：为 plan 提供 task、最近主对话和计划拒绝历史。；调用：`json.dumps`, `recent_text_turns`
+- 函数 `_plan_review_context(...) -> str`（L130）：为 plan_review 提供 submitted_plan 和请求来源预览。；调用：`json.dumps`, `node.to_dict`
+- 函数 `_execute_context(...) -> str`（L143）：为 execute 提供 approved_plan、current_step_id、反馈和轮次预算。；调用：`execute_round_budget`, `json.dumps`, `node.to_dict`, `sorted`
+- 函数 `execute_round_budget(run: MultiAgentRun) -> dict[str, Any]`（L167）：计算 execute 子智能体剩余工具轮次和预算警告。；调用：`int`, `max`
+- 函数 `_test_context(...) -> str`（L187）：为 test 提供 approved_plan、步骤提交和 execute 最终回答。；调用：`json.dumps`, `node.to_dict`
+- 函数 `_execute_review_context(...) -> str`（L198）：为 execute_review 提供计划、步骤提交、测试结果和 execute 最终回答。；调用：`json.dumps`, `node.to_dict`
+- 函数 `recent_text_turns(messages: list[dict[str, Any]], *, limit: int = 8, max_chars: int = 8000) -> str`（L210）：抽取最近主对话文本并省略工具调用。；调用：`join`, `len`, `lines.append`, `str`
+- 函数 `run_summary_for_main_context(run: MultiAgentRun) -> str`（L229）：生成主智能体可见的精简多智能体结果。；调用：`json.dumps`
+- 函数 `next_open_step(run: MultiAgentRun) -> str`（L241）：返回第一个 pending/needs_fix 可执行步骤。；调用：`executable_steps`
+
+### `multiAgent/store.py`
+
+- 模块：`multiAgent.store`
+- 职责：多智能体 run 的 SQLite 持久化。
+- 内部依赖：`multiAgent.models`, `mycodingagent.configuration`
+- 函数 `default_multi_agent_db_path() -> Path`（L14）：默认使用 memory db 同目录的 `multi_agent.sqlite3`。；调用：`CONFIG.memory.db_path.with_name`
+- 类 `class MultiAgentStore`（L18）：封装 `multi_agent_runs` 表读写。
+  - `__init__(self, path: Path | str | None = None) -> None`（L19）；调用：`Path`, `self._init_db`, `self.path.parent.mkdir`
+  - `_connect(self) -> sqlite3.Connection`（L24）；调用：`sqlite3.connect`
+  - `_init_db(self) -> None`（L29）；调用：`conn.execute`
+  - `save_run(self, run: MultiAgentRun) -> None`（L47）；调用：`json.dumps`, `run.to_dict`, `self._connect`, `time`
+  - `load_run(self, run_id: str) -> MultiAgentRun | None`（L63）；调用：`MultiAgentRun.from_dict`, `json.loads`, `self._connect`
+  - `list_unfinished(self, *, limit: int = 10) -> list[MultiAgentRun]`（L73）；调用：`MultiAgentRun.from_dict`, `json.loads`, `self._connect`
+  - `list_recent(self, *, limit: int = 10) -> list[MultiAgentRun]`（L88）；调用：`MultiAgentRun.from_dict`, `json.loads`, `self._connect`
+  - `append_agent_message(self, run_id: str, role: AgentRole, message: dict[str, Any]) -> None`（L96）；调用：`messages.append`, `self.load_run`, `self.save_run`
+  - `set_agent_messages(self, run_id: str, role: AgentRole, messages: list[dict[str, Any]]) -> None`（L104）；调用：`self.load_run`, `self.save_run`
+  - `mark_failed(self, run: MultiAgentRun, error: str) -> MultiAgentRun`（L111）；调用：`run.add_event`, `self.save_run`
+
+### `multiAgent/tool_policy.py`
+
+- 模块：`multiAgent.tool_policy`
+- 职责：按子智能体角色隔离工具 schema，并给 execute 工具调用注入 `step_id` 门控字段。
+- 内部依赖：`multiAgent.models`, `multiAgent.store`, `multiAgent.tools`, `mycodingagent.tool_runtime`, `mycodingagent.tool_runtime.base`
+- 函数 `tool_names_for_role(role: AgentRole) -> set[str]`（L26）：返回角色允许的普通工具名集合。；调用：`set`
+- 函数 `schemas_for_role(...) -> list[dict[str, Any]]`（L40）：组装角色可见工具 schema，包括普通工具和控制工具。；调用：`add_step_id_to_schema`, `control_tools_for_role`, `copy.deepcopy`, `registry.get_all_schemas`, `schema_for_tool`
+- 函数 `add_step_id_to_schema(schema: dict[str, Any]) -> dict[str, Any]`（L59）：为 execute 普通工具 schema 增加必填 `step_id`。；调用：`parameters.setdefault`, `required.append`
+- 函数 `schema_for_tool(tool: Tool) -> dict[str, Any]`（L72）：把控制工具转为 OpenAI function schema。；调用：`tool.get_schema`
+
+### `multiAgent/tools.py`
+
+- 模块：`multiAgent.tools`
+- 职责：主智能体委托工具、子智能体控制工具和子工作检查工具。
+- 内部依赖：`multiAgent.models`, `multiAgent.store`, `multiAgent.validators`, `mycodingagent.tool_runtime.base`
+- 类 `class DelegateToMultiAgentParams`（L17）：`DelegateToMultiAgent` 参数，包含 `task` 和审计用 `reason`。
+- 类 `class DelegateToMultiAgent`（L26）：主智能体可见的多智能体委托工具。
+  - `__init__(...)`（L43）；保存 store、registry、api_client、memory_runtime、model 和主消息 provider。
+  - `get_schema(self) -> dict[str, Any]`（L60）；调用：`self.params_model.model_json_schema`
+  - `async execute(self, params: DelegateToMultiAgentParams) -> ToolResult`（L69）；调用：`MultiAgentOrchestrator`, `_delegate_result_payload`, `_json`, `_json_error`, `orchestrator.start`
+- 类 `class SubmitPlan`（L97）：plan 控制工具，提交结构化计划。；`execute(...)`（L106）调用：`validate_plan_payload`, `run.add_event`, `self._store.save_run`
+- 类 `class ApprovePlan`（L129）：plan_review 控制工具，批准计划并初始化步骤状态。；`execute(...)`（L138）调用：`executable_steps`, `run.add_event`, `self._store.save_run`
+- 类 `class RejectPlan`（L160）：plan_review 控制工具，拒绝计划并写入给 plan 的反馈事件。；`execute(...)`（L169）调用：`_append_feedback_event`, `run.add_event`, `self._store.save_run`
+- 类 `class SubmitSubAgentStep`（L197）：execute 控制工具，提交当前步骤完成证据。；`execute(...)`（L206）调用：`validate_step_exists`, `run.add_event`, `self._store.save_run`
+- 类 `class ApproveTest`（L230）：test 控制工具，批准测试结果并进入执行审查。；`execute(...)`（L239）调用：`run.add_event`, `self._store.save_run`
+- 类 `class ReportTestFailure`（L257）：test 控制工具，报告失败步骤并写入给 execute 的反馈事件。；`execute(...)`（L266）调用：`_append_feedback_event`, `validate_failed_steps`, `run.add_event`, `self._store.save_run`
+- 类 `class ApproveExecution`（L301）：execute_review 控制工具，完成多智能体 run。；`execute(...)`（L310）调用：`run.add_event`, `self._store.save_run`
+- 类 `class RejectExecution`（L328）：execute_review 控制工具，拒绝执行并写入给 execute 的修正反馈。；`execute(...)`（L337）调用：`_append_feedback_event`, `executable_steps`, `validate_failed_steps`, `run.add_event`, `self._store.save_run`
+- 类 `class InspectSubAgentWork`（L374）：主智能体可见的只读检查工具，分页读取子智能体存储消息。；`execute(...)`（L387）调用：`AgentRole`, `_json`, `_json_error`, `_render_agent_work`, `self._store.load_run`
+- 函数 `control_tools_for_role(store: MultiAgentStore, role: AgentRole) -> list[Tool]`（L414）：返回每个角色专属控制工具。；调用：对应控制工具构造函数
+- 函数 `_render_agent_work(run: Any, role: AgentRole, step_id: str = "") -> str`（L428）：渲染最终回答、步骤提交和消息记录。；调用：`json.dumps`, `parts.append`, `rendered_messages.append`
+- 函数 `_append_feedback_event(...) -> None`（L449）：写入待交付反馈事件。；调用：`run.feedback_events.setdefault`, `uuid4().hex`, `time`
+- 函数 `_delegate_result_payload(run: Any) -> dict[str, Any]`（L469）：生成主智能体可见委托结果。；调用：`hasattr`, `str`
+- 函数 `_json(payload: dict[str, Any]) -> ToolResult`（L483）：序列化普通工具结果。；调用：`ToolResult`, `json.dumps`
+- 函数 `_json_error(code: str, message: str) -> ToolResult`（L487）：序列化错误工具结果。；调用：`ToolResult`, `json.dumps`
+
+### `multiAgent/orchestrator.py`
+
+- 模块：`multiAgent.orchestrator`
+- 职责：多智能体状态机编排、子模型调用、工具执行、步骤门控、输出持久化和轮次预算记录。
+- 内部依赖：`multiAgent.context`, `multiAgent.models`, `multiAgent.store`, `multiAgent.tool_policy`, `multiAgent.tools`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.llm_runtime.client`, `mycodingagent.tool_runtime`
+- 函数 `agent_round_limit() -> int`（L34）：读取 `CONFIG.multi_agent.max_agent_rounds`。；调用：无
+- 类 `class MultiAgentOrchestrator`（L38）：封装多智能体编排器。
+  - `__init__(...)`（L39）；保存 store、registry、api_client、memory_runtime 和 model。
+  - `async start(self, *, task: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L54）；调用：`MultiAgentRun.create`, `run.add_event`, `self.run`, `self.store.save_run`
+  - `async resume(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L64）；调用：`self.run`, `self.store.load_run`
+  - `async run(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L70）；按状态循环调用 `_run_plan/_run_plan_review/_run_execute/_run_test/_run_execute_review`。；调用：`self._load_or_raise`, `self.store.mark_failed`
+  - `result_message(self, run: MultiAgentRun) -> dict[str, Any]`（L92）；调用：`run_summary_for_main_context`
+  - `_run_plan/_run_plan_review/_run_execute/_run_test/_run_execute_review`（L99-L164）：执行单阶段并按失败阈值标记 run。；调用：`self._run_agent`, `self.store.mark_failed`, `self.store.save_run`
+  - `async _run_agent(...) -> str`（L166）：构建/续接子智能体消息，循环调用模型，执行工具并记录退出原因。；调用：`build_or_resume_subagent_messages`, `schemas_for_role`, `stream_one_round`, `_assistant_message`, `_phase_changed`, `self._execute_subagent_tool`, `self._persist_agent_messages`, `self._record_agent_budget`
+  - `_execute_subagent_tool(...) -> str`（L267）：解析工具参数、应用 execute step gate、执行控制或普通工具。；调用：`json.loads`, `tool.params_model.model_validate`, `tool.execute`, `self._store_tool_output`
+  - `_validate_execute_step(self, run_id: str, args: dict[str, Any]) -> str`（L305）：校验 execute 普通工具调用的 `step_id`。；调用：`self._load_or_raise`, `str`
+  - `_store_tool_output(...) -> str`（L314）：持久化子智能体普通工具输出并按 MemoryRuntime 策略返回预览/恢复引用。；调用：`memory_runtime.save_tool_output`, `memory_runtime.tool_output_prompt_content`, `_preview_without_memory`
+  - `_persist_agent_messages(...) -> None`（L347）：保存角色消息。；调用：`self._load_or_raise`, `self.store.save_run`
+  - `_record_agent_budget(...) -> None`（L352）：记录每个子智能体轮次、工具调用数和退出原因。；调用：`run.add_event`, `self.store.save_run`
+  - `_messages_with_round_budget(...) -> list[dict[str, Any]]`（L381）：给 execute 追加 Runtime round budget 用户消息。；调用：`execute_round_budget`, `json.dumps`
+  - `_load_or_raise(self, run_id: str) -> MultiAgentRun`（L399）；调用：`self.store.load_run`
+- 函数 `_assistant_message(assistant_text: str, tool_calls: list[PendingToolCall]) -> dict[str, Any]`（L406）：构造可持久化 assistant 消息。；调用：`enumerate`
+- 函数 `_phase_changed(role: AgentRole, status: RunStatus) -> bool`（L422）：判断角色阶段是否已结束。；调用：无
+- 函数 `_preview_without_memory(output: str) -> str`（L436）：无 MemoryRuntime 时返回首尾预览。；调用：`len`
+
+### `multiAgent/validators.py`
+
+- 模块：`multiAgent.validators`
+- 职责：结构化计划和失败步骤校验。
+- 内部依赖：`multiAgent.models`
+- 类 `class PlanValidationResult`（L10）：计划校验结果。
+- 函数 `validate_plan_payload(*, title: str, summary: str, steps: Any) -> PlanValidationResult`（L16）：校验标题、摘要、递归步骤结构和可执行叶子步骤。；调用：`PlanValidationResult`, `_parse_level`, `executable_steps`
+- 函数 `validate_step_exists(plan: list[PlanNode], step_id: str) -> bool`（L33）：确认步骤存在。；调用：`any`, `flatten_plan`
+- 函数 `validate_failed_steps(plan: list[PlanNode], step_ids: list[str]) -> list[str]`（L37）：返回未知失败步骤。；调用：`flatten_plan`
+- 函数 `_parse_level(...) -> list[PlanNode]`（L42）：递归解析并校验 step_id 顺序、字段和子步骤。；调用：`PlanNode`, `_parse_level`, `errors.append`, `seen.add`, `str`
 
 ### `mycodingagent/capability_discovery/__init__.py`
 
@@ -154,30 +315,31 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 
 - 模块：`mycodingagent.commands.handlers`
 - 职责：CLI 命令注册、解析和命令处理。
-- 内部依赖：`mycodingagent.commands.registry`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.memory.session_switch`, `mycodingagent.terminal_ui.confirm`, `mycodingagent.terminal_ui.history`, `mycodingagent.terminal_ui.session_selector`
-- 函数 `build_command_registry() -> CommandRegistry`（L16）：执行模块级业务逻辑。；调用：`CommandRegistry`, `CommandSpec`, `registry.register`
-- 函数 `async handle_resume_command(context: CommandContext, arguments: str) -> CommandResult`（L129）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_restore`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.load_session`, `memory_runtime.touch_session`, `print`, `render_conversation_history`, `resume_spec.help_text`, `save_current_session_if_needed`, `select_session_interactively`
-- 函数 `async handle_fork_command(context: CommandContext, arguments: str) -> CommandResult`（L207）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_action`, `fork_spec.help_text`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.fork_session`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.store.load_session`, `print`, `render_conversation_history`, `save_current_session_if_needed`, `select_session_interactively`
-- 函数 `async handle_clear_command(context: CommandContext, arguments: str) -> CommandResult`（L273）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `clear_spec.help_text`, `match`, `memory_runtime.clear_current_session_id`, `memory_runtime.drain`, `memory_runtime.start_session`, `print`, `save_current_session_if_needed`
-- 函数 `async handle_delete_command(context: CommandContext, arguments: str) -> CommandResult`（L308）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_action`, `confirm_delete_sessions`, `delete_spec.help_text`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.delete_session`, `memory_runtime.delete_sessions`, `memory_runtime.drain`, `memory_runtime.list_sessions`, `memory_runtime.store.load_session`, `print`, `save_current_session_if_needed`, `select_session_interactively`
+- 内部依赖：`multiAgent`, `multiAgent.context`, `mycodingagent.commands.registry`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.memory.session_switch`, `mycodingagent.terminal_ui.confirm`, `mycodingagent.terminal_ui.history`, `mycodingagent.terminal_ui.session_selector`
+- 函数 `build_command_registry() -> CommandRegistry`（L18）：注册 `/resume`, `/fork`, `/clear`, `/delete`, `/multiAgent`。；调用：`CommandRegistry`, `CommandSpec`, `registry.register`
+- 函数 `async handle_multi_agent_command(context: CommandContext, arguments: str) -> CommandResult`（L130）：处理 `/multiAgent <task>`, `status`, `resume <run_id>`, `inspect <run_id>`。；调用：`CommandResult`, `MultiAgentOrchestrator`, `MultiAgentStore`, `argument.split`, `argument.startswith`, `arguments.strip`, `build_command_registry`, `orchestrator.result_message`, `orchestrator.resume`, `orchestrator.start`, `print`, `run_summary_for_main_context`, `store.list_unfinished`, `store.load_run`, `str`, `strip`
+- 函数 `async handle_resume_command(context: CommandContext, arguments: str) -> CommandResult`（L191）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_restore`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.load_session`, `memory_runtime.touch_session`, `print`, `render_conversation_history`, `resume_spec.help_text`, `save_current_session_if_needed`, `select_session_interactively`
+- 函数 `async handle_fork_command(context: CommandContext, arguments: str) -> CommandResult`（L240）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_action`, `fork_spec.help_text`, `has_conversation_content`, `len`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.drain`, `memory_runtime.fork_session`, `memory_runtime.load_file_state_snapshot`, `memory_runtime.load_lrfu_snapshot`, `memory_runtime.store.load_session`, `print`, `render_conversation_history`, `save_current_session_if_needed`, `select_session_interactively`
+- 函数 `async handle_clear_command(context: CommandContext, arguments: str) -> CommandResult`（L306）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `clear_spec.help_text`, `match`, `memory_runtime.clear_current_session_id`, `memory_runtime.drain`, `memory_runtime.start_session`, `print`, `save_current_session_if_needed`
+- 函数 `async handle_delete_command(context: CommandContext, arguments: str) -> CommandResult`（L341）：执行模块级业务逻辑。；调用：`CommandResult`, `arguments.strip`, `build_command_registry`, `confirm_cross_workspace_action`, `confirm_delete_sessions`, `delete_spec.help_text`, `match`, `memory_runtime.cleanup_expired_sessions`, `memory_runtime.delete_session`, `memory_runtime.delete_sessions`, `memory_runtime.drain`, `memory_runtime.list_sessions`, `memory_runtime.store.load_session`, `print`, `save_current_session_if_needed`, `select_session_interactively`
 
 ### `mycodingagent/commands/registry.py`
 
 - 模块：`mycodingagent.commands.registry`
 - 职责：CLI 命令注册、解析和命令处理。
 - 内部依赖：无
-- 类 `class CommandContext`（L8）：封装该模块的状态与行为。
-- 类 `class CommandResult`（L18）：封装该模块的状态与行为。
-- 类 `class CommandSpec`（L28）：封装该模块的状态与行为。
-  - `names(self) -> tuple[str, ...]`（L37）；调用：无
-  - `help_text(self) -> str`（L40）；调用：`join`, `lines.append`, `lines.extend`
-- 类 `class CommandRegistry`（L55）：封装该模块的状态与行为。
-  - `__init__(self) -> None`（L56）；调用：无
-  - `register(self, spec: CommandSpec) -> None`（L59）；调用：无
-  - `suggestions(self, buffer: str) -> list[CommandSpec]`（L62）；调用：`any`, `char.isspace`, `list`, `self._commands.values`, `spec.name.startswith`, `text.startswith`
-  - `exact_command(self, buffer: str) -> CommandSpec | None`（L70）；调用：`buffer.strip`, `self._commands.get`, `text.split`, `text.startswith`
-  - `match(self, text: str) -> tuple[CommandSpec, str] | None`（L77）；调用：`len`, `self._commands.values`, `spec.names`, `strip`, `stripped.startswith`, `text.strip`
-  - `async execute(self, text: str, context: CommandContext) -> CommandResult`（L87）；调用：`CommandResult`, `self.match`, `spec.handler`
+- 类 `class CommandContext`（L8）：命令处理上下文；新增 `registry`, `api_client`, `multi_agent_store` 支持 `/multiAgent`。
+- 类 `class CommandResult`（L20）：命令处理结果，可返回更新后的 messages。
+- 类 `class CommandSpec`（L30）：封装命令元数据、别名、用法和处理函数。
+  - `names(self) -> tuple[str, ...]`（L39）；调用：无
+  - `help_text(self) -> str`（L42）；调用：`join`, `lines.append`, `lines.extend`
+- 类 `class CommandRegistry`（L57）：封装命令注册、建议、匹配和执行。
+  - `__init__(self) -> None`（L58）；调用：无
+  - `register(self, spec: CommandSpec) -> None`（L61）；调用：无
+  - `suggestions(self, buffer: str) -> list[CommandSpec]`（L64）；调用：`any`, `char.isspace`, `list`, `self._commands.values`, `spec.name.startswith`, `text.startswith`
+  - `exact_command(self, buffer: str) -> CommandSpec | None`（L72）；调用：`buffer.strip`, `self._commands.get`, `text.split`, `text.startswith`
+  - `match(self, text: str) -> tuple[CommandSpec, str] | None`（L79）；调用：`len`, `self._commands.values`, `spec.names`, `strip`, `stripped.startswith`, `text.strip`
+  - `async execute(self, text: str, context: CommandContext) -> CommandResult`（L89）；调用：`CommandResult`, `self.match`, `spec.handler`
 
 ### `mycodingagent/configuration/__init__.py`
 
@@ -207,18 +369,19 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 - 函数 `_dedupe_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]`（L109）：执行模块级业务逻辑。；调用：`path.expanduser`, `resolve`, `result.append`, `seen.add`, `set`, `str`, `tuple`
 - 类 `class ApiConfig`（L122）：封装该模块的状态与行为。
 - 类 `class ClientConfig`（L131）：封装该模块的状态与行为。
-- 类 `class MemoryConfig`（L145）：封装该模块的状态与行为。
-  - `context_window_for(self, model: str) -> int`（L221）；调用：`isinstance`, `self.model_context_windows.get`
-- 类 `class SandboxConfig`（L229）：封装该模块的状态与行为。
-- 类 `class DockerConfig`（L251）：封装该模块的状态与行为。
-- 类 `class SkillConfig`（L272）：封装该模块的状态与行为。
-  - `root(self) -> Path`（L336）；调用：无
-  - `roots(self) -> tuple[Path, ...]`（L340）；调用：`_dedupe_paths`
-- 类 `class EmbeddingConfig`（L345）：封装该模块的状态与行为。
-- 类 `class MilvusConfig`（L363）：封装该模块的状态与行为。
-  - `uri(self) -> str`（L393）；调用：`os.getenv`
-- 类 `class MCPConfig`（L398）：封装该模块的状态与行为。
-- 类 `class AppConfig`（L421）：封装该模块的状态与行为。
+- 类 `class MultiAgentConfig`（L145）：多智能体配置；`max_agent_rounds` 来自 `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS`，默认 50，最小 1。
+- 类 `class MemoryConfig`（L152）：封装该模块的状态与行为。
+  - `context_window_for(self, model: str) -> int`（L224）；调用：`isinstance`, `self.model_context_windows.get`
+- 类 `class SandboxConfig`（L232）：封装该模块的状态与行为。
+- 类 `class DockerConfig`（L254）：封装该模块的状态与行为。
+- 类 `class SkillConfig`（L275）：封装该模块的状态与行为。
+  - `root(self) -> Path`（L339）；调用：无
+  - `roots(self) -> tuple[Path, ...]`（L343）；调用：`_dedupe_paths`
+- 类 `class EmbeddingConfig`（L348）：封装该模块的状态与行为。
+- 类 `class MilvusConfig`（L366）：封装该模块的状态与行为。
+  - `uri(self) -> str`（L396）；调用：`os.getenv`
+- 类 `class MCPConfig`（L401）：封装该模块的状态与行为。
+- 类 `class AppConfig`（L424）：聚合 `api`, `client`, `multi_agent`, `memory`, `sandbox`, `docker`, `skills`, `embedding`, `milvus`, `mcp`。
 
 ### `mycodingagent/llm_runtime/__init__.py`
 
@@ -1141,42 +1304,63 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 ### `mycodingagent/terminal_ui/input.py`
 
 - 模块：`mycodingagent.terminal_ui.input`
-- 职责：终端输入、历史展示、会话选择与确认交互。
+- 职责：终端 raw TTY 输入、光标编辑、多行粘贴、命令建议渲染和宽字符光标定位。
 - 内部依赖：`mycodingagent.commands`
-- 函数 `read_user_prompt(prompt: str, command_registry: CommandRegistry | None = None) -> str`（L27）：执行模块级业务逻辑。；调用：`InteractivePrompt`, `input`, `reader.read`, `sys.stdin.isatty`
-- 类 `class InteractivePrompt`（L34）：封装该模块的状态与行为。
-  - `__init__(self, *, prompt: str, command_registry: CommandRegistry | None) -> None`（L35）；调用：`codecs.getincrementaldecoder`, `strip_readline_markers`, `visible_width`
-  - `read(self) -> str`（L47）；调用：`char.isprintable`, `self._decoder.reset`, `self._finish`, `self._handle_escape_sequence`, `self._read_char`, `self._render`, `self.accept_selected_suggestion`, `sys.stdin.fileno`, `termios.tcgetattr`, `termios.tcsetattr`, `tty.setraw`
-  - `_finish(self) -> str`（L82）；调用：`self._clear_render`, `sys.stdout.flush`, `sys.stdout.write`
-  - `_suggestions(self) -> list[CommandSpec]`（L89）；调用：`self.command_registry.suggestions`
-  - `_render(self) -> None`（L94）；调用：`clamp_selection`, `join`, `len`, `render_screen`, `safe_render_columns`, `self._clear_render`, `self._hint_lines`, `self._move_cursor_to_input_end`, `self._suggestions`, `sys.stdout.flush`, `sys.stdout.write`
-  - `_hint_lines(self, suggestions: list[CommandSpec]) -> list[str]`（L109）；调用：`enumerate`, `format_command_argument_usage_panel`, `format_command_suggestion`, `format_command_usage_panel`, `self.command_registry.exact_command`
-  - `_clear_render(self) -> None`（L122）；调用：`len`, `range`, `sys.stdout.flush`, `sys.stdout.write`
-  - `_move_cursor_to_input_end(self) -> None`（L141）；调用：`len`, `sys.stdout.flush`, `sys.stdout.write`
-  - `_handle_escape_sequence(self) -> None`（L152）；调用：`self._drain_escape_sequence`, `self._read_escape_sequence`, `self.move_selection`
-  - `_read_escape_sequence(self) -> str`（L164）；调用：`self._read_pending_char`
-  - `_read_pending_char(self, *, timeout: float = 0.0) -> str`（L173）；调用：`select.select`, `self._read_char`
-  - `_read_char(self) -> str`（L180）；调用：`read_char_from_fd`, `sys.stdin.read`
-  - `_drain_escape_sequence(self) -> None`（L185）；调用：`range`, `select.select`, `self._read_char`
-  - `move_selection(self, delta: int) -> None`（L193）；调用：`len`, `self._render`, `self._suggestions`
-  - `accept_selected_suggestion(self) -> bool`（L200）；调用：`self._render`, `self._suggestions`, `self.command_registry.exact_command`
-- 函数 `format_command_suggestion(spec: CommandSpec, *, selected: bool = False) -> str`（L216）：执行模块级业务逻辑。；调用：无
-- 函数 `format_command_usage_panel(spec: CommandSpec) -> list[str]`（L222）：执行模块级业务逻辑。；调用：`join`, `lines.append`, `lines.extend`
-- 函数 `format_command_argument_usage_panel(spec: CommandSpec, buffer: str) -> list[str]`（L236）：执行模块级业务逻辑。；调用：`command_argument_prefix`, `command_usage_matches_prefix`, `lines.extend`
-- 函数 `command_argument_prefix(spec: CommandSpec, buffer: str) -> str`（L252）：执行模块级业务逻辑。；调用：`buffer.startswith`, `len`, `strip`
-- 函数 `command_usage_matches_prefix(usage: str, prefix: str) -> bool`（L260）：执行模块级业务逻辑。；调用：`bool`, `usage.strip`, `usage_text.startswith`
-- 函数 `clamp_selection(index: int, suggestion_count: int) -> int`（L267）：执行模块级业务逻辑。；调用：无
-- 函数 `strip_readline_markers(text: str) -> str`（L277）：执行模块级业务逻辑。；调用：`READLINE_MARKER_RE.sub`
-- 函数 `visible_width(text: str) -> int`（L281）：执行模块级业务逻辑。；调用：`ANSI_ESCAPE_RE.sub`, `character_width`, `strip_readline_markers`, `sum`, `wcswidth`
-- 函数 `terminal_width() -> int`（L292）：执行模块级业务逻辑。；调用：`max`, `shutil.get_terminal_size`
-- 函数 `read_char_from_fd(input_fd: int, decoder: codecs.IncrementalDecoder) -> str`（L296）：执行模块级业务逻辑。；调用：`decoder.decode`, `os.read`
-- 函数 `read_escape_sequence_from_fd(input_fd: int, decoder: codecs.IncrementalDecoder, *, timeout: float = ESC_SEQUENCE_TIMEOUT_SECONDS) -> str`（L306）：执行模块级业务逻辑。；调用：`read_char_from_fd`, `select.select`
-- 函数 `safe_render_columns() -> int`（L324）：执行模块级业务逻辑。；调用：`max`, `terminal_width`
-- 类 `class RenderedScreen`（L328）：封装该模块的状态与行为。
-  - `__init__(self, *, lines: list[str], cursor_row: int, cursor_column: int) -> None`（L329）；调用：无
-- 函数 `render_screen(lines: list[str], columns: int) -> RenderedScreen`（L335）：执行模块级业务逻辑。；调用：`RenderedScreen`, `enumerate`, `hard_wrap_ansi`, `len`, `max`, `screen_lines.extend`, `visible_width`
-- 函数 `hard_wrap_ansi(text: str, columns: int) -> list[str]`（L348）：执行模块级业务逻辑。；调用：`ANSI_ESCAPE_RE.match`, `join`, `len`, `line_parts.append`, `match.end`, `match.group`, `max`, `parts.append`, `visible_width`
-- 函数 `character_width(char: str) -> int`（L376）：执行模块级业务逻辑。；调用：`ord`, `unicodedata.category`, `unicodedata.combining`, `unicodedata.east_asian_width`
+- 函数 `read_user_prompt(prompt: str, command_registry: CommandRegistry | None = None) -> str`（L29）：非 TTY 退化为 `input()`，TTY 使用 `InteractivePrompt`。；调用：`InteractivePrompt`, `input`, `reader.read`, `sys.stdin.isatty`
+- 类 `class InteractivePrompt`（L36）：自定义交互式输入器，维护 `_buffer` 与 `cursor_index`。
+  - `__init__(self, *, prompt: str, command_registry: CommandRegistry | None) -> None`（L37）；调用：`codecs.getincrementaldecoder`, `strip_readline_markers`, `visible_width`
+  - `buffer` getter/setter（L50-L56）：读取/设置缓冲区，并将光标夹到有效范围。；调用：`self._set_buffer`, `len`
+  - `read(self) -> str`（L58）：进入 raw mode，启用 bracketed paste，逐字符处理输入。；调用：`tty.setraw`, `self._enable_bracketed_paste`, `self._insert_text`, `self._backspace`, `self._handle_escape_sequence`, `self._finish`, `self._disable_bracketed_paste`, `termios.tcsetattr`
+  - `_finish(self) -> str`（L102）：清屏并按多行缩进格式回显最终输入。；调用：`format_prompt_echo`, `self._clear_render`, `sys.stdout.write`
+  - `_suggestions(self) -> list[CommandSpec]`（L109）：返回命令建议。；调用：`self.command_registry.suggestions`
+  - `_render(self) -> None`（L114）：渲染输入缓冲、命令提示和真实光标位置。；调用：`render_prompt_buffer`, `safe_render_columns`, `self._clear_render`, `self._hint_lines`, `self._move_cursor_to_input_end`
+  - `_hint_lines(self, suggestions: list[CommandSpec]) -> list[str]`（L135）：生成命令建议、命令用法或参数用法面板。；调用：`format_command_argument_usage_panel`, `format_command_suggestion`, `format_command_usage_panel`
+  - `_clear_render(self) -> None`（L148）：清除上次渲染区域。；调用：`len`, `range`, `sys.stdout.write`
+  - `_move_cursor_to_input_end(self) -> None`（L167）：把终端光标移动到当前输入光标位置。；调用：`len`, `sys.stdout.write`
+  - `_handle_escape_sequence(self) -> None`（L178）：处理 bracketed paste、方向键、Home/End、Delete 和未知 escape。；调用：`normalize_pasted_text`, `self._read_bracketed_paste`, `self._move_cursor`, `self._move_cursor_vertical`, `self._delete_at_cursor`, `self.move_selection`
+  - `_read_escape_sequence(self) -> str`（L214）：读取完整 ANSI escape 序列。；调用：`is_escape_sequence_final_char`, `self._read_pending_char`
+  - `_read_bracketed_paste(self) -> str`（L228）：读取到 `BRACKETED_PASTE_END` 为止的粘贴正文。；调用：`self._read_char`, `text.endswith`
+  - `_read_pending_char(self, *, timeout: float = 0.0) -> str`（L238）：带超时读取单字符。；调用：`select.select`, `self._read_char`
+  - `_read_char(self) -> str`（L245）：从 fd 或 `sys.stdin` 读取并增量解码。；调用：`read_char_from_fd`, `sys.stdin.read`
+  - `_drain_escape_sequence(self) -> None`（L250）：清理未知 escape 的剩余字节。；调用：`select.select`, `self._read_char`
+  - `move_selection(self, delta: int) -> None`（L258）：移动命令建议选中项。；调用：`self._render`, `self._suggestions`
+  - `accept_selected_suggestion(self) -> bool`（L265）：接受当前命令建议。；调用：`self._set_buffer`, `self._render`, `self._suggestions`
+  - `_set_buffer(self, value: str, cursor_index: int | None = None) -> None`（L280）：设置缓冲区和光标位置。；调用：`clamp_cursor_index`, `len`
+  - `_insert_text(self, text: str) -> None`（L286）：按当前光标位置插入文本。；调用：`self._set_buffer`, `self._render`
+  - `_backspace(self) -> None`（L294）：删除光标前字符。；调用：`self._set_buffer`, `self._render`
+  - `_delete_at_cursor(self) -> None`（L301）：删除光标处字符。；调用：`self._set_buffer`, `self._render`
+  - `_move_cursor(self, delta: int) -> None`（L308）：左右移动光标。；调用：`clamp_cursor_index`, `self._render`
+  - `_move_cursor_to_line_start(self) -> None`（L315）：移动到当前行首。；调用：`self.buffer.rfind`, `self._render`
+  - `_move_cursor_to_line_end(self) -> None`（L322）：移动到当前行尾。；调用：`self.buffer.find`, `self._render`
+  - `_move_cursor_vertical(self, delta: int) -> None`（L331）：在多行输入中上下移动。；调用：`vertical_cursor_index`, `self._render`
+  - `_enable_bracketed_paste(self) -> None`（L338）：向终端写入 `\033[?2004h`。；调用：`sys.stdout.write`, `sys.stdout.flush`
+  - `_disable_bracketed_paste(self) -> None`（L342）：向终端写入 `\033[?2004l`。；调用：`sys.stdout.write`, `sys.stdout.flush`
+- 函数 `format_command_suggestion(spec: CommandSpec, *, selected: bool = False) -> str`（L347）：执行模块级业务逻辑。；调用：无
+- 函数 `format_command_usage_panel(spec: CommandSpec) -> list[str]`（L353）：执行模块级业务逻辑。；调用：`join`, `lines.append`, `lines.extend`
+- 函数 `format_command_argument_usage_panel(spec: CommandSpec, buffer: str) -> list[str]`（L367）：执行模块级业务逻辑。；调用：`command_argument_prefix`, `command_usage_matches_prefix`, `lines.extend`
+- 函数 `command_argument_prefix(spec: CommandSpec, buffer: str) -> str`（L383）：执行模块级业务逻辑。；调用：`buffer.startswith`, `len`, `strip`
+- 函数 `command_usage_matches_prefix(usage: str, prefix: str) -> bool`（L391）：执行模块级业务逻辑。；调用：`bool`, `usage.strip`, `usage_text.startswith`
+- 函数 `clamp_selection(index: int, suggestion_count: int) -> int`（L398）：执行模块级业务逻辑。；调用：无
+- 函数 `clamp_cursor_index(index: int, buffer_length: int) -> int`（L408）：执行模块级业务逻辑。；调用：无
+- 函数 `strip_readline_markers(text: str) -> str`（L416）：执行模块级业务逻辑。；调用：`READLINE_MARKER_RE.sub`
+- 函数 `visible_width(text: str) -> int`（L420）：执行模块级业务逻辑。；调用：`ANSI_ESCAPE_RE.sub`, `character_width`, `strip_readline_markers`, `sum`, `wcswidth`
+- 函数 `terminal_width() -> int`（L431）：执行模块级业务逻辑。；调用：`max`, `shutil.get_terminal_size`
+- 函数 `read_char_from_fd(input_fd: int, decoder: codecs.IncrementalDecoder) -> str`（L435）：执行模块级业务逻辑。；调用：`decoder.decode`, `os.read`
+- 函数 `read_escape_sequence_from_fd(input_fd: int, decoder: codecs.IncrementalDecoder, *, timeout: float = ESC_SEQUENCE_TIMEOUT_SECONDS) -> str`（L445）：执行模块级业务逻辑。；调用：`is_escape_sequence_final_char`, `read_char_from_fd`, `select.select`
+- 函数 `is_escape_sequence_final_char(char: str) -> bool`（L472）：判断 ANSI escape 序列终止字符。；调用：`len`, `ord`
+- 函数 `normalize_pasted_text(text: str) -> str`（L476）：把 CRLF/CR 归一化为 LF。；调用：`replace`
+- 函数 `format_prompt_echo(prompt: str, prompt_width: int, text: str) -> str`（L480）：格式化多行输入回显。；调用：`normalize_pasted_text`, `replace`
+- 函数 `safe_render_columns() -> int`（L485）：执行模块级业务逻辑。；调用：`max`, `terminal_width`
+- 类 `class RenderedScreen`（L489）：渲染结果，包含屏幕行和光标 row/column。
+  - `__init__(self, *, lines: list[str], cursor_row: int, cursor_column: int) -> None`（L490）；调用：无
+- 函数 `render_screen(lines: list[str], columns: int) -> RenderedScreen`（L496）：兼容旧逻辑的普通行渲染。；调用：`RenderedScreen`, `hard_wrap_ansi`, `visible_width`
+- 函数 `render_prompt_buffer(...) -> RenderedScreen`（L509）：渲染带提示符、多行输入和中间光标位置的屏幕。；调用：`RenderedScreen`, `clamp_cursor_index`, `hard_wrap_ansi`, `visible_width`
+- 函数 `vertical_cursor_index(buffer: str, cursor_index: int, delta: int) -> int`（L540）：计算多行上下移动后的绝对光标位置。；调用：`absolute_index_for_line_offset`, `char_index_for_visible_column`, `cursor_line_and_offset`, `visible_width`
+- 函数 `cursor_line_and_offset(buffer: str, cursor_index: int) -> tuple[int, int]`（L554）：返回光标所在逻辑行和行内偏移。；调用：`before_cursor.count`, `before_cursor.rfind`
+- 函数 `char_index_for_visible_column(text: str, column: int) -> int`（L561）：按可见宽度找字符偏移。；调用：`visible_width`
+- 函数 `absolute_index_for_line_offset(lines: list[str], line_index: int, offset: int) -> int`（L571）：逻辑行偏移转绝对下标。；调用：`len`, `sum`
+- 函数 `hard_wrap_ansi(text: str, columns: int) -> list[str]`（L575）：按终端宽度硬换行并保留 ANSI 序列。；调用：`ANSI_ESCAPE_RE.match`, `join`, `visible_width`
+- 函数 `character_width(char: str) -> int`（L603）：计算单字符宽度，兼容组合字符和东亚宽字符。；调用：`ord`, `unicodedata.category`, `unicodedata.combining`, `unicodedata.east_asian_width`
 
 ### `mycodingagent/terminal_ui/session_selector.py`
 
