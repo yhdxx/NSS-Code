@@ -11,6 +11,9 @@ class CommandContext:
     messages: list[dict]
     file_state_cache: Any = None
     workspace_tracker: Any = None
+    registry: Any = None
+    api_client: Any = None
+    multi_agent_store: Any = None
 
 
 @dataclass

@@ -34,6 +34,8 @@ from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.hooks import CLIApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
+from multiAgent import MultiAgentStore
+from multiAgent.tools import InspectSubAgentWork
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
 try:  # 开始可能抛出异常的保护代码块。
@@ -68,6 +70,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
     )
+    multi_agent_store = MultiAgentStore()
+    registry.register(InspectSubAgentWork(multi_agent_store))
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
         skills_root=CONFIG.skills.root,
@@ -172,6 +176,9 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     messages=messages,
                     file_state_cache=file_state_cache,
                     workspace_tracker=workspace_tracker,
+                    registry=registry,
+                    api_client=api_client,
+                    multi_agent_store=multi_agent_store,
                 ),
             )
             if command_result.handled:

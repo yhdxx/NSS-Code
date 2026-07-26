@@ -11,6 +11,8 @@ from mycodingagent.terminal_ui.confirm import (
 )
 from mycodingagent.terminal_ui.history import render_conversation_history
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
+from multiAgent import MultiAgentStore
+from multiAgent.context import run_summary_for_main_context
 
 
 def build_command_registry() -> CommandRegistry:
@@ -101,7 +103,89 @@ def build_command_registry() -> CommandRegistry:
             handler=handle_delete_command,
         )
     )
+    registry.register(
+        CommandSpec(
+            name="/multiAgent",
+            aliases=("multiAgent", "多智能体"),
+            description="使用隔离的 plan/review/execute/test/review 多智能体工作流执行复杂任务",
+            usage="[status|resume <run_id>|inspect <run_id>|<task>]",
+            usages=(
+                (" <task>", "创建并运行新的多智能体任务"),
+                (" status", "列出最近未完成的多智能体任务"),
+                (" resume <run_id>", "从持久化状态恢复指定任务"),
+                (" inspect <run_id>", "查看任务摘要"),
+            ),
+            examples=(
+                "/multiAgent 按上一轮计划修改代码",
+                "/multiAgent status",
+                "/multiAgent resume <run_id>",
+                "/multiAgent inspect <run_id>",
+            ),
+            handler=handle_multi_agent_command,
+        )
+    )
     return registry
+
+
+async def handle_multi_agent_command(context: CommandContext, arguments: str) -> CommandResult:
+    store = context.multi_agent_store or MultiAgentStore()
+    argument = arguments.strip()
+    if not argument or argument in {"--help", "-h", "help"}:
+        print(build_command_registry().match("/multiAgent")[0].help_text(), flush=True)
+        return CommandResult()
+
+    if argument == "status":
+        runs = store.list_unfinished(limit=10)
+        if not runs:
+            print("没有未完成的多智能体任务。", flush=True)
+            return CommandResult()
+        for run in runs:
+            print(f"{run.run_id} | {run.status.value} | {run.title or run.task[:80]}", flush=True)
+        return CommandResult()
+
+    if argument.startswith("inspect "):
+        run_id = argument.split(maxsplit=1)[1].strip()
+        run = store.load_run(run_id)
+        if run is None:
+            print(f"未找到多智能体任务：{run_id}", flush=True)
+            return CommandResult()
+        print(run_summary_for_main_context(run), flush=True)
+        return CommandResult()
+
+    if context.registry is None or context.api_client is None:
+        print("多智能体运行缺少 registry 或 api_client，无法执行。", flush=True)
+        return CommandResult()
+
+    from multiAgent.orchestrator import MultiAgentOrchestrator
+
+    orchestrator = MultiAgentOrchestrator(
+        store=store,
+        registry=context.registry,
+        api_client=context.api_client,
+        memory_runtime=context.memory_runtime,
+        model=client.MODEL,
+    )
+
+    try:
+        if argument.startswith("resume "):
+            run_id = argument.split(maxsplit=1)[1].strip()
+            run = await orchestrator.resume(run_id=run_id, main_messages=context.messages)
+            user_content = f"/multiAgent resume {run_id}"
+        else:
+            run = await orchestrator.start(task=argument, main_messages=context.messages)
+            user_content = f"/multiAgent {argument}"
+    except ValueError as exc:
+        print(str(exc), flush=True)
+        return CommandResult()
+
+    result_message = orchestrator.result_message(run)
+    updated_messages = [
+        *context.messages,
+        {"role": "user", "content": user_content},
+        result_message,
+    ]
+    print(result_message["content"], flush=True)
+    return CommandResult(messages=updated_messages)
 
 
 async def handle_resume_command(context: CommandContext, arguments: str) -> CommandResult:
