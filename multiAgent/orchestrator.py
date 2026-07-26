@@ -10,7 +10,7 @@ from mycodingagent.llm_runtime import client as llm_client
 from mycodingagent.llm_runtime.client import PendingToolCall, stream_one_round
 from mycodingagent.tool_runtime import ToolRegistry
 
-from multiAgent.context import build_subagent_messages, next_open_step, run_summary_for_main_context
+from multiAgent.context import build_or_resume_subagent_messages, next_open_step, run_summary_for_main_context
 from multiAgent.models import AgentRole, MultiAgentRun, RunStatus, TERMINAL_STATUSES, StepStatus
 from multiAgent.store import MultiAgentStore
 from multiAgent.tool_policy import schemas_for_role
@@ -145,7 +145,13 @@ class MultiAgentOrchestrator:
         run: MultiAgentRun,
         main_messages: list[dict[str, Any]],
     ) -> None:
-        messages = build_subagent_messages(role=role, run=self._load_or_raise(run.run_id), main_messages=main_messages)
+        messages, resumed_run = build_or_resume_subagent_messages(
+            role=role,
+            run=self._load_or_raise(run.run_id),
+            main_messages=main_messages,
+        )
+        resumed_run.subagent_messages[role.value] = list(messages)
+        self.store.save_run(resumed_run)
         tools = llm_client.format_openai_tools(schemas_for_role(role=role, registry=self.registry, store=self.store))
         seen_failures: set[tuple[str, str]] = set()
         for _ in range(MAX_AGENT_TOOL_ROUNDS):

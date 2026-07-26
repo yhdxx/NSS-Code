@@ -3,8 +3,8 @@ from __future__ import annotations
 import asyncio
 import json
 
-from multiAgent.context import build_role_context, run_summary_for_main_context
-from multiAgent.models import AgentRole, MultiAgentRun, RunStatus
+from multiAgent.context import build_or_resume_subagent_messages, build_role_context, run_summary_for_main_context
+from multiAgent.models import AgentRole, MultiAgentRun, RunStatus, StepStatus
 from multiAgent.store import MultiAgentStore
 from multiAgent.tool_policy import schemas_for_role
 from multiAgent.tools import (
@@ -14,6 +14,12 @@ from multiAgent.tools import (
     DelegateToMultiAgentParams,
     InspectSubAgentWork,
     InspectSubAgentWorkParams,
+    RejectExecution,
+    RejectExecutionParams,
+    RejectPlan,
+    RejectPlanParams,
+    ReportTestFailure,
+    ReportTestFailureParams,
     SubmitPlan,
     SubmitPlanParams,
     SubmitSubAgentStep,
@@ -347,3 +353,147 @@ def test_main_registry_schema_includes_delegate_tool(tmp_path):
     names = {schema["name"] for schema in registry.get_all_schemas("openai")}
 
     assert "DelegateToMultiAgent" in names
+
+
+def test_reject_plan_feedback_is_delivered_to_resumed_plan_context(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    run.subagent_messages[AgentRole.PLAN.value] = [
+        {"role": "system", "content": "plan system"},
+        {"role": "user", "content": "initial plan context"},
+        {"role": "assistant", "content": "old plan answer"},
+    ]
+    store.save_run(run)
+
+    asyncio.run(
+        RejectPlan(store).execute(
+            RejectPlanParams(
+                run_id=run.run_id,
+                issues=["missing tests"],
+                required_changes=["add test step"],
+            )
+        )
+    )
+    rejected = store.load_run(run.run_id)
+    assert rejected is not None
+    assert rejected.feedback_events[AgentRole.PLAN.value][0]["delivered"] is False
+
+    messages, updated = build_or_resume_subagent_messages(
+        role=AgentRole.PLAN,
+        run=rejected,
+        main_messages=[],
+    )
+
+    assert messages[0]["content"] == "plan system"
+    assert messages[2]["content"] == "old plan answer"
+    assert messages[-2]["tool_calls"][0]["function"]["name"] == "RejectPlan"
+    assert messages[-1]["role"] == "tool"
+    assert messages[-1]["tool_call_id"].startswith("feedback_")
+    assert "missing tests" in messages[-1]["content"]
+    assert updated.feedback_events[AgentRole.PLAN.value][0]["delivered"] is True
+
+
+def test_feedback_delivery_is_not_repeated(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    run.subagent_messages[AgentRole.PLAN.value] = [{"role": "assistant", "content": "old"}]
+    store.save_run(run)
+    asyncio.run(
+        RejectPlan(store).execute(
+            RejectPlanParams(run_id=run.run_id, issues=["bad"], required_changes=["fix"])
+        )
+    )
+    rejected = store.load_run(run.run_id)
+    assert rejected is not None
+
+    first_messages, updated = build_or_resume_subagent_messages(
+        role=AgentRole.PLAN,
+        run=rejected,
+        main_messages=[],
+    )
+    second_messages, _ = build_or_resume_subagent_messages(
+        role=AgentRole.PLAN,
+        run=updated,
+        main_messages=[],
+    )
+
+    assert sum("RejectPlan" in json.dumps(message, ensure_ascii=False) for message in first_messages) == 1
+    assert sum("RejectPlan" in json.dumps(message, ensure_ascii=False) for message in second_messages) == 0
+
+
+def test_report_test_failure_feedback_targets_execute(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    run.approved_plan = validate_plan_payload(title="Plan", summary="s", steps=VALID_STEPS).plan
+    run.step_status = {"1.1": StepStatus.COMPLETED}
+    run.subagent_messages[AgentRole.EXECUTE.value] = [{"role": "assistant", "content": "execute history"}]
+    store.save_run(run)
+
+    asyncio.run(
+        ReportTestFailure(store).execute(
+            ReportTestFailureParams(
+                run_id=run.run_id,
+                failed_steps=["1.1"],
+                evidence="pytest failed",
+                required_fixes=["fix assertion"],
+            )
+        )
+    )
+    failed = store.load_run(run.run_id)
+    assert failed is not None
+
+    messages, updated = build_or_resume_subagent_messages(
+        role=AgentRole.EXECUTE,
+        run=failed,
+        main_messages=[],
+    )
+
+    assert messages[-2]["tool_calls"][0]["function"]["name"] == "ReportTestFailure"
+    assert "pytest failed" in messages[-1]["content"]
+    assert updated.feedback_events[AgentRole.EXECUTE.value][0]["delivered"] is True
+
+
+def test_reject_execution_feedback_targets_execute(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    run.approved_plan = validate_plan_payload(title="Plan", summary="s", steps=VALID_STEPS).plan
+    run.step_status = {"1.1": StepStatus.COMPLETED}
+    run.subagent_messages[AgentRole.EXECUTE.value] = [{"role": "assistant", "content": "execute history"}]
+    store.save_run(run)
+
+    asyncio.run(
+        RejectExecution(store).execute(
+            RejectExecutionParams(
+                run_id=run.run_id,
+                issues=["quality issue"],
+                required_fixes=["simplify flow"],
+                failed_steps=["1.1"],
+            )
+        )
+    )
+    rejected = store.load_run(run.run_id)
+    assert rejected is not None
+
+    messages, updated = build_or_resume_subagent_messages(
+        role=AgentRole.EXECUTE,
+        run=rejected,
+        main_messages=[],
+    )
+
+    assert messages[-2]["tool_calls"][0]["function"]["name"] == "RejectExecution"
+    assert "quality issue" in messages[-1]["content"]
+    assert updated.feedback_events[AgentRole.EXECUTE.value][0]["delivered"] is True
+
+
+def test_fresh_subagent_context_when_no_history(tmp_path):
+    run = MultiAgentRun.create(task="task")
+
+    messages, updated = build_or_resume_subagent_messages(
+        role=AgentRole.PLAN,
+        run=run,
+        main_messages=[],
+    )
+
+    assert messages[0]["role"] == "system"
+    assert messages[1]["role"] == "user"
+    assert updated.feedback_events == {}

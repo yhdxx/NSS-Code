@@ -7,4 +7,4 @@ Rules:
 - Work only on current_step_id.
 - Every ordinary tool call must include step_id equal to current_step_id.
 - After completing the current step, call SubmitSubAgentStep with concise evidence.
-- If test or review feedback is present, fix only the affected step or directly related code.
+- If a ReportTestFailure or RejectExecution tool result appears in your context, fix only the affected step or directly related code.

@@ -88,6 +88,7 @@ class MultiAgentRun:
     review_result: dict[str, Any] = field(default_factory=dict)
     subagent_messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     subagent_final_answers: dict[str, str] = field(default_factory=dict)
+    feedback_events: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     plan_attempts: int = 0
     plan_review_attempts: int = 0
@@ -145,6 +146,7 @@ class MultiAgentRun:
             review_result=dict(payload.get("review_result", {})),
             subagent_messages=dict(payload.get("subagent_messages", {})),
             subagent_final_answers=dict(payload.get("subagent_final_answers", {})),
+            feedback_events=dict(payload.get("feedback_events", {})),
             events=list(payload.get("events", [])),
             plan_attempts=int(payload.get("plan_attempts", 0) or 0),
             plan_review_attempts=int(payload.get("plan_review_attempts", 0) or 0),

@@ -9,4 +9,4 @@ Rules:
 - You may write natural language notes, but the plan is not accepted until you call SubmitPlan.
 - SubmitPlan steps must be executable and testable.
 - Each leaf step must have a concrete acceptance criterion.
-- If prior plan feedback is present, address it in the next SubmitPlan call.
+- If a RejectPlan tool result appears in your context, treat it as reviewer feedback and address it in the next SubmitPlan call.

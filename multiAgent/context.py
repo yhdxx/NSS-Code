@@ -1,7 +1,9 @@
 from __future__ import annotations
 
+import copy
 import json
 from pathlib import Path
+from time import time
 from typing import Any
 
 from multiAgent.models import AgentRole, MultiAgentRun, executable_steps
@@ -20,6 +22,70 @@ def build_subagent_messages(
         {"role": "system", "content": load_system_prompt(role)},
         {"role": "user", "content": build_role_context(role=role, run=run, main_messages=main_messages)},
     ]
+
+
+def build_or_resume_subagent_messages(
+    *,
+    role: AgentRole,
+    run: MultiAgentRun,
+    main_messages: list[dict[str, Any]],
+) -> tuple[list[dict[str, Any]], MultiAgentRun]:
+    previous = run.subagent_messages.get(role.value)
+    if previous:
+        messages = copy.deepcopy(previous)
+        messages.append(
+            {
+                "role": "user",
+                "content": "[Runtime state update]\n"
+                + build_role_context(role=role, run=run, main_messages=main_messages),
+            }
+        )
+    else:
+        messages = build_subagent_messages(role=role, run=run, main_messages=main_messages)
+    messages = append_pending_feedback_messages(role=role, run=run, messages=messages)
+    return messages, run
+
+
+def append_pending_feedback_messages(
+    *,
+    role: AgentRole,
+    run: MultiAgentRun,
+    messages: list[dict[str, Any]],
+) -> list[dict[str, Any]]:
+    events = run.feedback_events.get(role.value, [])
+    for event in events:
+        if event.get("delivered"):
+            continue
+        event_id = str(event.get("event_id", ""))
+        tool_name = str(event.get("tool_name", "Feedback"))
+        payload = event.get("payload", {})
+        call_id = f"feedback_{event_id}" if event_id else f"feedback_{tool_name}_{len(messages)}"
+        arguments = json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        messages.append(
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": tool_name,
+                            "arguments": arguments,
+                        },
+                    }
+                ],
+            }
+        )
+        messages.append(
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(payload, ensure_ascii=False, indent=2),
+            }
+        )
+        event["delivered"] = True
+        event["delivered_at"] = time()
+    return messages
 
 
 def load_system_prompt(role: AgentRole) -> str:

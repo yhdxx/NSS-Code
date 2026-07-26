@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+from time import time
 from typing import Any, Callable
+from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
@@ -185,6 +187,13 @@ class RejectPlan(Tool):
             return _json_error("run_not_found", f"run not found: {params.run_id}")
         payload = {"issues": params.issues, "required_changes": params.required_changes}
         run.plan_rejections.append(payload)
+        _append_feedback_event(
+            run,
+            source_agent=AgentRole.PLAN_REVIEW,
+            target_agent=AgentRole.PLAN,
+            tool_name="RejectPlan",
+            payload=payload,
+        )
         run.submitted_plan = []
         run.status = RunStatus.PLANNING
         run.add_event("plan_rejected", **payload)
@@ -286,6 +295,13 @@ class ReportTestFailure(Tool):
             "evidence": params.evidence,
             "required_fixes": params.required_fixes,
         }
+        _append_feedback_event(
+            run,
+            source_agent=AgentRole.TEST,
+            target_agent=AgentRole.EXECUTE,
+            tool_name="ReportTestFailure",
+            payload=run.test_result,
+        )
         run.status = RunStatus.EXECUTING
         run.add_event("test_failed", failed_steps=params.failed_steps)
         self._store.save_run(run)
@@ -349,6 +365,13 @@ class RejectExecution(Tool):
             "required_fixes": params.required_fixes,
             "failed_steps": failed_steps,
         }
+        _append_feedback_event(
+            run,
+            source_agent=AgentRole.EXECUTE_REVIEW,
+            target_agent=AgentRole.EXECUTE,
+            tool_name="RejectExecution",
+            payload=run.review_result,
+        )
         run.status = RunStatus.EXECUTING
         run.add_event("execution_rejected", failed_steps=failed_steps)
         self._store.save_run(run)
@@ -429,6 +452,26 @@ def _render_agent_work(run: Any, role: AgentRole, step_id: str = "") -> str:
     if rendered_messages:
         parts.append("Messages:\n" + "\n".join(rendered_messages))
     return "\n\n".join(parts)
+
+
+def _append_feedback_event(
+    run: Any,
+    *,
+    source_agent: AgentRole,
+    target_agent: AgentRole,
+    tool_name: str,
+    payload: dict[str, Any],
+) -> None:
+    event = {
+        "event_id": uuid4().hex,
+        "source_agent": source_agent.value,
+        "tool_name": tool_name,
+        "target_agent": target_agent.value,
+        "payload": payload,
+        "created_at": time(),
+        "delivered": False,
+    }
+    run.feedback_events.setdefault(target_agent.value, []).append(event)
 
 
 def _delegate_result_payload(run: Any) -> dict[str, Any]:
