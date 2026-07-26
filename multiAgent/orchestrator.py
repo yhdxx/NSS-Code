@@ -10,17 +10,29 @@ from mycodingagent.llm_runtime import client as llm_client
 from mycodingagent.llm_runtime.client import PendingToolCall, stream_one_round
 from mycodingagent.tool_runtime import ToolRegistry
 
-from multiAgent.context import build_or_resume_subagent_messages, next_open_step, run_summary_for_main_context
+from multiAgent.context import (
+    build_or_resume_subagent_messages,
+    execute_round_budget,
+    next_open_step,
+    run_summary_for_main_context,
+)
 from multiAgent.models import AgentRole, MultiAgentRun, RunStatus, TERMINAL_STATUSES, StepStatus
 from multiAgent.store import MultiAgentStore
 from multiAgent.tool_policy import schemas_for_role
 from multiAgent.tools import control_tools_for_role
 
 
-MAX_AGENT_TOOL_ROUNDS = 30
 MAX_WORKFLOW_CYCLES = 30
 MAX_PLAN_REVIEW_ATTEMPTS = 3
 MAX_FIX_ATTEMPTS = 3
+
+EXIT_PHASE_CHANGED = "phase_changed"
+EXIT_NO_TOOL_CALLS = "no_tool_calls"
+EXIT_MAX_AGENT_TOOL_ROUNDS_EXCEEDED = "max_agent_tool_rounds_exceeded"
+
+
+def agent_round_limit() -> int:
+    return CONFIG.multi_agent.max_agent_rounds
 
 
 class MultiAgentOrchestrator:
@@ -101,7 +113,7 @@ class MultiAgentOrchestrator:
             self.store.mark_failed(refreshed, "plan_review did not approve or reject the plan")
 
     async def _run_execute(self, run: MultiAgentRun, main_messages: list[dict[str, Any]]) -> None:
-        fix_attempts = 0
+        fix_attempts_by_step: dict[str, int] = {}
         while True:
             run = self._load_or_raise(run.run_id)
             step_id = next_open_step(run)
@@ -113,13 +125,26 @@ class MultiAgentOrchestrator:
                 return
             run.current_step_id = step_id
             self.store.save_run(run)
-            await self._run_agent(role=AgentRole.EXECUTE, run=run, main_messages=main_messages)
+            exit_reason = await self._run_agent(role=AgentRole.EXECUTE, run=run, main_messages=main_messages)
             refreshed = self._load_or_raise(run.run_id)
             if refreshed.step_status.get(step_id) == StepStatus.COMPLETED:
                 continue
-            fix_attempts += 1
-            if fix_attempts >= MAX_FIX_ATTEMPTS:
-                self.store.mark_failed(refreshed, f"execute did not submit current step: {step_id}")
+            fix_attempts_by_step[step_id] = fix_attempts_by_step.get(step_id, 0) + 1
+            refreshed.add_event(
+                "execute_step_attempt_failed",
+                step_id=step_id,
+                attempt=fix_attempts_by_step[step_id],
+                exit_reason=exit_reason,
+            )
+            self.store.save_run(refreshed)
+            if fix_attempts_by_step[step_id] >= MAX_FIX_ATTEMPTS:
+                if exit_reason == EXIT_MAX_AGENT_TOOL_ROUNDS_EXCEEDED:
+                    self.store.mark_failed(
+                        refreshed,
+                        f"execute exceeded agent tool rounds before submitting step: {step_id}",
+                    )
+                else:
+                    self.store.mark_failed(refreshed, f"execute did not submit current step: {step_id}")
                 return
 
     async def _run_test(self, run: MultiAgentRun, main_messages: list[dict[str, Any]]) -> None:
@@ -144,7 +169,7 @@ class MultiAgentOrchestrator:
         role: AgentRole,
         run: MultiAgentRun,
         main_messages: list[dict[str, Any]],
-    ) -> None:
+    ) -> str:
         messages, resumed_run = build_or_resume_subagent_messages(
             role=role,
             run=self._load_or_raise(run.run_id),
@@ -154,11 +179,30 @@ class MultiAgentOrchestrator:
         self.store.save_run(resumed_run)
         tools = llm_client.format_openai_tools(schemas_for_role(role=role, registry=self.registry, store=self.store))
         seen_failures: set[tuple[str, str]] = set()
-        for _ in range(MAX_AGENT_TOOL_ROUNDS):
+        max_rounds = agent_round_limit()
+        tool_calls_used = 0
+        self._record_agent_budget(
+            run_id=run.run_id,
+            role=role,
+            limit=max_rounds,
+            rounds_used=0,
+            tool_calls_used=0,
+            exit_reason="",
+        )
+        for round_index in range(max_rounds):
+            self._record_agent_budget(
+                run_id=run.run_id,
+                role=role,
+                limit=max_rounds,
+                rounds_used=round_index,
+                tool_calls_used=tool_calls_used,
+                event_kind="agent_round_started",
+            )
+            request_messages = self._messages_with_round_budget(role=role, run_id=run.run_id, messages=messages)
             assistant_text, tool_calls, _usage = await stream_one_round(
                 self.api_client,
                 self.model,
-                messages,
+                request_messages,
                 tools,
                 display=True,
                 output_label=f"{role.value}",
@@ -170,7 +214,17 @@ class MultiAgentOrchestrator:
                 current.subagent_final_answers[role.value] = assistant_text
                 self.store.save_run(current)
             if not tool_calls:
-                break
+                self._record_agent_budget(
+                    run_id=run.run_id,
+                    role=role,
+                    limit=max_rounds,
+                    rounds_used=round_index + 1,
+                    tool_calls_used=tool_calls_used,
+                    exit_reason=EXIT_NO_TOOL_CALLS,
+                )
+                self._persist_agent_messages(run.run_id, role, messages)
+                return EXIT_NO_TOOL_CALLS
+            tool_calls_used += len(tool_calls)
             for index, tool_call in enumerate(tool_calls):
                 call_id = tool_call.tool_id or f"{role.value}_tool_call_{index}"
                 output = await self._execute_subagent_tool(
@@ -189,8 +243,26 @@ class MultiAgentOrchestrator:
             self._persist_agent_messages(run.run_id, role, messages)
             refreshed = self._load_or_raise(run.run_id)
             if _phase_changed(role, refreshed.status):
-                break
+                self._record_agent_budget(
+                    run_id=run.run_id,
+                    role=role,
+                    limit=max_rounds,
+                    rounds_used=round_index + 1,
+                    tool_calls_used=tool_calls_used,
+                    exit_reason=EXIT_PHASE_CHANGED,
+                )
+                return EXIT_PHASE_CHANGED
         self._persist_agent_messages(run.run_id, role, messages)
+        self._record_agent_budget(
+            run_id=run.run_id,
+            role=role,
+            limit=max_rounds,
+            rounds_used=max_rounds,
+            tool_calls_used=tool_calls_used,
+            exit_reason=EXIT_MAX_AGENT_TOOL_ROUNDS_EXCEEDED,
+            event_kind="agent_round_limit_reached",
+        )
+        return EXIT_MAX_AGENT_TOOL_ROUNDS_EXCEEDED
 
     async def _execute_subagent_tool(
         self,
@@ -276,6 +348,53 @@ class MultiAgentOrchestrator:
         run = self._load_or_raise(run_id)
         run.subagent_messages[role.value] = list(messages)
         self.store.save_run(run)
+
+    def _record_agent_budget(
+        self,
+        *,
+        run_id: str,
+        role: AgentRole,
+        limit: int,
+        rounds_used: int,
+        tool_calls_used: int,
+        exit_reason: str = "",
+        event_kind: str = "",
+    ) -> None:
+        run = self._load_or_raise(run_id)
+        role_key = role.value
+        run.subagent_round_limits[role_key] = limit
+        run.subagent_rounds_used[role_key] = rounds_used
+        run.subagent_tool_calls_used[role_key] = tool_calls_used
+        if exit_reason:
+            run.subagent_exit_reasons[role_key] = exit_reason
+        if event_kind:
+            run.add_event(
+                event_kind,
+                role=role_key,
+                step_id=run.current_step_id if role == AgentRole.EXECUTE else "",
+                round_used=rounds_used,
+                rounds_remaining=max(0, limit - rounds_used),
+                tool_call_count=tool_calls_used,
+            )
+        self.store.save_run(run)
+
+    def _messages_with_round_budget(
+        self,
+        *,
+        role: AgentRole,
+        run_id: str,
+        messages: list[dict[str, Any]],
+    ) -> list[dict[str, Any]]:
+        if role != AgentRole.EXECUTE:
+            return messages
+        run = self._load_or_raise(run_id)
+        return [
+            *messages,
+            {
+                "role": "user",
+                "content": "[Runtime round budget]\n" + json.dumps(execute_round_budget(run), ensure_ascii=False, indent=2),
+            },
+        ]
 
     def _load_or_raise(self, run_id: str) -> MultiAgentRun:
         run = self.store.load_run(run_id)

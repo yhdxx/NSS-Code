@@ -142,6 +142,13 @@ class ClientConfig:
 
 
 @dataclass(frozen=True)
+class MultiAgentConfig:
+    max_agent_rounds: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS", 50))
+    )
+
+
+@dataclass(frozen=True)
 class MemoryConfig:
     enabled: bool = field(default_factory=lambda: _env_bool("MYCODINGAGENT_MEMORY_ENABLED", True))
     output_context_compression: bool = field(default_factory=lambda: _env_bool("OUTPUT_CONTEXT_COMPRESSION", True))
@@ -417,6 +424,7 @@ class MCPConfig:
 class AppConfig:
     api: ApiConfig = field(default_factory=ApiConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
+    multi_agent: MultiAgentConfig = field(default_factory=MultiAgentConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)
     docker: DockerConfig = field(default_factory=DockerConfig)

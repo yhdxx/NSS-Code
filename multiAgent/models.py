@@ -88,6 +88,10 @@ class MultiAgentRun:
     review_result: dict[str, Any] = field(default_factory=dict)
     subagent_messages: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     subagent_final_answers: dict[str, str] = field(default_factory=dict)
+    subagent_round_limits: dict[str, int] = field(default_factory=dict)
+    subagent_rounds_used: dict[str, int] = field(default_factory=dict)
+    subagent_tool_calls_used: dict[str, int] = field(default_factory=dict)
+    subagent_exit_reasons: dict[str, str] = field(default_factory=dict)
     feedback_events: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     events: list[dict[str, Any]] = field(default_factory=list)
     plan_attempts: int = 0
@@ -146,6 +150,22 @@ class MultiAgentRun:
             review_result=dict(payload.get("review_result", {})),
             subagent_messages=dict(payload.get("subagent_messages", {})),
             subagent_final_answers=dict(payload.get("subagent_final_answers", {})),
+            subagent_round_limits={
+                str(key): int(value)
+                for key, value in dict(payload.get("subagent_round_limits", {})).items()
+            },
+            subagent_rounds_used={
+                str(key): int(value)
+                for key, value in dict(payload.get("subagent_rounds_used", {})).items()
+            },
+            subagent_tool_calls_used={
+                str(key): int(value)
+                for key, value in dict(payload.get("subagent_tool_calls_used", {})).items()
+            },
+            subagent_exit_reasons={
+                str(key): str(value)
+                for key, value in dict(payload.get("subagent_exit_reasons", {})).items()
+            },
             feedback_events=dict(payload.get("feedback_events", {})),
             events=list(payload.get("events", [])),
             plan_attempts=int(payload.get("plan_attempts", 0) or 0),

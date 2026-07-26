@@ -3,8 +3,14 @@ from __future__ import annotations
 import asyncio
 import json
 
-from multiAgent.context import build_or_resume_subagent_messages, build_role_context, run_summary_for_main_context
+from multiAgent.context import (
+    build_or_resume_subagent_messages,
+    build_role_context,
+    load_system_prompt,
+    run_summary_for_main_context,
+)
 from multiAgent.models import AgentRole, MultiAgentRun, RunStatus, StepStatus
+from multiAgent.orchestrator import MultiAgentOrchestrator
 from multiAgent.store import MultiAgentStore
 from multiAgent.tool_policy import schemas_for_role
 from multiAgent.tools import (
@@ -26,6 +32,7 @@ from multiAgent.tools import (
     SubmitSubAgentStepParams,
 )
 from multiAgent.validators import validate_plan_payload
+from mycodingagent.llm_runtime.client import PendingToolCall
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from pydantic import BaseModel, Field
@@ -118,6 +125,32 @@ def test_execute_context_omits_original_user_request(tmp_path):
     assert "current_step_id" in context
 
 
+def test_execute_context_includes_round_budget(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    store.save_run(run)
+    asyncio.run(
+        SubmitPlan(store).execute(
+            SubmitPlanParams(run_id=run.run_id, title="Plan", summary="Do work", steps=VALID_STEPS)
+        )
+    )
+    asyncio.run(ApprovePlan(store).execute(ApprovePlanParams(run_id=run.run_id, reason="ok")))
+    approved = store.load_run(run.run_id)
+    assert approved is not None
+    approved.current_step_id = "1.1"
+    approved.subagent_round_limits[AgentRole.EXECUTE.value] = 30
+    approved.subagent_rounds_used[AgentRole.EXECUTE.value] = 26
+    approved.subagent_tool_calls_used[AgentRole.EXECUTE.value] = 42
+
+    context = json.loads(build_role_context(role=AgentRole.EXECUTE, run=approved, main_messages=[]))
+
+    assert context["agent_round_limit"] == 30
+    assert context["agent_rounds_used"] == 26
+    assert context["agent_rounds_remaining"] == 4
+    assert context["tool_calls_used_in_step"] == 42
+    assert "SubmitSubAgentStep" in context["round_budget_warning"]
+
+
 class DummyParams(BaseModel):
     value: str = Field(description="value")
 
@@ -205,9 +238,24 @@ def test_inspect_subagent_work_returns_minimal_paginated_payload(tmp_path):
     )
 
     payload = json.loads(result.output)
-    assert set(payload) == {"run_id", "agent", "step_id", "content", "next_offset", "has_more"}
+    assert set(payload) == {
+        "run_id",
+        "agent",
+        "step_id",
+        "content",
+        "content_total_chars",
+        "chunk_offset",
+        "chunk_limit",
+        "next_offset",
+        "has_more_inspection_content",
+        "has_more",
+    }
     assert payload["content"]
     assert payload["has_more"] is True
+    assert payload["has_more_inspection_content"] is True
+    assert payload["content_total_chars"] > len(payload["content"])
+    assert payload["chunk_offset"] == 0
+    assert payload["chunk_limit"] == 5
 
 
 def test_main_result_summary_does_not_include_full_approved_plan(tmp_path):
@@ -497,3 +545,64 @@ def test_fresh_subagent_context_when_no_history(tmp_path):
     assert messages[0]["role"] == "system"
     assert messages[1]["role"] == "user"
     assert updated.feedback_events == {}
+
+
+def test_execute_round_limit_failure_is_diagnostic(tmp_path, monkeypatch):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    registry = ToolRegistry()
+    registry.register(DummyReadTool())
+    run = MultiAgentRun.create(task="task")
+    store.save_run(run)
+    asyncio.run(
+        SubmitPlan(store).execute(
+            SubmitPlanParams(run_id=run.run_id, title="Plan", summary="Do work", steps=VALID_STEPS)
+        )
+    )
+    asyncio.run(ApprovePlan(store).execute(ApprovePlanParams(run_id=run.run_id, reason="ok")))
+
+    call_index = 0
+
+    async def fake_stream_one_round(*args, **kwargs):
+        nonlocal call_index
+        call_index += 1
+        return (
+            "",
+            [
+                PendingToolCall(
+                    tool_id=f"call_{call_index}",
+                    tool_name="ReadFile",
+                    arguments=json.dumps(
+                        {"value": "read", "step_id": "1.1", "intent": "consume a round without submitting"}
+                    ),
+                )
+            ],
+            None,
+        )
+
+    monkeypatch.setattr("multiAgent.orchestrator.agent_round_limit", lambda: 2)
+    monkeypatch.setattr("multiAgent.orchestrator.stream_one_round", fake_stream_one_round)
+
+    orchestrator = MultiAgentOrchestrator(
+        store=store,
+        registry=registry,
+        api_client=object(),
+        memory_runtime=None,
+    )
+    result = asyncio.run(orchestrator.run(run_id=run.run_id, main_messages=[]))
+
+    assert result.status == RunStatus.FAILED
+    assert result.error == "execute exceeded agent tool rounds before submitting step: 1.1"
+    assert result.subagent_exit_reasons[AgentRole.EXECUTE.value] == "max_agent_tool_rounds_exceeded"
+    assert any(event["kind"] == "agent_round_limit_reached" for event in result.events)
+    assert any(event["kind"] == "execute_step_attempt_failed" for event in result.events)
+
+
+def test_multi_agent_prompts_discourage_large_file_repeated_reads():
+    plan_prompt = load_system_prompt(AgentRole.PLAN)
+    plan_review_prompt = load_system_prompt(AgentRole.PLAN_REVIEW)
+    execute_prompt = load_system_prompt(AgentRole.EXECUTE)
+
+    assert "reads the source once" in plan_prompt
+    assert "repeatedly rereading the same file" in plan_review_prompt
+    assert "Avoid repeated ReadFile loops over large files" in execute_prompt
+    assert "agent_rounds_remaining" in execute_prompt

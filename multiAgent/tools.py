@@ -388,7 +388,10 @@ class InspectSubAgentWorkParams(BaseModel):
 
 class InspectSubAgentWork(Tool):
     name = "InspectSubAgentWork"
-    description = "Inspect stored sub-agent work for a multi-agent run by run_id and agent."
+    description = (
+        "Inspect paginated stored sub-agent messages for a multi-agent run by run_id and agent. "
+        "Pagination fields describe this inspection result only; they do not indicate model context truncation."
+    )
     params_model = InspectSubAgentWorkParams
     category = "read"
     is_concurrency_safe = True
@@ -413,7 +416,11 @@ class InspectSubAgentWork(Tool):
                 "agent": role.value,
                 "step_id": params.step_id,
                 "content": chunk,
+                "content_total_chars": len(content),
+                "chunk_offset": params.offset,
+                "chunk_limit": params.limit,
                 "next_offset": next_offset if next_offset < len(content) else None,
+                "has_more_inspection_content": next_offset < len(content),
                 "has_more": next_offset < len(content),
             }
         )

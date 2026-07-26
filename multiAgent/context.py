@@ -6,6 +6,7 @@ from pathlib import Path
 from time import time
 from typing import Any
 
+from mycodingagent.configuration import CONFIG
 from multiAgent.models import AgentRole, MultiAgentRun, executable_steps
 
 
@@ -140,12 +141,18 @@ def _plan_review_context(run: MultiAgentRun) -> str:
 
 
 def _execute_context(run: MultiAgentRun) -> str:
+    budget = execute_round_budget(run)
     payload = {
         "run_id": run.run_id,
         "approved_plan": [node.to_dict() for node in run.approved_plan],
         "current_step_id": run.current_step_id,
         "completed_steps": sorted(run.step_submissions),
         "step_status": {key: str(value.value) for key, value in run.step_status.items()},
+        "agent_round_limit": budget["agent_round_limit"],
+        "agent_rounds_used": budget["agent_rounds_used"],
+        "agent_rounds_remaining": budget["agent_rounds_remaining"],
+        "tool_calls_used_in_step": budget["tool_calls_used_in_step"],
+        "round_budget_warning": budget["round_budget_warning"],
         "plan_review_approval": run.review_result.get("plan_review") or run.review_result,
         "test_feedback": run.test_result if run.test_result.get("status") == "failed" else {},
         "execute_review_feedback": run.review_result if run.review_result.get("status") == "rejected" else {},
@@ -155,6 +162,26 @@ def _execute_context(run: MultiAgentRun) -> str:
         ),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def execute_round_budget(run: MultiAgentRun) -> dict[str, Any]:
+    role = AgentRole.EXECUTE.value
+    limit = int(run.subagent_round_limits.get(role) or CONFIG.multi_agent.max_agent_rounds)
+    used = max(0, int(run.subagent_rounds_used.get(role, 0)))
+    remaining = max(0, limit - used)
+    warning = ""
+    if remaining <= 5:
+        warning = (
+            "Round budget is nearly exhausted. If current_step_id acceptance is satisfied, "
+            "call SubmitSubAgentStep now; otherwise use the fewest possible tools to finish verification."
+        )
+    return {
+        "agent_round_limit": limit,
+        "agent_rounds_used": used,
+        "agent_rounds_remaining": remaining,
+        "tool_calls_used_in_step": max(0, int(run.subagent_tool_calls_used.get(role, 0))),
+        "round_budget_warning": warning,
+    }
 
 
 def _test_context(run: MultiAgentRun) -> str:
