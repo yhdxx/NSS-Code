@@ -3,7 +3,7 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mycodingagent.long_term_memory.models import MemoryItemStatus, MemoryType
+from mycodingagent.long_term_memory.models import ExtractionStatus, MemoryItemStatus, MemoryType
 from mycodingagent.long_term_memory.session_serializer import build_storage_payload, session_source_hash
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch, SubmitLongTermMemoryQueryResult
@@ -111,6 +111,47 @@ def test_write_lock_blocks_second_owner_until_expired(tmp_path: Path):
     assert not store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="b", ttl_seconds=60)
     store.release_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="a")
     assert store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="b", ttl_seconds=60)
+
+
+def test_startup_requeues_interrupted_extracting_jobs_without_waiting_for_ttl(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    extraction_id = store.mark_extraction_pending(
+        session_id="s1",
+        user_id="u1",
+        workspace_fingerprint="wf",
+        workspace_label="repo",
+        workspace_root="/repo",
+        source_hash="hash1",
+        source_message_count=2,
+    )
+    claimed = store.claim_extraction(extraction_id, lock_ttl_seconds=3600)
+    assert claimed is not None
+    assert claimed.status == ExtractionStatus.EXTRACTING
+    assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
+
+    assert store.requeue_interrupted_extractions_for_startup() == 1
+
+    claimable = store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600)
+    assert [job.extraction_id for job in claimable] == [extraction_id]
+    assert claimable[0].status == ExtractionStatus.PENDING
+
+
+def test_startup_does_not_requeue_extracting_job_with_active_write_lock(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    extraction_id = store.mark_extraction_pending(
+        session_id="s1",
+        user_id="u1",
+        workspace_fingerprint="wf",
+        workspace_label="repo",
+        workspace_root="/repo",
+        source_hash="hash1",
+        source_message_count=2,
+    )
+    store.claim_extraction(extraction_id, lock_ttl_seconds=3600)
+    assert store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="owner", ttl_seconds=60)
+
+    assert store.requeue_interrupted_extractions_for_startup() == 0
+    assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
 
 
 def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):

@@ -57,6 +57,7 @@ class LongTermMemoryRuntime:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
+        self.store.requeue_interrupted_extractions_for_startup(limit=100)
         self._backfill_task = loop.create_task(self._run_backfill())
 
     async def close(self) -> None:

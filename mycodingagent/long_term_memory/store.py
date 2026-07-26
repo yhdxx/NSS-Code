@@ -256,6 +256,44 @@ class SQLiteLongTermMemoryStore:
             ).fetchall()
         return [_extraction_from_row(row) for row in rows]
 
+    def requeue_interrupted_extractions_for_startup(self, *, limit: int = 100) -> int:
+        now = time()
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT e.extraction_id
+                FROM long_term_memory_extractions e
+                LEFT JOIN long_term_memory_locks l
+                  ON l.lock_key = ('user:' || e.user_id || ':workspace:' || e.workspace_fingerprint)
+                 AND l.expires_at >= ?
+                WHERE e.status = ?
+                  AND l.lock_key IS NULL
+                ORDER BY e.updated_at ASC
+                LIMIT ?
+                """,
+                (now, ExtractionStatus.EXTRACTING.value, max(1, limit)),
+            ).fetchall()
+            extraction_ids = [str(row["extraction_id"]) for row in rows]
+            if not extraction_ids:
+                return 0
+            conn.executemany(
+                """
+                UPDATE long_term_memory_extractions
+                SET status = ?, started_at = 0, finished_at = 0, updated_at = ?, error_text = ?
+                WHERE extraction_id = ?
+                """,
+                [
+                    (
+                        ExtractionStatus.PENDING.value,
+                        now,
+                        "previous extracting job was interrupted before startup; requeued",
+                        extraction_id,
+                    )
+                    for extraction_id in extraction_ids
+                ],
+            )
+        return len(extraction_ids)
+
     def mark_extraction_failed(self, extraction_id: str, error_text: str) -> None:
         now = time()
         with self._connect() as conn:
