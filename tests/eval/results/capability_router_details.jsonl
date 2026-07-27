@@ -1,0 +1,20 @@
+{"case_id": "cap_01_file_read", "expected_capability": "ReadFile", "passed": true, "query": "读取当前项目 README 并总结", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_02_file_search", "expected_capability": "Grep", "passed": true, "query": "搜索所有调用 BatchRecoverContext 的地方", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_03_shell", "expected_capability": "Bash", "passed": true, "query": "运行 pytest 验证测试", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_04_skill", "expected_capability": "Skill", "passed": true, "query": "把项目经历改成简历责任描述", "recommended_kinds": ["skill"], "recommended_names": ["skill_resume_writer"]}
+{"case_id": "cap_05_mcp", "expected_capability": "MCP", "passed": true, "query": "查看 GitHub issue 列表", "recommended_kinds": ["mcp_server"], "recommended_names": ["github"]}
+{"case_id": "cap_06_memory", "expected_capability": "BatchRecoverContext", "passed": true, "query": "恢复之前虚拟化的工具输出", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_07_file_read", "expected_capability": "ReadFile", "passed": true, "query": "读取当前项目 README 并总结", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_08_file_search", "expected_capability": "Grep", "passed": true, "query": "搜索所有调用 BatchRecoverContext 的地方", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_09_shell", "expected_capability": "Bash", "passed": true, "query": "运行 pytest 验证测试", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_10_skill", "expected_capability": "Skill", "passed": true, "query": "把项目经历改成简历责任描述", "recommended_kinds": ["skill"], "recommended_names": ["skill_resume_writer"]}
+{"case_id": "cap_11_mcp", "expected_capability": "MCP", "passed": true, "query": "查看 GitHub issue 列表", "recommended_kinds": ["mcp_server"], "recommended_names": ["github"]}
+{"case_id": "cap_12_memory", "expected_capability": "BatchRecoverContext", "passed": true, "query": "恢复之前虚拟化的工具输出", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_13_file_read", "expected_capability": "ReadFile", "passed": true, "query": "读取当前项目 README 并总结", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_14_file_search", "expected_capability": "Grep", "passed": true, "query": "搜索所有调用 BatchRecoverContext 的地方", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_15_shell", "expected_capability": "Bash", "passed": true, "query": "运行 pytest 验证测试", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_16_skill", "expected_capability": "Skill", "passed": true, "query": "把项目经历改成简历责任描述", "recommended_kinds": ["skill"], "recommended_names": ["skill_resume_writer"]}
+{"case_id": "cap_17_mcp", "expected_capability": "MCP", "passed": true, "query": "查看 GitHub issue 列表", "recommended_kinds": ["mcp_server"], "recommended_names": ["github"]}
+{"case_id": "cap_18_memory", "expected_capability": "BatchRecoverContext", "passed": true, "query": "恢复之前虚拟化的工具输出", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_19_file_read", "expected_capability": "ReadFile", "passed": true, "query": "读取当前项目 README 并总结", "recommended_kinds": [], "recommended_names": []}
+{"case_id": "cap_20_file_search", "expected_capability": "Grep", "passed": true, "query": "搜索所有调用 BatchRecoverContext 的地方", "recommended_kinds": [], "recommended_names": []}

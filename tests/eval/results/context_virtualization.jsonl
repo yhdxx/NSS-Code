@@ -1,0 +1,1 @@
+{"case_count": 2, "mode_accuracy": {"raw": 1.0, "recent_only": 0.0, "summary_baseline": 1.0, "virtualized": 1.0}, "mode_avg_prompt_chars": {"raw": 55545.0, "recent_only": 3985.0, "summary_baseline": 4087.0, "virtualized": 16793.0}, "module": "context_virtualization", "status": "passed"}

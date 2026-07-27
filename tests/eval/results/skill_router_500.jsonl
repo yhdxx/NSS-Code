@@ -1,0 +1,1 @@
+{"avg_unrelated_top_5": 0.04, "duration_seconds": 215.816, "module": "skill_router_500", "mrr": 1.0, "query_count": 100, "recall_at_1": 1.0, "recall_at_3": 1.0, "recall_at_5": 1.0, "skill_count": 520, "status": "passed"}

@@ -1,0 +1,8 @@
+{"answer": "会话初期提出的项目约束是：**ARCH_CONSTRAINT_01: 禁止修改 billing 模块，所有适配必须放在 adapter_01.py**。", "case_id": "ctx_01", "duration_ms": 2974.76, "mode": "raw", "passed": true, "prompt_chars": 55545}
+{"answer": "会话初期您提出的项目约束是：**ARCH_CONSTRAINT_01: 禁止修改 billing 模块，所有适配必须放在 adapter_01.py**。", "case_id": "ctx_01", "duration_ms": 1985.93, "mode": "virtualized", "passed": true, "prompt_chars": 16793}
+{"answer": "会话初期您提出的项目约束是：**禁止修改 billing 模块，所有适配必须放在 adapter_01.py 中**。", "case_id": "ctx_01", "duration_ms": 1909.81, "mode": "summary_baseline", "passed": true, "prompt_chars": 4087}
+{"answer": "会话历史中没有包含任何关于项目约束的信息，因此无法回答禁止修改的模块及适配文件名。", "case_id": "ctx_01", "duration_ms": 5664.58, "mode": "recent_only", "passed": false, "prompt_chars": 3985}
+{"answer": "会话初期您提出的项目约束是：ARCH_CONSTRAINT_02: 禁止修改 billing 模块，所有适配必须放在 adapter_02.py。", "case_id": "ctx_02", "duration_ms": 2555.03, "mode": "raw", "passed": true, "prompt_chars": 55545}
+{"answer": "根据会话初期你提出的项目约束，完整内容是：ARCH_CONSTRAINT_02: 禁止修改 billing 模块，所有适配必须放在 adapter_02.py。", "case_id": "ctx_02", "duration_ms": 3255.29, "mode": "virtualized", "passed": true, "prompt_chars": 16793}
+{"answer": "项目约束是：禁止修改 billing 模块，所有适配必须放在 adapter_02.py 中。", "case_id": "ctx_02", "duration_ms": 1516.47, "mode": "summary_baseline", "passed": true, "prompt_chars": 4087}
+{"answer": "根据提供的会话历史记录，无法确定会话初期您提出的项目约束具体内容。历史记录中未包含关于禁止修改哪个模块及适配文件名的初始约束信息。", "case_id": "ctx_02", "duration_ms": 3500.81, "mode": "recent_only", "passed": false, "prompt_chars": 3985}

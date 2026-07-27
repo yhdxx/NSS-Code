@@ -1,0 +1,20 @@
+{"case_id": "cap_01_file_read", "category": "capability_router", "expected_capability": "ReadFile", "query": "读取当前项目 README 并总结"}
+{"case_id": "cap_02_file_search", "category": "capability_router", "expected_capability": "Grep", "query": "搜索所有调用 BatchRecoverContext 的地方"}
+{"case_id": "cap_03_shell", "category": "capability_router", "expected_capability": "Bash", "query": "运行 pytest 验证测试"}
+{"case_id": "cap_04_skill", "category": "capability_router", "expected_capability": "Skill", "query": "把项目经历改成简历责任描述"}
+{"case_id": "cap_05_mcp", "category": "capability_router", "expected_capability": "MCP", "query": "查看 GitHub issue 列表"}
+{"case_id": "cap_06_memory", "category": "capability_router", "expected_capability": "BatchRecoverContext", "query": "恢复之前虚拟化的工具输出"}
+{"case_id": "cap_07_file_read", "category": "capability_router", "expected_capability": "ReadFile", "query": "读取当前项目 README 并总结"}
+{"case_id": "cap_08_file_search", "category": "capability_router", "expected_capability": "Grep", "query": "搜索所有调用 BatchRecoverContext 的地方"}
+{"case_id": "cap_09_shell", "category": "capability_router", "expected_capability": "Bash", "query": "运行 pytest 验证测试"}
+{"case_id": "cap_10_skill", "category": "capability_router", "expected_capability": "Skill", "query": "把项目经历改成简历责任描述"}
+{"case_id": "cap_11_mcp", "category": "capability_router", "expected_capability": "MCP", "query": "查看 GitHub issue 列表"}
+{"case_id": "cap_12_memory", "category": "capability_router", "expected_capability": "BatchRecoverContext", "query": "恢复之前虚拟化的工具输出"}
+{"case_id": "cap_13_file_read", "category": "capability_router", "expected_capability": "ReadFile", "query": "读取当前项目 README 并总结"}
+{"case_id": "cap_14_file_search", "category": "capability_router", "expected_capability": "Grep", "query": "搜索所有调用 BatchRecoverContext 的地方"}
+{"case_id": "cap_15_shell", "category": "capability_router", "expected_capability": "Bash", "query": "运行 pytest 验证测试"}
+{"case_id": "cap_16_skill", "category": "capability_router", "expected_capability": "Skill", "query": "把项目经历改成简历责任描述"}
+{"case_id": "cap_17_mcp", "category": "capability_router", "expected_capability": "MCP", "query": "查看 GitHub issue 列表"}
+{"case_id": "cap_18_memory", "category": "capability_router", "expected_capability": "BatchRecoverContext", "query": "恢复之前虚拟化的工具输出"}
+{"case_id": "cap_19_file_read", "category": "capability_router", "expected_capability": "ReadFile", "query": "读取当前项目 README 并总结"}
+{"case_id": "cap_20_file_search", "category": "capability_router", "expected_capability": "Grep", "query": "搜索所有调用 BatchRecoverContext 的地方"}
