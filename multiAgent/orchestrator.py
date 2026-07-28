@@ -4,6 +4,7 @@ import asyncio
 import json
 from time import time
 from typing import Any
+from uuid import uuid4
 
 from openai import AsyncOpenAI
 
@@ -211,22 +212,46 @@ class MultiAgentOrchestrator:
                 run.add_event("task_execute_failed", task_id=task_id, reason=task["reason"])
                 self.store.save_run(run)
                 return
-            await self._run_agent(
-                role=AgentRole.TEST,
-                run=run,
-                main_messages=main_messages,
-                task_id=task_id,
-            )
-            run = self._load_or_raise(run_id)
-            task = run.scheduled_tasks.get(task_id, {})
-            if task.get("status") == "passed":
+            for test_attempt in range(2):
+                run = self._load_or_raise(run_id)
+                task = run.scheduled_tasks.get(task_id, {})
+                task["test_attempts"] = int(task.get("test_attempts", 0) or 0) + 1
+                self.store.save_run(run)
+                await self._run_agent(
+                    role=AgentRole.TEST,
+                    run=run,
+                    main_messages=main_messages,
+                    task_id=task_id,
+                )
+                run = self._load_or_raise(run_id)
+                task = run.scheduled_tasks.get(task_id, {})
+                if task.get("status") == "passed":
+                    self.store.save_run(run)
+                    return
+                if task.get("status") == "needs_fix":
+                    break
+                observation = self._last_agent_observation(run, AgentRole.TEST, task_id=task_id)
+                if test_attempt == 0:
+                    self._append_test_decision_required(run, task_id=task_id, observation=observation)
+                    self.store.save_run(run)
+                    continue
+                task["status"] = "failed"
+                task["failure_type"] = "task_test_no_decision"
+                task["reason"] = f"task_test_no_decision: test did not call ApproveTaskTest or ReportTaskFailure for task: {task_id}"
+                task["last_test_message"] = observation["last_assistant_message"]
+                task["last_tool_summary"] = observation["last_tool_summary"]
+                run.add_event(
+                    "task_test_no_decision",
+                    task_id=task_id,
+                    last_test_message=observation["last_assistant_message"],
+                    last_tool_summary=observation["last_tool_summary"],
+                )
                 self.store.save_run(run)
                 return
+            run = self._load_or_raise(run_id)
+            task = run.scheduled_tasks.get(task_id, {})
             if task.get("status") == "needs_fix":
                 continue
-            task["status"] = "failed"
-            task["reason"] = f"task_test did not approve or report failure for task: {task_id}"
-            self.store.save_run(run)
             return
         run = self._load_or_raise(run_id)
         task = run.scheduled_tasks.get(task_id, {})
@@ -387,7 +412,12 @@ class MultiAgentOrchestrator:
             refreshed = self._load_or_raise(run.run_id)
             if role in {AgentRole.EXECUTE, AgentRole.TEST}:
                 task = refreshed.scheduled_tasks.get(task_id, {})
-                if task.get("status") in {"testing", "passed", "needs_fix", "failed"}:
+                terminal_task_statuses = (
+                    {"testing", "passed", "needs_fix", "failed"}
+                    if role == AgentRole.EXECUTE
+                    else {"passed", "needs_fix", "failed"}
+                )
+                if task.get("status") in terminal_task_statuses:
                     self._record_agent_budget(
                         run_id=run.run_id,
                         role=role,
@@ -651,8 +681,11 @@ class MultiAgentOrchestrator:
                         "summary": task.get("summary", ""),
                         "changed_files": task.get("changed_files", []),
                         "reason": task.get("reason", ""),
+                        "failure_type": task.get("failure_type", ""),
                         "required_fixes": task.get("required_fixes", []),
                         "test_evidence": task.get("test_evidence", ""),
+                        "last_test_message": task.get("last_test_message", ""),
+                        "last_tool_summary": task.get("last_tool_summary", ""),
                     }.items()
                     if value not in ("", [], None)
                 }
@@ -660,12 +693,15 @@ class MultiAgentOrchestrator:
         failed = [task for task in tasks if task.get("status") in {"failed", "needs_fix"}]
         blocked = [task for task in tasks if task.get("status") in {"queued", "running", "testing"}]
         status = "failed" if failed else "blocked" if blocked else "passed"
+        failed_by_test_protocol = any(task.get("failure_type") == "task_test_no_decision" for task in failed)
         return json.dumps(
             {
                 "status": status,
                 "tasks": tasks,
                 "next_action": (
-                    "Dispatch focused repair tasks for failed items."
+                    "Do not repeat broad dispatch. Inspect the task_test_no_decision details, then dispatch one focused verification/repair task or request intervention."
+                    if failed_by_test_protocol
+                    else "Dispatch focused repair tasks for failed items."
                     if failed
                     else "Resolve dependencies or dispatch a narrower task batch."
                     if blocked
@@ -675,6 +711,60 @@ class MultiAgentOrchestrator:
             ensure_ascii=False,
             indent=2,
         )
+
+    def _append_test_decision_required(
+        self,
+        run: MultiAgentRun,
+        *,
+        task_id: str,
+        observation: dict[str, str],
+    ) -> None:
+        payload = {
+            "status": "decision_required",
+            "task_id": task_id,
+            "reason": "The previous test turn inspected evidence but did not call ApproveTaskTest or ReportTaskFailure.",
+            "required_action": "Call ApproveTaskTest if the task passes; otherwise call ReportTaskFailure. Do not use more tools unless the visible evidence is insufficient.",
+            "last_test_message": observation["last_assistant_message"],
+            "last_tool_summary": observation["last_tool_summary"],
+        }
+        run.feedback_events.setdefault(AgentRole.TEST.value, []).append(
+            {
+                "event_id": uuid4().hex,
+                "source_agent": "runtime",
+                "tool_name": "RuntimeTestDecisionRequired",
+                "target_agent": AgentRole.TEST.value,
+                "payload": payload,
+                "created_at": time(),
+                "delivered": False,
+            }
+        )
+        run.add_event("task_test_decision_retry", task_id=task_id)
+
+    def _last_agent_observation(self, run: MultiAgentRun, role: AgentRole, *, task_id: str = "") -> dict[str, str]:
+        message_key = message_key_for_role(role, run, task_id=task_id)
+        messages = run.subagent_messages.get(message_key, [])
+        last_assistant = ""
+        last_tool = ""
+        for message in reversed(messages):
+            if not last_tool and message.get("role") == "tool":
+                if not str(message.get("tool_call_id", "")).startswith("feedback_"):
+                    last_tool = str(message.get("content", ""))
+            if not last_assistant and message.get("role") == "assistant":
+                if message.get("content"):
+                    last_assistant = str(message.get("content", ""))
+                elif message.get("tool_calls"):
+                    tool_names = [
+                        str(call.get("function", {}).get("name", ""))
+                        for call in message.get("tool_calls", [])
+                        if isinstance(call, dict)
+                    ]
+                    last_assistant = "tool_calls: " + ", ".join(name for name in tool_names if name)
+            if last_tool and last_assistant:
+                break
+        return {
+            "last_assistant_message": _compact_text(last_assistant),
+            "last_tool_summary": _compact_text(last_tool),
+        }
 
     def _store_tool_output(
         self,
@@ -810,6 +900,16 @@ def _phase_changed(role: AgentRole, status: RunStatus) -> bool:
     if role == AgentRole.EXECUTE_REVIEW:
         return status != RunStatus.EXECUTE_REVIEW
     return False
+
+
+def _compact_text(text: str, *, limit: int = 1200) -> str:
+    text = str(text or "").strip()
+    if len(text) <= limit:
+        return text
+    head = text[: limit // 2]
+    tail = text[-(limit // 2) :]
+    omitted = len(text) - len(head) - len(tail)
+    return f"{head}\n[... {omitted} chars omitted ...]\n{tail}"
 
 
 def _preview_without_memory(output: str) -> str:

@@ -218,6 +218,9 @@ def test_scheduling_schema_only_exposes_batch_dispatch_and_final_test(tmp_path):
     assert "DispatchTask" not in names
     assert "CheckTask" not in names
     assert "CompleteScheduling" not in names
+    dispatch_schema = next(schema for schema in schemas_for_role(role=AgentRole.SCHEDULING, registry=registry, store=store) if schema["name"] == "DispatchTasks")
+    assert "self-contained engineering tasks" in dispatch_schema["description"]
+    assert "pass/fail/blocked" in dispatch_schema["description"]
 
 
 def test_submit_final_test_allows_repaired_failed_history(tmp_path):
@@ -682,12 +685,187 @@ def test_scheduled_tasks_are_processed_in_parallel_batches(tmp_path):
     assert max_seen > 1
 
 
+def test_task_test_no_decision_gets_one_forced_retry_then_can_pass(tmp_path, monkeypatch):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    registry = ToolRegistry()
+    registry.register(DummyReadTool())
+    run = MultiAgentRun.create(task="task")
+    run.status = RunStatus.SCHEDULING
+    run.scheduled_tasks["task_1"] = {
+        "task_id": "task_1",
+        "task": "fix one thing",
+        "test_instruction": "verify one thing",
+        "status": "queued",
+        "depends_on": [],
+    }
+    store.save_run(run)
+    calls = []
+
+    async def fake_stream_one_round(*args, **kwargs):
+        label = kwargs["output_label"]
+        calls.append(label)
+        if label == AgentRole.EXECUTE.value:
+            return (
+                "",
+                [
+                    PendingToolCall(
+                        tool_id="execute_submit",
+                        tool_name="SubmitTaskExecution",
+                        arguments=json.dumps(
+                            {
+                                "run_id": run.run_id,
+                                "task_id": "task_1",
+                                "summary": "done",
+                                "changed_files": [],
+                                "evidence": "done",
+                            }
+                        ),
+                    )
+                ],
+                None,
+            )
+        if calls.count(AgentRole.TEST.value) == 1:
+            return (
+                "",
+                [
+                    PendingToolCall(
+                        tool_id="test_read",
+                        tool_name="ReadFile",
+                        arguments=json.dumps({"value": "verification output"}),
+                    )
+                ],
+                None,
+            )
+        if calls.count(AgentRole.TEST.value) == 2:
+            return ("Looks good but I forgot to submit.", [], None)
+        return (
+            "",
+            [
+                PendingToolCall(
+                    tool_id="test_approve",
+                    tool_name="ApproveTaskTest",
+                    arguments=json.dumps(
+                        {
+                            "run_id": run.run_id,
+                            "task_id": "task_1",
+                            "evidence": "verified after runtime reminder",
+                        }
+                    ),
+                )
+            ],
+            None,
+        )
+
+    monkeypatch.setattr("multiAgent.orchestrator.stream_one_round", fake_stream_one_round)
+    orchestrator = MultiAgentOrchestrator(
+        store=store,
+        registry=registry,
+        api_client=object(),
+        memory_runtime=None,
+    )
+
+    asyncio.run(orchestrator._run_task(run_id=run.run_id, task_id="task_1", main_messages=[]))
+
+    updated = store.load_run(run.run_id)
+    assert updated is not None
+    assert updated.scheduled_tasks["task_1"]["status"] == "passed"
+    assert updated.scheduled_tasks["task_1"]["test_attempts"] == 2
+    assert any(event["kind"] == "task_test_decision_retry" for event in updated.events)
+    test_messages = updated.subagent_messages["test:task_1"]
+    assert "RuntimeTestDecisionRequired" in json.dumps(test_messages, ensure_ascii=False)
+
+
+def test_task_test_no_decision_fails_with_diagnostic_after_retry(tmp_path, monkeypatch):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    registry = ToolRegistry()
+    registry.register(DummyReadTool())
+    run = MultiAgentRun.create(task="task")
+    run.status = RunStatus.SCHEDULING
+    run.scheduled_tasks["task_1"] = {
+        "task_id": "task_1",
+        "task": "fix one thing",
+        "test_instruction": "verify one thing",
+        "status": "queued",
+        "depends_on": [],
+    }
+    store.save_run(run)
+    test_calls = 0
+
+    async def fake_stream_one_round(*args, **kwargs):
+        nonlocal test_calls
+        label = kwargs["output_label"]
+        if label == AgentRole.EXECUTE.value:
+            return (
+                "",
+                [
+                    PendingToolCall(
+                        tool_id="execute_submit",
+                        tool_name="SubmitTaskExecution",
+                        arguments=json.dumps(
+                            {
+                                "run_id": run.run_id,
+                                "task_id": "task_1",
+                                "summary": "done",
+                                "changed_files": [],
+                                "evidence": "done",
+                            }
+                        ),
+                    )
+                ],
+                None,
+            )
+        test_calls += 1
+        if test_calls == 1:
+            return (
+                "",
+                [
+                    PendingToolCall(
+                        tool_id="test_read",
+                        tool_name="ReadFile",
+                        arguments=json.dumps({"value": "verification output"}),
+                    )
+                ],
+                None,
+            )
+        return ("Still no decision.", [], None)
+
+    monkeypatch.setattr("multiAgent.orchestrator.stream_one_round", fake_stream_one_round)
+    orchestrator = MultiAgentOrchestrator(
+        store=store,
+        registry=registry,
+        api_client=object(),
+        memory_runtime=None,
+    )
+
+    asyncio.run(orchestrator._run_task(run_id=run.run_id, task_id="task_1", main_messages=[]))
+
+    updated = store.load_run(run.run_id)
+    assert updated is not None
+    task = updated.scheduled_tasks["task_1"]
+    assert task["status"] == "failed"
+    assert task["failure_type"] == "task_test_no_decision"
+    assert "ApproveTaskTest or ReportTaskFailure" in task["reason"]
+    assert task["last_test_message"]
+    assert task["last_tool_summary"]
+    assert "verification output" in task["last_tool_summary"]
+    result = json.loads(orchestrator._scheduled_task_result(run.run_id, {"task_1"}))
+    assert result["tasks"][0]["failure_type"] == "task_test_no_decision"
+    assert "Do not repeat broad dispatch" in result["next_action"]
+
+
 def test_multi_agent_prompts_discourage_large_file_repeated_reads():
     plan_prompt = load_system_prompt(AgentRole.PLAN)
     plan_review_prompt = load_system_prompt(AgentRole.PLAN_REVIEW)
     execute_prompt = load_system_prompt(AgentRole.EXECUTE)
+    scheduling_prompt = load_system_prompt(AgentRole.SCHEDULING)
+    test_prompt = load_system_prompt(AgentRole.TEST)
 
     assert "reads the source once" in plan_prompt
     assert "repeatedly rereading the same file" in plan_review_prompt
+    assert "many tiny leaf steps" in plan_review_prompt
     assert "Avoid repeated ReadFile loops over large files" in execute_prompt
     assert "agent_rounds_remaining" in execute_prompt
+    assert "atomic engineering task" in scheduling_prompt
+    assert "Do not dispatch pure reading" in scheduling_prompt
+    assert "RuntimeTestDecisionRequired" in test_prompt
+    assert "ApproveTaskTest or ReportTaskFailure" in test_prompt

@@ -1,0 +1,195 @@
+============================= test session starts ==============================
+platform linux -- Python 3.12.13, pytest-9.1.1, pluggy-1.6.0 -- /usr/local/bin/python
+cachedir: .pytest_cache
+rootdir: /workspace
+plugins: anyio-4.14.1, cov-7.1.0
+collecting ... collected 28 items
+
+tests/test_multi_agent.py::test_submit_plan_validation_accepts_recursive_contiguous_steps FAILED [  3%]
+tests/test_multi_agent.py::test_submit_plan_validation_rejects_non_contiguous_steps FAILED [  7%]
+tests/test_multi_agent.py::test_submit_and_approve_plan_freezes_approved_plan FAILED [ 10%]
+tests/test_multi_agent.py::test_execute_context_omits_original_user_request FAILED [ 14%]
+tests/test_multi_agent.py::test_execute_context_includes_round_budget FAILED [ 17%]
+tests/test_multi_agent.py::test_read_only_agents_do_not_receive_write_tools PASSED [ 21%]
+tests/test_multi_agent.py::test_execute_schemas_require_task_id PASSED   [ 25%]
+tests/test_multi_agent.py::test_scheduling_schema_only_exposes_batch_dispatch_and_final_test PASSED [ 28%]
+tests/test_multi_agent.py::test_submit_final_test_allows_repaired_failed_history PASSED [ 32%]
+tests/test_multi_agent.py::test_inspect_subagent_work_returns_minimal_paginated_payload FAILED [ 35%]
+tests/test_multi_agent.py::test_main_result_summary_does_not_include_full_approved_plan FAILED [ 39%]
+tests/test_multi_agent.py::test_delegate_schema_uses_binary_routing_inputs PASSED [ 42%]
+tests/test_multi_agent.py::test_delegate_rejects_blank_reason PASSED     [ 46%]
+tests/test_multi_agent.py::test_delegate_starts_workflow_for_complex_task PASSED [ 50%]
+tests/test_multi_agent.py::test_subagent_schemas_do_not_include_delegate_tool PASSED [ 53%]
+tests/test_multi_agent.py::test_main_registry_schema_includes_delegate_tool PASSED [ 57%]
+tests/test_multi_agent.py::test_reject_plan_feedback_is_delivered_to_resumed_plan_context PASSED [ 60%]
+tests/test_multi_agent.py::test_feedback_delivery_is_not_repeated PASSED [ 64%]
+tests/test_multi_agent.py::test_report_test_failure_feedback_targets_execute FAILED [ 67%]
+tests/test_multi_agent.py::test_reject_execution_feedback_targets_execute FAILED [ 71%]
+tests/test_multi_agent.py::test_fresh_subagent_context_when_no_history PASSED [ 75%]
+tests/test_multi_agent.py::test_execute_round_limit_failure_is_diagnostic FAILED [ 78%]
+tests/test_multi_agent.py::test_scheduled_tasks_are_processed_in_parallel_batches PASSED [ 82%]
+tests/test_multi_agent.py::test_multi_agent_prompts_discourage_large_file_repeated_reads PASSED [ 85%]
+tests/test_multi_agent.py::test_scheduling_control_tools_surface PASSED  [ 89%]
+tests/test_multi_agent.py::test_dispatch_tasks_result_structure PASSED   [ 92%]
+tests/test_multi_agent.py::test_execute_tool_schemas_require_task_id PASSED [ 96%]
+tests/test_multi_agent.py::test_bash_requires_declared_write_files_in_execute FAILED [100%]
+
+=================================== FAILURES ===================================
+________ test_submit_plan_validation_accepts_recursive_contiguous_steps ________
+tests/test_multi_agent.py:63: in test_submit_plan_validation_accepts_recursive_contiguous_steps
+    result = validate_plan_payload(title="Plan", summary="Do work", steps=VALID_STEPS)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+___________ test_submit_plan_validation_rejects_non_contiguous_steps ___________
+tests/test_multi_agent.py:72: in test_submit_plan_validation_rejects_non_contiguous_steps
+    result = validate_plan_payload(title="Plan", summary="Do work", steps=bad_steps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+______________ test_submit_and_approve_plan_freezes_approved_plan ______________
+tests/test_multi_agent.py:85: in test_submit_and_approve_plan_freezes_approved_plan
+    submit_result = asyncio.run(
+/usr/local/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+multiAgent/tools.py:110: in execute
+    result = validate_plan_payload(title=params.title, summary=params.summary, steps=params.steps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+_______________ test_execute_context_omits_original_user_request _______________
+tests/test_multi_agent.py:111: in test_execute_context_omits_original_user_request
+    asyncio.run(
+/usr/local/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+multiAgent/tools.py:110: in execute
+    result = validate_plan_payload(title=params.title, summary=params.summary, steps=params.steps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+__________________ test_execute_context_includes_round_budget __________________
+tests/test_multi_agent.py:131: in test_execute_context_includes_round_budget
+    asyncio.run(
+/usr/local/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+multiAgent/tools.py:110: in execute
+    result = validate_plan_payload(title=params.title, summary=params.summary, steps=params.steps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+_________ test_inspect_subagent_work_returns_minimal_paginated_payload _________
+tests/test_multi_agent.py:259: in test_inspect_subagent_work_returns_minimal_paginated_payload
+    assert set(payload) == {
+E   AssertionError: assert {'agent', 'ch...as_more', ...} == {'agent', 'ch...as_more', ...}
+E     
+E     Extra items in the right set:
+E     'step_id'
+E     
+E     Full diff:
+E       {
+E           'agent',...
+E     
+E     ...Full output truncated (11 lines hidden), use '-vv' to show
+_________ test_main_result_summary_does_not_include_full_approved_plan _________
+tests/test_multi_agent.py:284: in test_main_result_summary_does_not_include_full_approved_plan
+    asyncio.run(
+/usr/local/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+multiAgent/tools.py:110: in execute
+    result = validate_plan_payload(title=params.title, summary=params.summary, steps=params.steps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+______________ test_report_test_failure_feedback_targets_execute _______________
+tests/test_multi_agent.py:485: in test_report_test_failure_feedback_targets_execute
+    run.approved_plan = validate_plan_payload(title="Plan", summary="s", steps=VALID_STEPS).plan
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+________________ test_reject_execution_feedback_targets_execute ________________
+tests/test_multi_agent.py:517: in test_reject_execution_feedback_targets_execute
+    run.approved_plan = validate_plan_payload(title="Plan", summary="s", steps=VALID_STEPS).plan
+                        ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+________________ test_execute_round_limit_failure_is_diagnostic ________________
+tests/test_multi_agent.py:566: in test_execute_round_limit_failure_is_diagnostic
+    asyncio.run(
+/usr/local/lib/python3.12/asyncio/runners.py:195: in run
+    return runner.run(main)
+           ^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/runners.py:118: in run
+    return self._loop.run_until_complete(task)
+           ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+/usr/local/lib/python3.12/asyncio/base_events.py:691: in run_until_complete
+    return future.result()
+           ^^^^^^^^^^^^^^^
+multiAgent/tools.py:110: in execute
+    result = validate_plan_payload(title=params.title, summary=params.summary, steps=params.steps)
+             ^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^^
+multiAgent/validators.py:28: in validate_plan_payload
+    if not executable_steps(plan):
+           ^^^^^^^^^^^^^^^^
+E   NameError: name 'executable_steps' is not defined
+______________ test_bash_requires_declared_write_files_in_execute ______________
+tests/test_multi_agent.py:737: in test_bash_requires_declared_write_files_in_execute
+    assert bash_schema is not None, "Bash tool not found in execute role schemas"
+E   AssertionError: Bash tool not found in execute role schemas
+E   assert None is not None
+=========================== short test summary info ============================
+FAILED tests/test_multi_agent.py::test_submit_plan_validation_accepts_recursive_contiguous_steps
+FAILED tests/test_multi_agent.py::test_submit_plan_validation_rejects_non_contiguous_steps
+FAILED tests/test_multi_agent.py::test_submit_and_approve_plan_freezes_approved_plan
+FAILED tests/test_multi_agent.py::test_execute_context_omits_original_user_request
+FAILED tests/test_multi_agent.py::test_execute_context_includes_round_budget
+FAILED tests/test_multi_agent.py::test_inspect_subagent_work_returns_minimal_paginated_payload
+FAILED tests/test_multi_agent.py::test_main_result_summary_does_not_include_full_approved_plan
+FAILED tests/test_multi_agent.py::test_report_test_failure_feedback_targets_execute
+FAILED tests/test_multi_agent.py::test_reject_execution_feedback_targets_execute
+FAILED tests/test_multi_agent.py::test_execute_round_limit_failure_is_diagnostic
+FAILED tests/test_multi_agent.py::test_bash_requires_declared_write_files_in_execute
+======================== 11 failed, 17 passed in 1.13s =========================

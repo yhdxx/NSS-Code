@@ -46,7 +46,7 @@ def build_or_resume_subagent_messages(
         )
     else:
         messages = build_subagent_messages(role=role, run=run, main_messages=main_messages, task_id=task_id)
-    messages = append_pending_feedback_messages(role=role, run=run, messages=messages)
+    messages = append_pending_feedback_messages(role=role, run=run, messages=messages, task_id=task_id)
     return messages, run
 
 
@@ -55,14 +55,18 @@ def append_pending_feedback_messages(
     role: AgentRole,
     run: MultiAgentRun,
     messages: list[dict[str, Any]],
+    task_id: str = "",
 ) -> list[dict[str, Any]]:
     events = run.feedback_events.get(role.value, [])
     for event in events:
         if event.get("delivered"):
             continue
+        payload = event.get("payload", {})
+        target_task_id = str(payload.get("task_id", "") if isinstance(payload, dict) else "")
+        if role in {AgentRole.EXECUTE, AgentRole.TEST} and task_id and target_task_id and target_task_id != task_id:
+            continue
         event_id = str(event.get("event_id", ""))
         tool_name = str(event.get("tool_name", "Feedback"))
-        payload = event.get("payload", {})
         call_id = f"feedback_{event_id}" if event_id else f"feedback_{tool_name}_{len(messages)}"
         arguments = json.dumps(payload, ensure_ascii=False, sort_keys=True)
         messages.append(

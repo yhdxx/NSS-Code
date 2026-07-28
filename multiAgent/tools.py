@@ -172,8 +172,9 @@ class DispatchTasksParams(BaseModel):
 class DispatchTasks(Tool):
     name = "DispatchTasks"
     description = (
-        "Dispatch a batch of task-agent work and wait for runtime to execute all dispatchable tasks. "
-        "The tool result is the aggregated task outcome after execute/task_test agents finish, not merely queued."
+        "Dispatch a batch of complete, self-contained engineering tasks and wait for runtime to execute all dispatchable tasks. "
+        "Each task should include its necessary read, write, and verification work rather than splitting those actions into separate tasks. "
+        "The tool result is the aggregated pass/fail/blocked outcome after execute/task_test agents finish, not merely queued."
     )
     params_model = DispatchTasksParams
     category = "read"
