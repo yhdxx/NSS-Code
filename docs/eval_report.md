@@ -1,6 +1,6 @@
 # myCodingAgent 有效性评测报告
 
-- 生成时间：2026-07-27 20:40:41
+- 生成时间：2026-07-27 23:35:36
 - 评测原则：先生成测试集，再运行真实 API / 真实检索组件，最后汇总报告。
 
 ## 测试集规模
@@ -19,10 +19,11 @@
 | 模块 | 状态 | 关键结果 |
 |---|---|---|
 | `bge_precheck.jsonl` | passed | endpoint=http://127.0.0.1:11434/api/embed; model=bge-m3; dimension=1024 |
-| `capability_router.jsonl` | passed | {"accuracy": 1.0, "case_count": 20, "module": "capability_router", "status": "passed"} |
-| `context_virtualization.jsonl` | passed | {"case_count": 2, "mode_accuracy": {"raw": 1.0, "recent_only": 0.0, "summary_baseline": 1.0, "virtualized": 1.0}, "mode_avg_prompt_chars": {"raw": 55545.0, "rec |
-| `long_term_workflow.jsonl` | passed | {"case_count": 3, "module": "long_term_workflow", "status": "passed", "with_memory_accuracy": 1.0, "without_memory_accuracy": 0.0} |
-| `recovery.jsonl` | passed | {"accuracy": 1.0, "case_count": 3, "module": "recovery", "status": "passed", "tool_call_rate": 1.0} |
+| `capability_router.jsonl` | passed | case_count=20 |
+| `context_virtualization.jsonl` | passed | case_count=2 |
+| `long_term_workflow.jsonl` | passed | case_count=3 |
+| `multi_agent_ab.jsonl` | passed | case_count=24; run_count=48; direct_accuracy=1.0; multi_agent_accuracy=1.0; direct_avg_duration_seconds=21.0418; multi_agent_avg_duration_seconds=322.4428 |
+| `recovery.jsonl` | passed | case_count=3 |
 | `skill_router_500.jsonl` | passed | skill_count=520; query_count=100; recall_at_1=1.0; recall_at_3=1.0; recall_at_5=1.0; mrr=1.0 |
 
 ## 模块覆盖说明
