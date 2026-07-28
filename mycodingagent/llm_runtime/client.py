@@ -646,7 +646,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -Get_all_tool 主要用于用户询问“有哪些 skill/能力”或上述严格兜底场景；不要为了普通任务随意列出全部 skill。
                     -只有不存在相关 Business Skill、Skill 明显无法完成任务，或 Skill 指令明确要求执行时，才直接调用 Core Tool。
                     -多智能体路由采用二分类：只有当任务局部、明确、低风险，且不需要 plan/review/test 分离时，才由主智能体直接处理。
-                    -所有非局部工程任务必须在代码修改前调用 DelegateToMultiAgent，由 plan、plan_review、execute、test、execute_review 子智能体闭环处理。
+                    -所有非局部工程任务必须在代码修改前调用 DelegateToMultiAgent，由 plan、plan_review、scheduling、execute/task_test、final_test 子智能体闭环处理。
                     -如果任务需要先规划再执行、涉及多个相关部分、改变或重组项目结构、要求保持行为兼容、需要测试/审查循环、影响范围不清楚，必须调用 DelegateToMultiAgent。
                     -不确定任务影响是否局部时，必须调用 DelegateToMultiAgent。不得因为你已经知道方案而跳过委派；不得先部分执行可委派任务再委派。
                     -调用 DelegateToMultiAgent 时，reason 必须用一句话说明触发委派的工程条件，作为审计记录。

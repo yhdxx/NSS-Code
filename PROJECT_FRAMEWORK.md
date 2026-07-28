@@ -28,7 +28,7 @@ mycodingagent/
 ├── terminal_ui/  # 终端输入、历史展示、会话选择与确认交互。
 ├── tool_runtime/  # 工具契约、注册表以及文件、Shell、记忆、MCP、Skill 工具适配器。
 ├── workspace/  # 工作区身份、文件缓存和工作区状态。
-multiAgent/             # 多智能体编排、子智能体上下文、权限隔离和持久化
+multiAgent/             # 多智能体编排、调度、子智能体上下文、文件协调、权限隔离和持久化
 skills/                 # 独立 Skill 插件资产，不属于核心运行时包
 tests/                  # 单元、集成和架构边界测试
 ```
@@ -75,16 +75,20 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 
 PLANNING -> plan 调用 SubmitPlan
 PLAN_REVIEW -> plan_review 调用 ApprovePlan 或 RejectPlan
-EXECUTING -> execute 按 current_step_id 执行并调用 SubmitSubAgentStep
-TESTING -> test 调用 ApproveTest 或 ReportTestFailure
-EXECUTE_REVIEW -> execute_review 调用 ApproveExecution 或 RejectExecution
+SCHEDULING -> scheduling 调用 DispatchTask / CheckTask / CompleteScheduling
+TASK EXECUTION -> Runtime 按 max_parallel_tasks 推进 queued/running task
+  ├── execute 按 task_id 执行并调用 SubmitTaskExecution
+  └── task_test 调用 ApproveTaskTest 或 ReportTaskFailure
+FINAL_TESTING -> final_test 调用 ApproveFinalTest 或 ReportFinalTestFailure
 COMPLETED / FAILED -> 主智能体只接收精简 run summary
-需要细节 -> InspectSubAgentWork(run_id, agent, step_id?, offset, limit)
+需要细节 -> InspectSubAgentWork(run_id, agent, step_id?, task_id?, offset, limit)
 ```
 
-- `plan` 可读取最近主对话，保证跨轮计划/执行场景保留用户要求；`execute` 只以 `approved_plan` 为权威，不重新解释用户原始请求。
-- `tool_policy.py` 按角色隔离工具 schema；`execute` 的普通工具 schema 会强制注入 `step_id`，Runtime 校验其等于当前 `current_step_id`。
-- 子智能体消息、最终回答、步骤提交、反馈事件和轮次预算持久化在 `multi_agent.sqlite3` 的 `multi_agent_runs` 表。
+- `plan` 可读取最近主对话，保证跨轮计划/执行场景保留用户要求；`scheduling` 只调度任务不改代码；`execute` 只以 assigned task 和 `approved_plan` 为权威，不重新解释用户原始请求。
+- `tool_policy.py` 按角色隔离工具 schema；`execute` 的普通工具 schema 会强制注入 `task_id`，Runtime 校验其等于当前运行任务 id（内部复用 `current_step_id` 字段存储）。
+- `FileCoordinator` 负责文件级写锁、读取 revision 校验、Bash `declared_write_files` 监督、等待通知队列和文件变更 runtime notice。
+- `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 控制 scheduling 同时推进的 task 数，默认 5。
+- 子智能体消息、最终回答、计划、调度任务、任务提交、反馈事件、文件访问索引、文件通知和轮次预算持久化在 `multi_agent.sqlite3` 的 `multi_agent_runs` 表。
 - 子智能体普通工具输出复用 MemoryRuntime 大输出预览/恢复策略；没有 MemoryRuntime 时退化为首尾 500 字符预览。
 
 ## 5. 函数级模块索引
@@ -122,13 +126,13 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
 - 模块：`multiAgent.models`
 - 职责：多智能体运行状态、结构化计划和状态机数据模型。
 - 内部依赖：无
-- 类 `class AgentRole(str, Enum)`（L10）：定义 `plan`, `plan_review`, `execute`, `test`, `execute_review` 五类子智能体。
-- 类 `class RunStatus(str, Enum)`（L18）：定义 `planning`, `plan_review`, `executing`, `testing`, `execute_review`, `completed`, `failed` 状态。
-- 类 `class StepStatus(str, Enum)`（L28）：定义步骤 `pending`, `completed`, `needs_fix` 状态。
+- 类 `class AgentRole(str, Enum)`（L10）：定义 `plan`, `plan_review`, `scheduling`, `execute`, `test`, `final_test`, `execute_review` 子智能体；`execute_review` 为兼容路径。
+- 类 `class RunStatus(str, Enum)`（L20）：定义 `planning`, `plan_review`, `scheduling`, `executing`, `testing`, `final_testing`, `execute_review`, `completed`, `failed` 状态。
+- 类 `class StepStatus(str, Enum)`（L31）：定义步骤/任务 `pending`, `queued`, `running`, `completed`, `needs_fix`, `passed`, `failed` 状态。
 - 类 `class PlanNode`（L38）：结构化计划节点。
   - `to_dict(self) -> dict[str, Any]`（L46）；调用：`child.to_dict`, `list`
   - `from_dict(cls, payload: dict[str, Any]) -> PlanNode`（L57）；调用：`cls.from_dict`, `str`
-- 类 `class MultiAgentRun`（L73）：多智能体一次任务运行的完整持久化状态。
+- 类 `class MultiAgentRun`（L73）：多智能体一次任务运行的完整持久化状态，包含结构化计划、调度任务、任务消息、文件读取 revision、文件版本、文件访问索引、等待队列、runtime 文件通知、反馈事件和轮次预算。
   - `create(cls, *, task: str, source_request_ref: str = "", source_request_preview: str = "") -> MultiAgentRun`（L106）；调用：`uuid4().hex`
   - `to_dict(self) -> dict[str, Any]`（L114）；调用：`asdict`, `node.to_dict`
   - `from_dict(cls, payload: dict[str, Any]) -> MultiAgentRun`（L123）；调用：`PlanNode.from_dict`, `RunStatus`, `StepStatus`, `dict`, `float`, `int`, `list`, `str`, `time`
@@ -146,13 +150,15 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
 - 函数 `build_or_resume_subagent_messages(...)`（L28）：续接已有子智能体上下文，追加 Runtime state update。；调用：`append_pending_feedback_messages`, `build_role_context`, `build_subagent_messages`, `copy.deepcopy`
 - 函数 `append_pending_feedback_messages(...)`（L50）：将拒绝/失败反馈模拟成工具调用结果交付给目标子智能体。；调用：`json.dumps`, `len`, `messages.append`, `time`
 - 函数 `load_system_prompt(role: AgentRole) -> str`（L92）：读取 `multiAgent/prompts/{role}/SYSTEM.md`。；调用：`path.read_text`
-- 函数 `build_role_context(...) -> str`（L100）：按角色分发上下文构建逻辑。；调用：`_execute_context`, `_execute_review_context`, `_plan_context`, `_plan_review_context`, `_test_context`, `json.dumps`
-- 函数 `_plan_context(...) -> str`（L119）：为 plan 提供 task、最近主对话和计划拒绝历史。；调用：`json.dumps`, `recent_text_turns`
-- 函数 `_plan_review_context(...) -> str`（L130）：为 plan_review 提供 submitted_plan 和请求来源预览。；调用：`json.dumps`, `node.to_dict`
-- 函数 `_execute_context(...) -> str`（L143）：为 execute 提供 approved_plan、current_step_id、反馈和轮次预算。；调用：`execute_round_budget`, `json.dumps`, `node.to_dict`, `sorted`
-- 函数 `execute_round_budget(run: MultiAgentRun) -> dict[str, Any]`（L167）：计算 execute 子智能体剩余工具轮次和预算警告。；调用：`int`, `max`
-- 函数 `_test_context(...) -> str`（L187）：为 test 提供 approved_plan、步骤提交和 execute 最终回答。；调用：`json.dumps`, `node.to_dict`
-- 函数 `_execute_review_context(...) -> str`（L198）：为 execute_review 提供计划、步骤提交、测试结果和 execute 最终回答。；调用：`json.dumps`, `node.to_dict`
+- 函数 `build_role_context(...) -> str`（L113）：按角色分发上下文构建逻辑。；调用：`_execute_context`, `_execute_review_context`, `_final_test_context`, `_plan_context`, `_plan_review_context`, `_scheduling_context`, `_test_context`, `json.dumps`
+- 函数 `_plan_context(...) -> str`（L133）：为 plan 提供 task、最近主对话和计划拒绝历史。；调用：`json.dumps`, `recent_text_turns`
+- 函数 `_plan_review_context(...) -> str`（L145）：为 plan_review 提供 submitted_plan 和请求来源预览。；调用：`json.dumps`, `node.to_dict`
+- 函数 `_execute_context(...) -> str`（L158）：为 execute 提供 assigned task、test_instruction、target_files、runtime_file_notices、approved_plan、反馈和轮次预算。；调用：`_pop_file_notices`, `execute_round_budget`, `json.dumps`, `node.to_dict`, `sorted`
+- 函数 `execute_round_budget(run: MultiAgentRun) -> dict[str, Any]`（L193）：计算 execute 子智能体剩余工具轮次和预算警告。；调用：`int`, `max`
+- 函数 `_test_context(...) -> str`（L213）：为 task_test 提供 paired task、test_instruction、execute_submission 和 execute 最终回答。；调用：`json.dumps`, `node.to_dict`
+- 函数 `_scheduling_context(...) -> str`（L232）：为 scheduling 提供 approved_plan、scheduled_tasks、file_waiters/file_notices 和 final_test 反馈。；调用：`json.dumps`, `node.to_dict`
+- 函数 `_final_test_context(...) -> str`（L250）：为 final_test 提供 approved_plan、scheduled_tasks 和 step_submissions。；调用：`json.dumps`, `node.to_dict`
+- 函数 `_execute_review_context(...) -> str`（L261）：兼容旧 execute_review 路径，提供计划、步骤提交、测试结果和 execute 最终回答。；调用：`json.dumps`, `node.to_dict`
 - 函数 `recent_text_turns(messages: list[dict[str, Any]], *, limit: int = 8, max_chars: int = 8000) -> str`（L210）：抽取最近主对话文本并省略工具调用。；调用：`join`, `len`, `lines.append`, `str`
 - 函数 `run_summary_for_main_context(run: MultiAgentRun) -> str`（L229）：生成主智能体可见的精简多智能体结果。；调用：`json.dumps`
 - 函数 `next_open_step(run: MultiAgentRun) -> str`（L241）：返回第一个 pending/needs_fix 可执行步骤。；调用：`executable_steps`
@@ -178,17 +184,18 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
 ### `multiAgent/tool_policy.py`
 
 - 模块：`multiAgent.tool_policy`
-- 职责：按子智能体角色隔离工具 schema，并给 execute 工具调用注入 `step_id` 门控字段。
+- 职责：按子智能体角色隔离工具 schema，并给 execute 工具调用注入 `task_id` 门控字段，给 Bash 注入 `declared_write_files` 声明字段。
 - 内部依赖：`multiAgent.models`, `multiAgent.store`, `multiAgent.tools`, `mycodingagent.tool_runtime`, `mycodingagent.tool_runtime.base`
 - 函数 `tool_names_for_role(role: AgentRole) -> set[str]`（L26）：返回角色允许的普通工具名集合。；调用：`set`
 - 函数 `schemas_for_role(...) -> list[dict[str, Any]]`（L40）：组装角色可见工具 schema，包括普通工具和控制工具。；调用：`add_step_id_to_schema`, `control_tools_for_role`, `copy.deepcopy`, `registry.get_all_schemas`, `schema_for_tool`
-- 函数 `add_step_id_to_schema(schema: dict[str, Any]) -> dict[str, Any]`（L59）：为 execute 普通工具 schema 增加必填 `step_id`。；调用：`parameters.setdefault`, `required.append`
+- 函数 `add_step_id_to_schema(schema: dict[str, Any]) -> dict[str, Any]`：兼容命名函数；为 execute 普通工具 schema 增加必填 `task_id`。；调用：`parameters.setdefault`, `required.append`
+- 函数 `add_declared_write_files_to_bash_schema(schema: dict[str, Any]) -> dict[str, Any]`：为 execute 可见 Bash schema 增加必填 `declared_write_files`。
 - 函数 `schema_for_tool(tool: Tool) -> dict[str, Any]`（L72）：把控制工具转为 OpenAI function schema。；调用：`tool.get_schema`
 
 ### `multiAgent/tools.py`
 
 - 模块：`multiAgent.tools`
-- 职责：主智能体委托工具、子智能体控制工具和子工作检查工具。
+- 职责：主智能体委托工具、计划/调度/任务执行/任务测试/final_test 控制工具和子工作检查工具。
 - 内部依赖：`multiAgent.models`, `multiAgent.store`, `multiAgent.validators`, `mycodingagent.tool_runtime.base`
 - 类 `class DelegateToMultiAgentParams`（L17）：`DelegateToMultiAgent` 参数，包含 `task` 和审计用 `reason`。
 - 类 `class DelegateToMultiAgent`（L26）：主智能体可见的多智能体委托工具。
@@ -197,37 +204,52 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
   - `async execute(self, params: DelegateToMultiAgentParams) -> ToolResult`（L69）；调用：`MultiAgentOrchestrator`, `_delegate_result_payload`, `_json`, `_json_error`, `orchestrator.start`
 - 类 `class SubmitPlan`（L97）：plan 控制工具，提交结构化计划。；`execute(...)`（L106）调用：`validate_plan_payload`, `run.add_event`, `self._store.save_run`
 - 类 `class ApprovePlan`（L129）：plan_review 控制工具，批准计划并初始化步骤状态。；`execute(...)`（L138）调用：`executable_steps`, `run.add_event`, `self._store.save_run`
-- 类 `class RejectPlan`（L160）：plan_review 控制工具，拒绝计划并写入给 plan 的反馈事件。；`execute(...)`（L169）调用：`_append_feedback_event`, `run.add_event`, `self._store.save_run`
-- 类 `class SubmitSubAgentStep`（L197）：execute 控制工具，提交当前步骤完成证据。；`execute(...)`（L206）调用：`validate_step_exists`, `run.add_event`, `self._store.save_run`
-- 类 `class ApproveTest`（L230）：test 控制工具，批准测试结果并进入执行审查。；`execute(...)`（L239）调用：`run.add_event`, `self._store.save_run`
-- 类 `class ReportTestFailure`（L257）：test 控制工具，报告失败步骤并写入给 execute 的反馈事件。；`execute(...)`（L266）调用：`_append_feedback_event`, `validate_failed_steps`, `run.add_event`, `self._store.save_run`
-- 类 `class ApproveExecution`（L301）：execute_review 控制工具，完成多智能体 run。；`execute(...)`（L310）调用：`run.add_event`, `self._store.save_run`
-- 类 `class RejectExecution`（L328）：execute_review 控制工具，拒绝执行并写入给 execute 的修正反馈。；`execute(...)`（L337）调用：`_append_feedback_event`, `executable_steps`, `validate_failed_steps`, `run.add_event`, `self._store.save_run`
-- 类 `class InspectSubAgentWork`（L374）：主智能体可见的只读检查工具，分页读取子智能体存储消息。；`execute(...)`（L387）调用：`AgentRole`, `_json`, `_json_error`, `_render_agent_work`, `self._store.load_run`
-- 函数 `control_tools_for_role(store: MultiAgentStore, role: AgentRole) -> list[Tool]`（L414）：返回每个角色专属控制工具。；调用：对应控制工具构造函数
-- 函数 `_render_agent_work(run: Any, role: AgentRole, step_id: str = "") -> str`（L428）：渲染最终回答、步骤提交和消息记录。；调用：`json.dumps`, `parts.append`, `rendered_messages.append`
-- 函数 `_append_feedback_event(...) -> None`（L449）：写入待交付反馈事件。；调用：`run.feedback_events.setdefault`, `uuid4().hex`, `time`
-- 函数 `_delegate_result_payload(run: Any) -> dict[str, Any]`（L469）：生成主智能体可见委托结果。；调用：`hasattr`, `str`
-- 函数 `_json(payload: dict[str, Any]) -> ToolResult`（L483）：序列化普通工具结果。；调用：`ToolResult`, `json.dumps`
-- 函数 `_json_error(code: str, message: str) -> ToolResult`（L487）：序列化错误工具结果。；调用：`ToolResult`, `json.dumps`
+- 类 `class DispatchTask`：scheduling 控制工具，创建 paired execute/task_test 任务；按 `max_parallel_tasks` 和 `depends_on` 返回 `running` 或 `queued`。
+- 类 `class CheckTask`：scheduling 控制工具，返回任务 `queued/running/passed/failed/needs_fix` 状态和摘要。
+- 类 `class CompleteScheduling`：所有 dispatched task passed 后进入 `final_testing`。
+- 类 `class SubmitTaskExecution`：execute 控制工具，提交当前 task 的执行证据并进入 paired task_test。
+- 类 `class ApproveTaskTest` / `class ReportTaskFailure`：task_test 控制工具，批准单个 task 或将失败反馈续接回 execute。
+- 类 `class ApproveFinalTest` / `class ReportFinalTestFailure`：final_test 控制工具，批准全局验证或把失败反馈续接回 scheduling。
+- 类 `class RejectPlan`：plan_review 控制工具，拒绝计划并写入给 plan 的反馈事件。
+- 类 `class SubmitSubAgentStep`、`ApproveTest`、`ReportTestFailure`、`ApproveExecution`、`RejectExecution`：保留旧 step-based / execute_review 兼容路径。
+- 类 `class InspectSubAgentWork`：主智能体可见的只读检查工具，分页读取子智能体存储消息，支持 `step_id` 和 `task_id` 过滤。
+- 函数 `control_tools_for_role(store: MultiAgentStore, role: AgentRole) -> list[Tool]`：返回每个角色专属控制工具。；调用：对应控制工具构造函数
+- 函数 `_render_agent_work(run: Any, role: AgentRole, step_id: str = "") -> str`：渲染最终回答、任务/步骤提交和消息记录。；调用：`json.dumps`, `parts.append`, `rendered_messages.append`
+- 函数 `_append_feedback_event(...) -> None`：写入待交付反馈事件。；调用：`run.feedback_events.setdefault`, `uuid4().hex`, `time`
+- 函数 `_delegate_result_payload(run: Any) -> dict[str, Any]`：生成主智能体可见委托结果。；调用：`hasattr`, `str`
+- 函数 `_json(payload: dict[str, Any]) -> ToolResult`：序列化普通工具结果。；调用：`ToolResult`, `json.dumps`
+- 函数 `_json_error(code: str, message: str) -> ToolResult`：序列化错误工具结果。；调用：`ToolResult`, `json.dumps`
+
+### `multiAgent/file_coordination.py`
+
+- 模块：`multiAgent.file_coordination`
+- 职责：多任务执行期间的文件级协调、版本校验、等待通知和 Bash 写入监督。
+- 类 `class FileWriteLockManager`：维护 `file_path -> owner_task_id` 写锁映射，提供 `acquire/release/release_many`。
+- 类 `class FileCoordinator`：记录 task 文件读取 revision；写入前获取文件锁并校验是否 stale；写入后刷新文件 revision、记录 writer、通知相关 reader/writer；Bash 前后做工作区快照并回滚未声明文件写入。
+- 函数 `_hash_file(path: Path) -> str`：计算文件 sha256，用于版本指纹。
+- 函数 `_mtime_ns(path: Path) -> int`：读取 mtime_ns，用于快速版本判断。
 
 ### `multiAgent/orchestrator.py`
 
 - 模块：`multiAgent.orchestrator`
-- 职责：多智能体状态机编排、子模型调用、工具执行、步骤门控、输出持久化和轮次预算记录。
-- 内部依赖：`multiAgent.context`, `multiAgent.models`, `multiAgent.store`, `multiAgent.tool_policy`, `multiAgent.tools`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.llm_runtime.client`, `mycodingagent.tool_runtime`
+- 职责：多智能体状态机编排、任务调度、子模型调用、工具执行、task 门控、文件协调、输出持久化和轮次预算记录。
+- 内部依赖：`multiAgent.context`, `multiAgent.file_coordination`, `multiAgent.models`, `multiAgent.store`, `multiAgent.tool_policy`, `multiAgent.tools`, `mycodingagent.configuration`, `mycodingagent.llm_runtime`, `mycodingagent.llm_runtime.client`, `mycodingagent.tool_runtime`
 - 函数 `agent_round_limit() -> int`（L34）：读取 `CONFIG.multi_agent.max_agent_rounds`。；调用：无
 - 类 `class MultiAgentOrchestrator`（L38）：封装多智能体编排器。
   - `__init__(...)`（L39）；保存 store、registry、api_client、memory_runtime 和 model。
   - `async start(self, *, task: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L54）；调用：`MultiAgentRun.create`, `run.add_event`, `self.run`, `self.store.save_run`
   - `async resume(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L64）；调用：`self.run`, `self.store.load_run`
-  - `async run(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L70）；按状态循环调用 `_run_plan/_run_plan_review/_run_execute/_run_test/_run_execute_review`。；调用：`self._load_or_raise`, `self.store.mark_failed`
+  - `async run(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L70）；按状态循环调用 `_run_plan/_run_plan_review/_run_scheduling/_run_final_test`，并保留旧 `_run_execute/_run_test/_run_execute_review` 兼容路径。；调用：`self._load_or_raise`, `self.store.mark_failed`
   - `result_message(self, run: MultiAgentRun) -> dict[str, Any]`（L92）；调用：`run_summary_for_main_context`
-  - `_run_plan/_run_plan_review/_run_execute/_run_test/_run_execute_review`（L99-L164）：执行单阶段并按失败阈值标记 run。；调用：`self._run_agent`, `self.store.mark_failed`, `self.store.save_run`
-  - `async _run_agent(...) -> str`（L166）：构建/续接子智能体消息，循环调用模型，执行工具并记录退出原因。；调用：`build_or_resume_subagent_messages`, `schemas_for_role`, `stream_one_round`, `_assistant_message`, `_phase_changed`, `self._execute_subagent_tool`, `self._persist_agent_messages`, `self._record_agent_budget`
-  - `_execute_subagent_tool(...) -> str`（L267）：解析工具参数、应用 execute step gate、执行控制或普通工具。；调用：`json.loads`, `tool.params_model.model_validate`, `tool.execute`, `self._store_tool_output`
-  - `_validate_execute_step(self, run_id: str, args: dict[str, Any]) -> str`（L305）：校验 execute 普通工具调用的 `step_id`。；调用：`self._load_or_raise`, `str`
-  - `_store_tool_output(...) -> str`（L314）：持久化子智能体普通工具输出并按 MemoryRuntime 策略返回预览/恢复引用。；调用：`memory_runtime.save_tool_output`, `memory_runtime.tool_output_prompt_content`, `_preview_without_memory`
+  - `_run_scheduling(...)`：运行 scheduling 子智能体；若仍处于 scheduling，则调用 `_process_scheduled_tasks` 推进 queued/running task。
+  - `_process_scheduled_tasks(...)`：按 `CONFIG.multi_agent.max_parallel_tasks` 和 task dependencies 把 queued task 推进为 running，并逐个调用 `_run_task`。
+  - `_run_task(...)`：为一个 task 运行 execute -> task_test 修正循环，最多 `MAX_FIX_ATTEMPTS`。
+  - `_run_final_test(...)`：执行完整任务最终验证；失败反馈回 scheduling。
+  - `async _run_agent(...) -> str`：构建/续接子智能体消息，循环调用模型，执行工具并记录退出原因。；调用：`build_or_resume_subagent_messages`, `schemas_for_role`, `stream_one_round`, `_assistant_message`, `_phase_changed`, `self._execute_subagent_tool`, `self._persist_agent_messages`, `self._record_agent_budget`
+  - `_execute_subagent_tool(...) -> str`：解析工具参数、应用 execute task gate、执行控制或普通工具；execute 普通工具进入文件协调路径。；调用：`json.loads`, `tool.params_model.model_validate`, `tool.execute`, `self._execute_with_file_coordination`, `self._store_tool_output`
+  - `_execute_with_file_coordination(...) -> str | None`：拦截 execute 的 `ReadFile`、`WriteFile`、`EditFile`、`Bash`，记录读取、加写锁、校验 revision、监督 Bash 声明写入和生成文件通知。
+  - `_validate_execute_task(self, run_id: str, args: dict[str, Any]) -> str`：校验 execute 普通工具调用的 `task_id`。；调用：`self._load_or_raise`, `str`
+  - `_store_tool_output(...) -> str`：持久化子智能体普通工具输出并按 MemoryRuntime 策略返回预览/恢复引用。；调用：`memory_runtime.save_tool_output`, `memory_runtime.tool_output_prompt_content`, `_preview_without_memory`
   - `_persist_agent_messages(...) -> None`（L347）：保存角色消息。；调用：`self._load_or_raise`, `self.store.save_run`
   - `_record_agent_budget(...) -> None`（L352）：记录每个子智能体轮次、工具调用数和退出原因。；调用：`run.add_event`, `self.store.save_run`
   - `_messages_with_round_budget(...) -> list[dict[str, Any]]`（L381）：给 execute 追加 Runtime round budget 用户消息。；调用：`execute_round_budget`, `json.dumps`

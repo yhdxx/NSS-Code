@@ -19,7 +19,7 @@ myCodingAgent 是一个基于大语言模型（LLM）的命令行编码智能体
 - `mycodingagent/capability_discovery/`：基于抽象 Skill/MCP 能力源的统一推荐。
 - `mycodingagent/mcp_integration/`：MCP 配置、连接、发现、执行和审批。
 - `mycodingagent/skill_runtime/`：Skill 发现、索引、检索、路由和缓存；`skills/` 仅保存插件资产。
-- `multiAgent/`：多智能体编排模块，提供主智能体委托、子智能体上下文、工具权限隔离、步骤门控和运行持久化。
+- `multiAgent/`：多智能体编排模块，提供主智能体委托、调度执行、子智能体上下文、工具权限隔离、任务门控、文件协调和运行持久化。
 
 ---
 
@@ -67,7 +67,7 @@ MCP 配置采用多层 JSON：
 
 ### 主智能体入口
 
-`DelegateToMultiAgent` 是主智能体可见的委托工具，参数只有 `task` 和 `reason`。`task` 描述要交给多智能体的工程任务；`reason` 是一句审计原因，说明为什么该任务满足委托条件。工具返回精简结果：`status`、`run_id`、`plan_summary`、`test_result`、`execute_review_result` 和 `inspect_tool=InspectSubAgentWork`。主智能体默认只看到这些最终结果，不把所有子智能体工具调用直接塞回主上下文，避免污染主智能体窗口。
+`DelegateToMultiAgent` 是主智能体可见的委托工具，参数只有 `task` 和 `reason`。`task` 描述要交给多智能体的工程任务；`reason` 是一句审计原因，说明为什么该任务满足委托条件。工具返回精简结果：`status`、`run_id`、`plan_summary`、`test_result`、`scheduling_result`、`scheduled_tasks` 和 `inspect_tool=InspectSubAgentWork`。主智能体默认只看到这些最终结果，不把所有子智能体工具调用直接塞回主上下文，避免污染主智能体窗口。
 
 `InspectSubAgentWork` 是主智能体按需查看子智能体完整工作的只读工具，参数包括 `run_id`、`agent`、可选 `step_id`、`offset` 和 `limit`。它读取持久化的子智能体消息，分页返回 inspection 内容；`has_more_inspection_content` 只表示检查结果还有下一页，不表示模型上下文被截断。
 
@@ -80,16 +80,18 @@ PLANNING
   -> plan 调用 SubmitPlan 提交结构化计划
 PLAN_REVIEW
   -> plan_review 调用 ApprovePlan 或 RejectPlan
-EXECUTING
-  -> execute 按 approved_plan 的叶子步骤顺序执行，每步完成后调用 SubmitSubAgentStep
-TESTING
-  -> test 调用 ApproveTest 或 ReportTestFailure
-EXECUTE_REVIEW
-  -> execute_review 调用 ApproveExecution 或 RejectExecution
+SCHEDULING
+  -> scheduling 调用 DispatchTask / CheckTask / CompleteScheduling
+TASK EXECUTION
+  -> 每个任务由 execute 调用 SubmitTaskExecution，再由 task_test 调用 ApproveTaskTest 或 ReportTaskFailure
+FINAL_TESTING
+  -> final_test 调用 ApproveFinalTest 或 ReportFinalTestFailure
 COMPLETED / FAILED
 ```
 
-`RejectPlan`、`ReportTestFailure` 和 `RejectExecution` 不只是改变状态，还会写入 `feedback_events`。当目标子智能体下一次恢复运行时，Runtime 会把这些拒绝/失败反馈模拟为上一轮工具调用结果插入其上下文，实现续接式修正，而不是丢弃上一次子智能体上下文重跑。
+`RejectPlan`、`ReportTaskFailure` 和 `ReportFinalTestFailure` 不只是改变状态，还会写入 `feedback_events`。当目标子智能体下一次恢复运行时，Runtime 会把这些拒绝/失败反馈模拟为上一轮工具调用结果插入其上下文，实现续接式修正，而不是丢弃上一次子智能体上下文重跑。
+
+`scheduling` 不直接修改代码，而是通过 `DispatchTask` 创建一个或多个可执行任务。每个任务绑定一个 `execute` 和一个 `task_test` 上下文；Runtime 根据 `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 控制同时运行的任务数，默认最多 5 个。`DispatchTask` 可声明 `depends_on`，依赖未通过时任务保持 queued；依赖满足且并发槽位可用时 Runtime 将其推进到 running。`CheckTask` 返回任务三态/多态进度（queued、running、passed、failed/needs_fix），所有任务 passed 后才允许 `CompleteScheduling` 进入 `final_test`。
 
 ### 子智能体职责与工具权限
 
@@ -99,15 +101,18 @@ COMPLETED / FAILED
 |---|---|---|
 | `plan` | 理解任务和近期主对话，调用 `SubmitPlan` 提交结构化计划 | 只读工具 + `SubmitPlan` |
 | `plan_review` | 审查计划的覆盖、顺序、安全性和可测试性 | 只读工具 + `ApprovePlan` / `RejectPlan` |
-| `execute` | 只依据 approved_plan 执行当前步骤 | 读写工具 + Bash + `SubmitSubAgentStep` |
-| `test` | 根据验收标准验证执行结果 | 只读工具 + Bash + `ApproveTest` / `ReportTestFailure` |
-| `execute_review` | 审查实现质量、完整性、可维护性和剩余风险 | 只读工具 + Bash + `ApproveExecution` / `RejectExecution` |
+| `scheduling` | 拆分和调度任务，检查 queued/running/passed/failed 状态 | 只读工具 + `DispatchTask` / `CheckTask` / `CompleteScheduling` |
+| `execute` | 只依据 assigned task 执行当前任务 | 读写工具 + Bash + `SubmitTaskExecution` |
+| `test` | 验证对应 execute task | 只读工具 + Bash + `ApproveTaskTest` / `ReportTaskFailure` |
+| `final_test` | 对完整任务做最终验证 | 只读工具 + Bash + `ApproveFinalTest` / `ReportFinalTestFailure` |
 
-`execute` 子智能体有额外步骤门控：所有普通工具调用都会被 schema 注入 `step_id`，且必须等于当前 `current_step_id`。如果 step_id 缺失或不匹配，Runtime 拒绝该工具调用。这样即使会话中断，下次恢复也能根据 `step_submissions` 和 `current_step_id` 继续执行，避免步骤跳跃或重复提交。
+`execute` 子智能体有额外任务门控：所有普通工具调用都会被 schema 注入 `task_id`，且必须等于当前任务上下文中的 `task_id`。如果 task_id 缺失或不匹配，Runtime 拒绝该工具调用。Bash 在 execute 中还必须声明 `declared_write_files`，Runtime 会用文件级写锁、版本校验、等待通知队列和未声明写入回滚来防止并发覆盖。
+
+文件协调由 `multiAgent/file_coordination.py` 负责。`ReadFile` 会记录 task 对文件的读取 revision；`WriteFile` / `EditFile` 写入前必须持有文件级写锁，并且读到的 revision 必须仍是当前 revision，否则返回 `stale_file` 要求重读。Bash 写入必须通过 `declared_write_files` 声明潜在修改文件；Runtime 在命令前后做工作区快照，只允许声明文件发生变化，未声明源文件变更会被回滚并返回 `undeclared_bash_write`。当文件被其他 task 修改或锁释放时，Runtime 把通知写入目标 task 的 `runtime_file_notices`，由 execute 按"读取变化 -> 避免覆盖 -> 修改 -> 复查文件"策略自行处理。
 
 ### 上下文与输出控制
 
-子智能体上下文由 `multiAgent/context.py` 生成。`plan` 能看到任务和最近主对话文本，保证"上一轮让制定计划、下一轮让执行计划"这类场景不会丢失关键要求；`execute` 不直接使用用户原始请求，它只接收 approved_plan、当前步骤、已完成步骤、测试/审查反馈和轮次预算，防止重新解释需求。`test` 和 `execute_review` 只看 approved_plan、步骤提交摘要、execute 最终回答及必要结果。
+子智能体上下文由 `multiAgent/context.py` 生成。`plan` 能看到任务和最近主对话文本，保证"上一轮让制定计划、下一轮让执行计划"这类场景不会丢失关键要求；`execute` 不直接使用用户原始请求，它只接收 assigned task、approved_plan、runtime file notice、测试反馈和轮次预算，防止重新解释需求。`test` 只看对应 task 与 execute 提交，`final_test` 只看 approved_plan、任务提交摘要和必要结果。
 
 子智能体普通工具输出沿用主运行时的大输出策略：输出全文先保存到 MemoryRuntime，短输出直接返回，超过 `raw_tool_output_preview_chars` 的输出返回首尾预览和 `context_id` 恢复方式。没有 MemoryRuntime 时退化为 500 字符头部 + 500 字符尾部预览。多智能体 run 自身保存在 `multi_agent.sqlite3` 的 `multi_agent_runs` 表中，字段 `payload` 包含计划、状态、步骤提交、子智能体消息、最终回答、反馈事件、轮次统计和错误信息。
 
@@ -392,7 +397,7 @@ WORKING → EXTERNAL → ARCHIVED → DELETED
 
 ### 配置模块（`mycodingagent/configuration/settings.py`）
 
-将所有配置抽象为不可变数据类，按功能域划分为九个子配置：`ApiConfig`（API 密钥、基础地址、模型名）、`ClientConfig`（工具循环上限、输出截断长度、`DEBUG`/`MYCODINGAGENT_DEBUG` 调试开关，以及 `STEP_TOKEN` / `ROUND_TOKEN` / `CONVERSATION_TOKEN` 终端 token 输出开关）、`MultiAgentConfig`（子智能体单次运行工具轮次上限，默认 `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS=50`）、`MemoryConfig`（上下文预算比例、会话过期天数、检查点参数）、`SandboxConfig`（沙箱根目录、跳过目录）、`DockerConfig`（镜像名、资源限制、超时）、`SkillConfig`（Skill 根目录、检索参数、路由权重、LRFU 缓存参数）、`EmbeddingConfig`（BGE 模型、向量维度）和 `MilvusConfig`（连接参数、索引类型、RRF 融合参数）。所有配置值均支持通过环境变量覆盖，在模块加载时生成全局单例 `CONFIG`。
+将所有配置抽象为不可变数据类，按功能域划分为九个子配置：`ApiConfig`（API 密钥、基础地址、模型名）、`ClientConfig`（工具循环上限、输出截断长度、`DEBUG`/`MYCODINGAGENT_DEBUG` 调试开关，以及 `STEP_TOKEN` / `ROUND_TOKEN` / `CONVERSATION_TOKEN` 终端 token 输出开关）、`MultiAgentConfig`（子智能体单次运行工具轮次上限，默认 `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS=50`；任务级并发上限，默认 `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS=5`）、`MemoryConfig`（上下文预算比例、会话过期天数、检查点参数）、`SandboxConfig`（沙箱根目录、跳过目录）、`DockerConfig`（镜像名、资源限制、超时）、`SkillConfig`（Skill 根目录、检索参数、路由权重、LRFU 缓存参数）、`EmbeddingConfig`（BGE 模型、向量维度）和 `MilvusConfig`（连接参数、索引类型、RRF 融合参数）。所有配置值均支持通过环境变量覆盖，在模块加载时生成全局单例 `CONFIG`。
 
 ### 模型交互模块（`mycodingagent/llm_runtime/client.py`）
 

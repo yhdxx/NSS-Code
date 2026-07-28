@@ -97,10 +97,10 @@ def test_submit_and_approve_plan_freezes_approved_plan(tmp_path):
     )
 
     assert json.loads(submit_result.output)["status"] == "ok"
-    assert json.loads(approve_result.output)["next"] == "execute"
+    assert json.loads(approve_result.output)["next"] == "scheduling"
     approved = store.load_run(run.run_id)
     assert approved is not None
-    assert approved.status == RunStatus.EXECUTING
+    assert approved.status == RunStatus.SCHEDULING
     assert approved.approved_plan[0].step_id == "1"
 
 
@@ -148,7 +148,7 @@ def test_execute_context_includes_round_budget(tmp_path):
     assert context["agent_rounds_used"] == 26
     assert context["agent_rounds_remaining"] == 4
     assert context["tool_calls_used_in_step"] == 42
-    assert "SubmitSubAgentStep" in context["round_budget_warning"]
+    assert "SubmitTaskExecution" in context["round_budget_warning"]
 
 
 class DummyParams(BaseModel):
@@ -188,7 +188,7 @@ def test_read_only_agents_do_not_receive_write_tools(tmp_path):
     assert {"ApprovePlan", "RejectPlan"}.issubset(names)
 
 
-def test_execute_schemas_require_step_id(tmp_path):
+def test_execute_schemas_require_task_id(tmp_path):
     store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
     registry = ToolRegistry()
     registry.register(DummyReadTool())
@@ -198,8 +198,8 @@ def test_execute_schemas_require_step_id(tmp_path):
         if schema["name"] == "ReadFile"
     )
 
-    assert "step_id" in read_schema["parameters"]["required"]
-    assert "step_id" in read_schema["parameters"]["properties"]
+    assert "task_id" in read_schema["parameters"]["required"]
+    assert "task_id" in read_schema["parameters"]["properties"]
 
 
 def test_submit_step_rejects_wrong_current_step(tmp_path):
@@ -242,6 +242,7 @@ def test_inspect_subagent_work_returns_minimal_paginated_payload(tmp_path):
         "run_id",
         "agent",
         "step_id",
+        "task_id",
         "content",
         "content_total_chars",
         "chunk_offset",
@@ -550,6 +551,10 @@ def test_execute_round_limit_failure_is_diagnostic(tmp_path, monkeypatch):
         )
     )
     asyncio.run(ApprovePlan(store).execute(ApprovePlanParams(run_id=run.run_id, reason="ok")))
+    approved = store.load_run(run.run_id)
+    assert approved is not None
+    approved.status = RunStatus.EXECUTING
+    store.save_run(approved)
 
     call_index = 0
 

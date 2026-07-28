@@ -31,7 +31,8 @@ def build_or_resume_subagent_messages(
     run: MultiAgentRun,
     main_messages: list[dict[str, Any]],
 ) -> tuple[list[dict[str, Any]], MultiAgentRun]:
-    previous = run.subagent_messages.get(role.value)
+    message_key = _message_key(role, run)
+    previous = run.subagent_messages.get(message_key)
     if previous:
         messages = copy.deepcopy(previous)
         messages.append(
@@ -89,6 +90,16 @@ def append_pending_feedback_messages(
     return messages
 
 
+def message_key_for_role(role: AgentRole, run: MultiAgentRun) -> str:
+    return _message_key(role, run)
+
+
+def _message_key(role: AgentRole, run: MultiAgentRun) -> str:
+    if role in {AgentRole.EXECUTE, AgentRole.TEST} and run.current_step_id:
+        return f"{role.value}:{run.current_step_id}"
+    return role.value
+
+
 def load_system_prompt(role: AgentRole) -> str:
     path = PROMPT_ROOT / role.value / "SYSTEM.md"
     try:
@@ -107,10 +118,14 @@ def build_role_context(
         return _plan_context(run, main_messages)
     if role == AgentRole.PLAN_REVIEW:
         return _plan_review_context(run)
+    if role == AgentRole.SCHEDULING:
+        return _scheduling_context(run)
     if role == AgentRole.EXECUTE:
         return _execute_context(run)
     if role == AgentRole.TEST:
         return _test_context(run)
+    if role == AgentRole.FINAL_TEST:
+        return _final_test_context(run)
     if role == AgentRole.EXECUTE_REVIEW:
         return _execute_review_context(run)
     return json.dumps({"run_id": run.run_id}, ensure_ascii=False, indent=2)
@@ -142,8 +157,14 @@ def _plan_review_context(run: MultiAgentRun) -> str:
 
 def _execute_context(run: MultiAgentRun) -> str:
     budget = execute_round_budget(run)
+    task = run.scheduled_tasks.get(run.current_step_id, {})
     payload = {
         "run_id": run.run_id,
+        "task_id": run.current_step_id if task else "",
+        "task": task.get("task", ""),
+        "test_instruction": task.get("test_instruction", ""),
+        "target_files": task.get("target_files", []),
+        "runtime_file_notices": _pop_file_notices(run, run.current_step_id) if task else [],
         "approved_plan": [node.to_dict() for node in run.approved_plan],
         "current_step_id": run.current_step_id,
         "completed_steps": sorted(run.step_submissions),
@@ -156,9 +177,14 @@ def _execute_context(run: MultiAgentRun) -> str:
         "plan_review_approval": run.review_result.get("plan_review") or run.review_result,
         "test_feedback": run.test_result if run.test_result.get("status") == "failed" else {},
         "execute_review_feedback": run.review_result if run.review_result.get("status") == "rejected" else {},
-        "execution_authority": "Only the approved_plan is authoritative. Do not reinterpret the original user request.",
+        "task_feedback": task.get("reason", ""),
+        "required_fixes": task.get("required_fixes", []),
+        "execution_authority": (
+            "Only the assigned task and approved_plan are authoritative. "
+            "Do not reinterpret the original user request."
+        ),
         "required_action": (
-            "Use ordinary tools only for current_step_id, then call SubmitSubAgentStep for that step."
+            "Use ordinary tools only for task_id/current_step_id, then call SubmitTaskExecution."
         ),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
@@ -173,7 +199,7 @@ def execute_round_budget(run: MultiAgentRun) -> dict[str, Any]:
     if remaining <= 5:
         warning = (
             "Round budget is nearly exhausted. If current_step_id acceptance is satisfied, "
-            "call SubmitSubAgentStep now; otherwise use the fewest possible tools to finish verification."
+            "call SubmitTaskExecution now; otherwise use the fewest possible tools to finish verification."
         )
     return {
         "agent_round_limit": limit,
@@ -185,12 +211,49 @@ def execute_round_budget(run: MultiAgentRun) -> dict[str, Any]:
 
 
 def _test_context(run: MultiAgentRun) -> str:
+    task = run.scheduled_tasks.get(run.current_step_id, {})
+    payload = {
+        "run_id": run.run_id,
+        "task_id": run.current_step_id if task else "",
+        "task": task.get("task", ""),
+        "test_instruction": task.get("test_instruction", ""),
+        "execute_submission": run.step_submissions.get(run.current_step_id, {}),
+        "approved_plan": [node.to_dict() for node in run.approved_plan],
+        "step_submissions": run.step_submissions,
+        "execute_final_answer": run.subagent_final_answers.get(
+            f"{AgentRole.EXECUTE.value}:{run.current_step_id}",
+            run.subagent_final_answers.get(AgentRole.EXECUTE.value, ""),
+        ),
+        "required_action": "Validate this task only. Call ApproveTaskTest or ReportTaskFailure.",
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _scheduling_context(run: MultiAgentRun) -> str:
     payload = {
         "run_id": run.run_id,
         "approved_plan": [node.to_dict() for node in run.approved_plan],
+        "scheduled_tasks": run.scheduled_tasks,
+        "file_conflict_overview": {
+            "file_waiters": run.file_waiters,
+            "file_notices": run.file_notices,
+        },
+        "final_test_feedback": run.test_result if run.test_result.get("status") == "failed" else {},
+        "required_action": (
+            "Dispatch tasks, check queued/running/passed/failed task states, and call CompleteScheduling "
+            "only after all dispatched tasks passed. Do not modify files."
+        ),
+    }
+    return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _final_test_context(run: MultiAgentRun) -> str:
+    payload = {
+        "run_id": run.run_id,
+        "approved_plan": [node.to_dict() for node in run.approved_plan],
+        "scheduled_tasks": run.scheduled_tasks,
         "step_submissions": run.step_submissions,
-        "execute_final_answer": run.subagent_final_answers.get(AgentRole.EXECUTE.value, ""),
-        "required_action": "Validate acceptance criteria. Call ApproveTest or ReportTestFailure.",
+        "required_action": "Run final validation for the whole task. Call ApproveFinalTest or ReportFinalTestFailure.",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
@@ -232,10 +295,28 @@ def run_summary_for_main_context(run: MultiAgentRun) -> str:
         "status": run.status.value,
         "plan_summary": run.plan_summary,
         "test_result": run.test_result,
-        "execute_review_result": run.review_result,
+        "scheduling_result": run.review_result,
+        "scheduled_tasks": {
+            task_id: {
+                "status": task.get("status"),
+                "summary": task.get("summary", ""),
+                "changed_files": task.get("changed_files", []),
+                "reason": task.get("reason", ""),
+            }
+            for task_id, task in run.scheduled_tasks.items()
+        },
         "inspect_tool": "InspectSubAgentWork",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
+
+
+def _pop_file_notices(run: MultiAgentRun, task_id: str) -> list[dict[str, Any]]:
+    if not task_id:
+        return []
+    notices = list(run.file_notices.get(task_id, []))
+    if notices:
+        run.file_notices[task_id] = []
+    return notices
 
 
 def next_open_step(run: MultiAgentRun) -> str:

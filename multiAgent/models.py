@@ -10,16 +10,20 @@ from uuid import uuid4
 class AgentRole(str, Enum):
     PLAN = "plan"
     PLAN_REVIEW = "plan_review"
+    SCHEDULING = "scheduling"
     EXECUTE = "execute"
     TEST = "test"
+    FINAL_TEST = "final_test"
     EXECUTE_REVIEW = "execute_review"
 
 
 class RunStatus(str, Enum):
     PLANNING = "planning"
     PLAN_REVIEW = "plan_review"
+    SCHEDULING = "scheduling"
     EXECUTING = "executing"
     TESTING = "testing"
+    FINAL_TESTING = "final_testing"
     EXECUTE_REVIEW = "execute_review"
     COMPLETED = "completed"
     FAILED = "failed"
@@ -27,8 +31,12 @@ class RunStatus(str, Enum):
 
 class StepStatus(str, Enum):
     PENDING = "pending"
+    QUEUED = "queued"
+    RUNNING = "running"
     COMPLETED = "completed"
     NEEDS_FIX = "needs_fix"
+    PASSED = "passed"
+    FAILED = "failed"
 
 
 TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED}
@@ -83,6 +91,13 @@ class MultiAgentRun:
     current_step_id: str = ""
     step_status: dict[str, StepStatus] = field(default_factory=dict)
     step_submissions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    scheduled_tasks: dict[str, dict[str, Any]] = field(default_factory=dict)
+    task_messages: dict[str, dict[str, list[dict[str, Any]]]] = field(default_factory=dict)
+    task_file_reads: dict[str, dict[str, dict[str, Any]]] = field(default_factory=dict)
+    file_versions: dict[str, dict[str, Any]] = field(default_factory=dict)
+    file_access_index: dict[str, dict[str, Any]] = field(default_factory=dict)
+    file_waiters: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
+    file_notices: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     plan_rejections: list[dict[str, Any]] = field(default_factory=list)
     test_result: dict[str, Any] = field(default_factory=dict)
     review_result: dict[str, Any] = field(default_factory=dict)
@@ -98,6 +113,8 @@ class MultiAgentRun:
     plan_review_attempts: int = 0
     execute_test_attempts: int = 0
     execute_review_attempts: int = 0
+    scheduling_attempts: int = 0
+    final_test_attempts: int = 0
     error: str = ""
     created_at: float = field(default_factory=time)
     updated_at: float = field(default_factory=time)
@@ -145,6 +162,13 @@ class MultiAgentRun:
                 for key, value in dict(payload.get("step_status", {})).items()
             },
             step_submissions=dict(payload.get("step_submissions", {})),
+            scheduled_tasks=dict(payload.get("scheduled_tasks", {})),
+            task_messages=dict(payload.get("task_messages", {})),
+            task_file_reads=dict(payload.get("task_file_reads", {})),
+            file_versions=dict(payload.get("file_versions", {})),
+            file_access_index=dict(payload.get("file_access_index", {})),
+            file_waiters=dict(payload.get("file_waiters", {})),
+            file_notices=dict(payload.get("file_notices", {})),
             plan_rejections=list(payload.get("plan_rejections", [])),
             test_result=dict(payload.get("test_result", {})),
             review_result=dict(payload.get("review_result", {})),
@@ -172,6 +196,8 @@ class MultiAgentRun:
             plan_review_attempts=int(payload.get("plan_review_attempts", 0) or 0),
             execute_test_attempts=int(payload.get("execute_test_attempts", 0) or 0),
             execute_review_attempts=int(payload.get("execute_review_attempts", 0) or 0),
+            scheduling_attempts=int(payload.get("scheduling_attempts", 0) or 0),
+            final_test_attempts=int(payload.get("final_test_attempts", 0) or 0),
             error=str(payload.get("error", "")),
             created_at=float(payload.get("created_at", time()) or time()),
             updated_at=float(payload.get("updated_at", time()) or time()),

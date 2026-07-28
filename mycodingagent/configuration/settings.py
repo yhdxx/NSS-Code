@@ -146,6 +146,9 @@ class MultiAgentConfig:
     max_agent_rounds: int = field(
         default_factory=lambda: max(1, _env_int("MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS", 50))
     )
+    max_parallel_tasks: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS", 5))
+    )
 
 
 @dataclass(frozen=True)
