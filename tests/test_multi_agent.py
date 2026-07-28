@@ -32,6 +32,7 @@ from multiAgent.tools import (
     SubmitPlanParams,
     SubmitSubAgentStep,
     SubmitSubAgentStepParams,
+    _delegate_result_payload,
 )
 from multiAgent.validators import validate_plan_payload
 from mycodingagent.llm_runtime.client import PendingToolCall
@@ -851,6 +852,25 @@ def test_task_test_no_decision_fails_with_diagnostic_after_retry(tmp_path, monke
     result = json.loads(orchestrator._scheduled_task_result(run.run_id, {"task_1"}))
     assert result["tasks"][0]["failure_type"] == "task_test_no_decision"
     assert "Do not repeat broad dispatch" in result["next_action"]
+
+    # 1. run_summary_for_main_context diagnostic fields
+    summary_json = json.loads(run_summary_for_main_context(updated))
+    st = summary_json["scheduled_tasks"]["task_1"]
+    assert "failure_type" in st
+    assert "last_test_message" in st
+    assert "last_tool_summary" in st
+    assert "test_attempts" in st
+
+    # 2. _delegate_result_payload diagnostic fields
+    delegate_payload = _delegate_result_payload(updated)
+    dp_st = delegate_payload["scheduled_tasks"]["task_1"]
+    assert "failure_type" in dp_st
+    assert "last_test_message" in dp_st
+    assert "last_tool_summary" in dp_st
+    assert "test_attempts" in dp_st
+
+    # 3. _scheduled_task_result contains test_attempts
+    assert "test_attempts" in result["tasks"][0]
 
 
 def test_multi_agent_prompts_discourage_large_file_repeated_reads():

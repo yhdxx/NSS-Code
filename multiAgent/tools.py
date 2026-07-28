@@ -774,6 +774,10 @@ def _delegate_result_payload(run: Any) -> dict[str, Any]:
                 "summary": task.get("summary", ""),
                 "changed_files": task.get("changed_files", []),
                 "reason": task.get("reason", ""),
+                "failure_type": task.get("failure_type", ""),
+                "last_test_message": task.get("last_test_message", ""),
+                "last_tool_summary": task.get("last_tool_summary", ""),
+                "test_attempts": task.get("test_attempts", 0),
             }
             for task_id, task in dict(getattr(run, "scheduled_tasks", {})).items()
         },

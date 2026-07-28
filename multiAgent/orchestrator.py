@@ -686,8 +686,9 @@ class MultiAgentOrchestrator:
                         "test_evidence": task.get("test_evidence", ""),
                         "last_test_message": task.get("last_test_message", ""),
                         "last_tool_summary": task.get("last_tool_summary", ""),
+                        "test_attempts": task.get("test_attempts", 0),
                     }.items()
-                    if value not in ("", [], None)
+                    if value not in ("", [], None) or key == "test_attempts"
                 }
             )
         failed = [task for task in tasks if task.get("status") in {"failed", "needs_fix"}]
