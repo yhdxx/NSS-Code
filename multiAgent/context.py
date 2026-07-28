@@ -18,10 +18,11 @@ def build_subagent_messages(
     role: AgentRole,
     run: MultiAgentRun,
     main_messages: list[dict[str, Any]],
+    task_id: str = "",
 ) -> list[dict[str, Any]]:
     return [
         {"role": "system", "content": load_system_prompt(role)},
-        {"role": "user", "content": build_role_context(role=role, run=run, main_messages=main_messages)},
+        {"role": "user", "content": build_role_context(role=role, run=run, main_messages=main_messages, task_id=task_id)},
     ]
 
 
@@ -30,8 +31,9 @@ def build_or_resume_subagent_messages(
     role: AgentRole,
     run: MultiAgentRun,
     main_messages: list[dict[str, Any]],
+    task_id: str = "",
 ) -> tuple[list[dict[str, Any]], MultiAgentRun]:
-    message_key = _message_key(role, run)
+    message_key = _message_key(role, run, task_id=task_id)
     previous = run.subagent_messages.get(message_key)
     if previous:
         messages = copy.deepcopy(previous)
@@ -39,11 +41,11 @@ def build_or_resume_subagent_messages(
             {
                 "role": "user",
                 "content": "[Runtime state update]\n"
-                + build_role_context(role=role, run=run, main_messages=main_messages),
+                + build_role_context(role=role, run=run, main_messages=main_messages, task_id=task_id),
             }
         )
     else:
-        messages = build_subagent_messages(role=role, run=run, main_messages=main_messages)
+        messages = build_subagent_messages(role=role, run=run, main_messages=main_messages, task_id=task_id)
     messages = append_pending_feedback_messages(role=role, run=run, messages=messages)
     return messages, run
 
@@ -90,13 +92,14 @@ def append_pending_feedback_messages(
     return messages
 
 
-def message_key_for_role(role: AgentRole, run: MultiAgentRun) -> str:
-    return _message_key(role, run)
+def message_key_for_role(role: AgentRole, run: MultiAgentRun, task_id: str = "") -> str:
+    return _message_key(role, run, task_id=task_id)
 
 
-def _message_key(role: AgentRole, run: MultiAgentRun) -> str:
-    if role in {AgentRole.EXECUTE, AgentRole.TEST} and run.current_step_id:
-        return f"{role.value}:{run.current_step_id}"
+def _message_key(role: AgentRole, run: MultiAgentRun, *, task_id: str = "") -> str:
+    active_task_id = task_id or run.current_step_id
+    if role in {AgentRole.EXECUTE, AgentRole.TEST} and active_task_id:
+        return f"{role.value}:{active_task_id}"
     return role.value
 
 
@@ -113,6 +116,7 @@ def build_role_context(
     role: AgentRole,
     run: MultiAgentRun,
     main_messages: list[dict[str, Any]],
+    task_id: str = "",
 ) -> str:
     if role == AgentRole.PLAN:
         return _plan_context(run, main_messages)
@@ -121,9 +125,9 @@ def build_role_context(
     if role == AgentRole.SCHEDULING:
         return _scheduling_context(run)
     if role == AgentRole.EXECUTE:
-        return _execute_context(run)
+        return _execute_context(run, task_id=task_id)
     if role == AgentRole.TEST:
-        return _test_context(run)
+        return _test_context(run, task_id=task_id)
     if role == AgentRole.FINAL_TEST:
         return _final_test_context(run)
     if role == AgentRole.EXECUTE_REVIEW:
@@ -155,18 +159,19 @@ def _plan_review_context(run: MultiAgentRun) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def _execute_context(run: MultiAgentRun) -> str:
-    budget = execute_round_budget(run)
-    task = run.scheduled_tasks.get(run.current_step_id, {})
+def _execute_context(run: MultiAgentRun, *, task_id: str = "") -> str:
+    active_task_id = task_id or run.current_step_id
+    budget = execute_round_budget(run, task_id=active_task_id)
+    task = run.scheduled_tasks.get(active_task_id, {})
     payload = {
         "run_id": run.run_id,
-        "task_id": run.current_step_id if task else "",
+        "task_id": active_task_id if task else "",
         "task": task.get("task", ""),
         "test_instruction": task.get("test_instruction", ""),
         "target_files": task.get("target_files", []),
-        "runtime_file_notices": _pop_file_notices(run, run.current_step_id) if task else [],
+        "runtime_file_notices": _pop_file_notices(run, active_task_id) if task else [],
         "approved_plan": [node.to_dict() for node in run.approved_plan],
-        "current_step_id": run.current_step_id,
+        "current_step_id": active_task_id,
         "completed_steps": sorted(run.step_submissions),
         "step_status": {key: str(value.value) for key, value in run.step_status.items()},
         "agent_round_limit": budget["agent_round_limit"],
@@ -190,10 +195,11 @@ def _execute_context(run: MultiAgentRun) -> str:
     return json.dumps(payload, ensure_ascii=False, indent=2)
 
 
-def execute_round_budget(run: MultiAgentRun) -> dict[str, Any]:
+def execute_round_budget(run: MultiAgentRun, *, task_id: str = "") -> dict[str, Any]:
     role = AgentRole.EXECUTE.value
-    limit = int(run.subagent_round_limits.get(role) or CONFIG.multi_agent.max_agent_rounds)
-    used = max(0, int(run.subagent_rounds_used.get(role, 0)))
+    budget_key = f"{role}:{task_id}" if task_id else role
+    limit = int(run.subagent_round_limits.get(budget_key) or run.subagent_round_limits.get(role) or CONFIG.multi_agent.max_agent_rounds)
+    used = max(0, int(run.subagent_rounds_used.get(budget_key, run.subagent_rounds_used.get(role, 0))))
     remaining = max(0, limit - used)
     warning = ""
     if remaining <= 5:
@@ -205,23 +211,24 @@ def execute_round_budget(run: MultiAgentRun) -> dict[str, Any]:
         "agent_round_limit": limit,
         "agent_rounds_used": used,
         "agent_rounds_remaining": remaining,
-        "tool_calls_used_in_step": max(0, int(run.subagent_tool_calls_used.get(role, 0))),
+        "tool_calls_used_in_step": max(0, int(run.subagent_tool_calls_used.get(budget_key, run.subagent_tool_calls_used.get(role, 0)))),
         "round_budget_warning": warning,
     }
 
 
-def _test_context(run: MultiAgentRun) -> str:
-    task = run.scheduled_tasks.get(run.current_step_id, {})
+def _test_context(run: MultiAgentRun, *, task_id: str = "") -> str:
+    active_task_id = task_id or run.current_step_id
+    task = run.scheduled_tasks.get(active_task_id, {})
     payload = {
         "run_id": run.run_id,
-        "task_id": run.current_step_id if task else "",
+        "task_id": active_task_id if task else "",
         "task": task.get("task", ""),
         "test_instruction": task.get("test_instruction", ""),
-        "execute_submission": run.step_submissions.get(run.current_step_id, {}),
+        "execute_submission": run.step_submissions.get(active_task_id, {}),
         "approved_plan": [node.to_dict() for node in run.approved_plan],
         "step_submissions": run.step_submissions,
         "execute_final_answer": run.subagent_final_answers.get(
-            f"{AgentRole.EXECUTE.value}:{run.current_step_id}",
+            f"{AgentRole.EXECUTE.value}:{active_task_id}",
             run.subagent_final_answers.get(AgentRole.EXECUTE.value, ""),
         ),
         "required_action": "Validate this task only. Call ApproveTaskTest or ReportTaskFailure.",
@@ -240,8 +247,9 @@ def _scheduling_context(run: MultiAgentRun) -> str:
         },
         "final_test_feedback": run.test_result if run.test_result.get("status") == "failed" else {},
         "required_action": (
-            "Dispatch tasks, check queued/running/passed/failed task states, and call CompleteScheduling "
-            "only after all dispatched tasks passed. Do not modify files."
+            "Call DispatchTasks with a batch of concrete task-agent work. DispatchTasks blocks until "
+            "the dispatched execute/task_test agents finish and returns passed/failed/blocked results. "
+            "Call SubmitFinalTest only after there are no queued/running/testing/needs_fix tasks and any failed task has been repaired by a later task. Do not modify files."
         ),
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)

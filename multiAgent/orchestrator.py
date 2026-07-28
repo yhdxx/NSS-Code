@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from time import time
 from typing import Any
@@ -58,6 +59,7 @@ class MultiAgentOrchestrator:
         self.memory_runtime = memory_runtime
         self.model = model or llm_client.MODEL
         self.file_coordinator = FileCoordinator()
+        self._operation_lock = asyncio.Lock()
 
     async def start(self, *, task: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun:
         run = MultiAgentRun.create(
@@ -131,10 +133,6 @@ class MultiAgentOrchestrator:
         self.store.save_run(run)
         await self._run_agent(role=AgentRole.SCHEDULING, run=run, main_messages=main_messages)
         refreshed = self._load_or_raise(run.run_id)
-        if refreshed.status != RunStatus.SCHEDULING:
-            return
-        await self._process_scheduled_tasks(refreshed, main_messages)
-        refreshed = self._load_or_raise(run.run_id)
         if (
             refreshed.status == RunStatus.SCHEDULING
             and refreshed.scheduling_attempts >= MAX_WORKFLOW_CYCLES
@@ -142,37 +140,49 @@ class MultiAgentOrchestrator:
         ):
             self.store.mark_failed(refreshed, "scheduling did not dispatch any task")
 
-    async def _process_scheduled_tasks(self, run: MultiAgentRun, main_messages: list[dict[str, Any]]) -> None:
+    async def _process_scheduled_tasks(
+        self,
+        run: MultiAgentRun,
+        main_messages: list[dict[str, Any]],
+        *,
+        batch_task_ids: set[str] | None = None,
+    ) -> None:
+        target_ids = set(batch_task_ids or [])
         while True:
             run = self._load_or_raise(run.run_id)
             if run.status != RunStatus.SCHEDULING:
                 return
-            running = [task for task in run.scheduled_tasks.values() if task.get("status") == "running"]
-            capacity = max(0, int(CONFIG.multi_agent.max_parallel_tasks) - len(running))
-            if capacity > 0:
-                for task in run.scheduled_tasks.values():
-                    if capacity <= 0:
-                        break
-                    if task.get("status") != "queued":
-                        continue
-                    deps = [str(dep) for dep in task.get("depends_on", [])]
-                    if any(run.scheduled_tasks.get(dep, {}).get("status") != "passed" for dep in deps):
-                        continue
-                    task["status"] = "running"
-                    task["updated_at"] = _now()
-                    capacity -= 1
-                self.store.save_run(run)
-            task_id = next(
-                (
-                    task_id
-                    for task_id, task in run.scheduled_tasks.items()
-                    if task.get("status") in {"running", "needs_fix"}
-                ),
-                "",
-            )
-            if not task_id:
+            candidates = {
+                task_id: task
+                for task_id, task in run.scheduled_tasks.items()
+                if (not target_ids or task_id in target_ids)
+            }
+            unfinished = {
+                task_id: task
+                for task_id, task in candidates.items()
+                if task.get("status") in {"queued", "running", "needs_fix", "testing"}
+            }
+            if not unfinished:
                 return
-            await self._run_task(run_id=run.run_id, task_id=task_id, main_messages=main_messages)
+            ready: list[str] = []
+            for task_id, task in unfinished.items():
+                if task.get("status") not in {"queued", "needs_fix"}:
+                    continue
+                deps = [str(dep) for dep in task.get("depends_on", [])]
+                if any(run.scheduled_tasks.get(dep, {}).get("status") != "passed" for dep in deps):
+                    continue
+                ready.append(task_id)
+            if not ready:
+                return
+            ready = ready[: max(1, int(CONFIG.multi_agent.max_parallel_tasks))]
+            for task_id in ready:
+                task = run.scheduled_tasks.get(task_id, {})
+                task["status"] = "running"
+                task["updated_at"] = _now()
+            self.store.save_run(run)
+            await asyncio.gather(
+                *(self._run_task(run_id=run.run_id, task_id=task_id, main_messages=main_messages) for task_id in ready)
+            )
 
     async def _run_task(self, *, run_id: str, task_id: str, main_messages: list[dict[str, Any]]) -> None:
         for attempt in range(MAX_FIX_ATTEMPTS):
@@ -182,9 +192,13 @@ class MultiAgentOrchestrator:
                 return
             task["status"] = "running"
             task["attempts"] = int(task.get("attempts", 0) or 0) + 1
-            run.current_step_id = task_id
             self.store.save_run(run)
-            exit_reason = await self._run_agent(role=AgentRole.EXECUTE, run=run, main_messages=main_messages)
+            exit_reason = await self._run_agent(
+                role=AgentRole.EXECUTE,
+                run=run,
+                main_messages=main_messages,
+                task_id=task_id,
+            )
             run = self._load_or_raise(run_id)
             task = run.scheduled_tasks.get(task_id, {})
             if task.get("status") != "testing":
@@ -194,29 +208,30 @@ class MultiAgentOrchestrator:
                     if exit_reason == EXIT_MAX_AGENT_TOOL_ROUNDS_EXCEEDED
                     else f"execute did not submit current task: {task_id}"
                 )
-                run.current_step_id = ""
                 run.add_event("task_execute_failed", task_id=task_id, reason=task["reason"])
                 self.store.save_run(run)
                 return
-            await self._run_agent(role=AgentRole.TEST, run=run, main_messages=main_messages)
+            await self._run_agent(
+                role=AgentRole.TEST,
+                run=run,
+                main_messages=main_messages,
+                task_id=task_id,
+            )
             run = self._load_or_raise(run_id)
             task = run.scheduled_tasks.get(task_id, {})
             if task.get("status") == "passed":
-                run.current_step_id = ""
                 self.store.save_run(run)
                 return
             if task.get("status") == "needs_fix":
                 continue
             task["status"] = "failed"
             task["reason"] = f"task_test did not approve or report failure for task: {task_id}"
-            run.current_step_id = ""
             self.store.save_run(run)
             return
         run = self._load_or_raise(run_id)
         task = run.scheduled_tasks.get(task_id, {})
         task["status"] = "failed"
         task["reason"] = f"task exceeded fix attempts: {task_id}"
-        run.current_step_id = ""
         self.store.save_run(run)
 
     async def _run_final_test(self, run: MultiAgentRun, main_messages: list[dict[str, Any]]) -> None:
@@ -284,13 +299,15 @@ class MultiAgentOrchestrator:
         role: AgentRole,
         run: MultiAgentRun,
         main_messages: list[dict[str, Any]],
+        task_id: str = "",
     ) -> str:
         messages, resumed_run = build_or_resume_subagent_messages(
             role=role,
             run=self._load_or_raise(run.run_id),
             main_messages=main_messages,
+            task_id=task_id,
         )
-        message_key = message_key_for_role(role, resumed_run)
+        message_key = message_key_for_role(role, resumed_run, task_id=task_id)
         resumed_run.subagent_messages[message_key] = list(messages)
         self.store.save_run(resumed_run)
         tools = llm_client.format_openai_tools(schemas_for_role(role=role, registry=self.registry, store=self.store))
@@ -300,6 +317,7 @@ class MultiAgentOrchestrator:
         self._record_agent_budget(
             run_id=run.run_id,
             role=role,
+            task_id=task_id,
             limit=max_rounds,
             rounds_used=0,
             tool_calls_used=0,
@@ -309,12 +327,18 @@ class MultiAgentOrchestrator:
             self._record_agent_budget(
                 run_id=run.run_id,
                 role=role,
+                task_id=task_id,
                 limit=max_rounds,
                 rounds_used=round_index,
                 tool_calls_used=tool_calls_used,
                 event_kind="agent_round_started",
             )
-            request_messages = self._messages_with_round_budget(role=role, run_id=run.run_id, messages=messages)
+            request_messages = self._messages_with_round_budget(
+                role=role,
+                run_id=run.run_id,
+                messages=messages,
+                task_id=task_id,
+            )
             assistant_text, tool_calls, _usage = await stream_one_round(
                 self.api_client,
                 self.model,
@@ -327,28 +351,31 @@ class MultiAgentOrchestrator:
             messages.append(assistant_message)
             if assistant_text:
                 current = self._load_or_raise(run.run_id)
-                current.subagent_final_answers[message_key_for_role(role, current)] = assistant_text
+                current.subagent_final_answers[message_key_for_role(role, current, task_id=task_id)] = assistant_text
                 self.store.save_run(current)
             if not tool_calls:
                 self._record_agent_budget(
                     run_id=run.run_id,
                     role=role,
+                    task_id=task_id,
                     limit=max_rounds,
                     rounds_used=round_index + 1,
                     tool_calls_used=tool_calls_used,
                     exit_reason=EXIT_NO_TOOL_CALLS,
                 )
-                self._persist_agent_messages(run.run_id, role, messages)
+                self._persist_agent_messages(run.run_id, role, messages, task_id=task_id)
                 return EXIT_NO_TOOL_CALLS
             tool_calls_used += len(tool_calls)
             for index, tool_call in enumerate(tool_calls):
                 call_id = tool_call.tool_id or f"{role.value}_tool_call_{index}"
-                output = await self._execute_subagent_tool(
+                output = await self._execute_subagent_tool_queued(
                     role=role,
                     run_id=run.run_id,
                     tool_call_id=call_id,
                     tool_name=tool_call.tool_name,
                     raw_args=tool_call.arguments,
+                    active_task_id=task_id,
+                    main_messages=main_messages,
                 )
                 failure_key = (tool_call.tool_name, tool_call.arguments.strip())
                 if output.startswith("Tool execution error:") or output.startswith("Error:") or '"error"' in output[:300]:
@@ -356,14 +383,15 @@ class MultiAgentOrchestrator:
                         output += "\nRepeated tool failure with identical arguments. Correct the call; do not retry unchanged."
                     seen_failures.add(failure_key)
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": output})
-            self._persist_agent_messages(run.run_id, role, messages)
+            self._persist_agent_messages(run.run_id, role, messages, task_id=task_id)
             refreshed = self._load_or_raise(run.run_id)
             if role in {AgentRole.EXECUTE, AgentRole.TEST}:
-                task = refreshed.scheduled_tasks.get(refreshed.current_step_id, {})
+                task = refreshed.scheduled_tasks.get(task_id, {})
                 if task.get("status") in {"testing", "passed", "needs_fix", "failed"}:
                     self._record_agent_budget(
                         run_id=run.run_id,
                         role=role,
+                        task_id=task_id,
                         limit=max_rounds,
                         rounds_used=round_index + 1,
                         tool_calls_used=tool_calls_used,
@@ -374,16 +402,18 @@ class MultiAgentOrchestrator:
                 self._record_agent_budget(
                     run_id=run.run_id,
                     role=role,
+                    task_id=task_id,
                     limit=max_rounds,
                     rounds_used=round_index + 1,
                     tool_calls_used=tool_calls_used,
                     exit_reason=EXIT_PHASE_CHANGED,
                 )
                 return EXIT_PHASE_CHANGED
-        self._persist_agent_messages(run.run_id, role, messages)
+        self._persist_agent_messages(run.run_id, role, messages, task_id=task_id)
         self._record_agent_budget(
             run_id=run.run_id,
             role=role,
+            task_id=task_id,
             limit=max_rounds,
             rounds_used=max_rounds,
             tool_calls_used=tool_calls_used,
@@ -391,6 +421,62 @@ class MultiAgentOrchestrator:
             event_kind="agent_round_limit_reached",
         )
         return EXIT_MAX_AGENT_TOOL_ROUNDS_EXCEEDED
+
+    async def _execute_subagent_tool_queued(
+        self,
+        *,
+        role: AgentRole,
+        run_id: str,
+        tool_call_id: str,
+        tool_name: str,
+        raw_args: str,
+        active_task_id: str = "",
+        main_messages: list[dict[str, Any]] | None = None,
+    ) -> str:
+        if role == AgentRole.SCHEDULING and tool_name == "DispatchTasks":
+            output = await self._execute_subagent_tool(
+                role=role,
+                run_id=run_id,
+                tool_call_id=tool_call_id,
+                tool_name=tool_name,
+                raw_args=raw_args,
+                active_task_id=active_task_id,
+            )
+            try:
+                payload = json.loads(output)
+            except json.JSONDecodeError:
+                return output
+            task_ids = {
+                str(task.get("task_id", ""))
+                for task in payload.get("tasks", [])
+                if str(task.get("task_id", "")).strip()
+            }
+            if payload.get("status") == "queued" and task_ids:
+                await self._process_scheduled_tasks(
+                    self._load_or_raise(run_id),
+                    main_messages or [],
+                    batch_task_ids=task_ids,
+                )
+                return self._scheduled_task_result(run_id, task_ids)
+            return output
+        if role in {AgentRole.EXECUTE, AgentRole.TEST}:
+            async with self._operation_lock:
+                return await self._execute_subagent_tool(
+                    role=role,
+                    run_id=run_id,
+                    tool_call_id=tool_call_id,
+                    tool_name=tool_name,
+                    raw_args=raw_args,
+                    active_task_id=active_task_id,
+                )
+        return await self._execute_subagent_tool(
+            role=role,
+            run_id=run_id,
+            tool_call_id=tool_call_id,
+            tool_name=tool_name,
+            raw_args=raw_args,
+            active_task_id=active_task_id,
+        )
 
     async def _execute_subagent_tool(
         self,
@@ -400,6 +486,7 @@ class MultiAgentOrchestrator:
         tool_call_id: str,
         tool_name: str,
         raw_args: str,
+        active_task_id: str = "",
     ) -> str:
         try:
             args = json.loads(raw_args) if raw_args else {}
@@ -412,7 +499,7 @@ class MultiAgentOrchestrator:
             return f"Error: unknown tool {tool_name}"
         task_id = ""
         if role == AgentRole.EXECUTE and control is None:
-            task_error = self._validate_execute_task(run_id, args)
+            task_error = self._validate_execute_task(run_id, args, active_task_id=active_task_id)
             if task_error:
                 return task_error
             task_id = str(args.get("task_id", "")).strip()
@@ -537,17 +624,57 @@ class MultiAgentOrchestrator:
             return output
         return None
 
-    def _validate_execute_task(self, run_id: str, args: dict[str, Any]) -> str:
+    def _validate_execute_task(self, run_id: str, args: dict[str, Any], *, active_task_id: str = "") -> str:
         run = self._load_or_raise(run_id)
         task_id = str(args.get("task_id") or args.get("step_id") or "").strip()
         if not task_id:
             return "Error: execute tool calls must include task_id."
-        if task_id != run.current_step_id:
-            return f"Error: execute task gating rejected task_id {task_id}; current task_id is {run.current_step_id}."
+        expected = active_task_id or run.current_step_id
+        if expected and task_id != expected:
+            return f"Error: execute task gating rejected task_id {task_id}; current task_id is {expected}."
         return ""
 
     def _validate_execute_step(self, run_id: str, args: dict[str, Any]) -> str:
         return self._validate_execute_task(run_id, args)
+
+    def _scheduled_task_result(self, run_id: str, task_ids: set[str]) -> str:
+        run = self._load_or_raise(run_id)
+        tasks: list[dict[str, Any]] = []
+        for task_id in sorted(task_ids):
+            task = run.scheduled_tasks.get(task_id, {})
+            tasks.append(
+                {
+                    key: value
+                    for key, value in {
+                        "task_id": task_id,
+                        "status": task.get("status", "unknown"),
+                        "summary": task.get("summary", ""),
+                        "changed_files": task.get("changed_files", []),
+                        "reason": task.get("reason", ""),
+                        "required_fixes": task.get("required_fixes", []),
+                        "test_evidence": task.get("test_evidence", ""),
+                    }.items()
+                    if value not in ("", [], None)
+                }
+            )
+        failed = [task for task in tasks if task.get("status") in {"failed", "needs_fix"}]
+        blocked = [task for task in tasks if task.get("status") in {"queued", "running", "testing"}]
+        status = "failed" if failed else "blocked" if blocked else "passed"
+        return json.dumps(
+            {
+                "status": status,
+                "tasks": tasks,
+                "next_action": (
+                    "Dispatch focused repair tasks for failed items."
+                    if failed
+                    else "Resolve dependencies or dispatch a narrower task batch."
+                    if blocked
+                    else "Call SubmitFinalTest when all scheduled work is complete."
+                ),
+            },
+            ensure_ascii=False,
+            indent=2,
+        )
 
     def _store_tool_output(
         self,
@@ -582,9 +709,16 @@ class MultiAgentOrchestrator:
             current_prompt="",
         )
 
-    def _persist_agent_messages(self, run_id: str, role: AgentRole, messages: list[dict[str, Any]]) -> None:
+    def _persist_agent_messages(
+        self,
+        run_id: str,
+        role: AgentRole,
+        messages: list[dict[str, Any]],
+        *,
+        task_id: str = "",
+    ) -> None:
         run = self._load_or_raise(run_id)
-        run.subagent_messages[message_key_for_role(role, run)] = list(messages)
+        run.subagent_messages[message_key_for_role(role, run, task_id=task_id)] = list(messages)
         self.store.save_run(run)
 
     def _record_agent_budget(
@@ -592,6 +726,7 @@ class MultiAgentOrchestrator:
         *,
         run_id: str,
         role: AgentRole,
+        task_id: str = "",
         limit: int,
         rounds_used: int,
         tool_calls_used: int,
@@ -599,7 +734,7 @@ class MultiAgentOrchestrator:
         event_kind: str = "",
     ) -> None:
         run = self._load_or_raise(run_id)
-        role_key = role.value
+        role_key = f"{role.value}:{task_id}" if task_id and role in {AgentRole.EXECUTE, AgentRole.TEST} else role.value
         run.subagent_round_limits[role_key] = limit
         run.subagent_rounds_used[role_key] = rounds_used
         run.subagent_tool_calls_used[role_key] = tool_calls_used
@@ -609,7 +744,7 @@ class MultiAgentOrchestrator:
             run.add_event(
                 event_kind,
                 role=role_key,
-                step_id=run.current_step_id if role == AgentRole.EXECUTE else "",
+                step_id=task_id or (run.current_step_id if role == AgentRole.EXECUTE else ""),
                 round_used=rounds_used,
                 rounds_remaining=max(0, limit - rounds_used),
                 tool_call_count=tool_calls_used,
@@ -622,6 +757,7 @@ class MultiAgentOrchestrator:
         role: AgentRole,
         run_id: str,
         messages: list[dict[str, Any]],
+        task_id: str = "",
     ) -> list[dict[str, Any]]:
         if role != AgentRole.EXECUTE:
             return messages
@@ -630,7 +766,8 @@ class MultiAgentOrchestrator:
             *messages,
             {
                 "role": "user",
-                "content": "[Runtime round budget]\n" + json.dumps(execute_round_budget(run), ensure_ascii=False, indent=2),
+                "content": "[Runtime round budget]\n"
+                + json.dumps(execute_round_budget(run, task_id=task_id), ensure_ascii=False, indent=2),
             },
         ]
 

@@ -75,8 +75,8 @@ tool_runtime -> capability_discovery, configuration, mcp_integration, memory, sk
 
 PLANNING -> plan 调用 SubmitPlan
 PLAN_REVIEW -> plan_review 调用 ApprovePlan 或 RejectPlan
-SCHEDULING -> scheduling 调用 DispatchTask / CheckTask / CompleteScheduling
-TASK EXECUTION -> Runtime 按 max_parallel_tasks 推进 queued/running task
+SCHEDULING -> scheduling 调用 DispatchTasks 批量派发任务，无未完成任务后调用 SubmitFinalTest
+TASK EXECUTION -> Runtime 按 max_parallel_tasks 并行推进 dispatch batch 中的 ready task
   ├── execute 按 task_id 执行并调用 SubmitTaskExecution
   └── task_test 调用 ApproveTaskTest 或 ReportTaskFailure
 FINAL_TESTING -> final_test 调用 ApproveFinalTest 或 ReportFinalTestFailure
@@ -85,7 +85,7 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
 ```
 
 - `plan` 可读取最近主对话，保证跨轮计划/执行场景保留用户要求；`scheduling` 只调度任务不改代码；`execute` 只以 assigned task 和 `approved_plan` 为权威，不重新解释用户原始请求。
-- `tool_policy.py` 按角色隔离工具 schema；`execute` 的普通工具 schema 会强制注入 `task_id`，Runtime 校验其等于当前运行任务 id（内部复用 `current_step_id` 字段存储）。
+- `tool_policy.py` 按角色隔离工具 schema；`execute` 的普通工具 schema 会强制注入 `task_id`，Runtime 校验其等于当前运行任务 id。
 - `FileCoordinator` 负责文件级写锁、读取 revision 校验、Bash `declared_write_files` 监督、等待通知队列和文件变更 runtime notice。
 - `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 控制 scheduling 同时推进的 task 数，默认 5。
 - 子智能体消息、最终回答、计划、调度任务、任务提交、反馈事件、文件访问索引、文件通知和轮次预算持久化在 `multi_agent.sqlite3` 的 `multi_agent_runs` 表。
@@ -204,9 +204,8 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
   - `async execute(self, params: DelegateToMultiAgentParams) -> ToolResult`（L69）；调用：`MultiAgentOrchestrator`, `_delegate_result_payload`, `_json`, `_json_error`, `orchestrator.start`
 - 类 `class SubmitPlan`（L97）：plan 控制工具，提交结构化计划。；`execute(...)`（L106）调用：`validate_plan_payload`, `run.add_event`, `self._store.save_run`
 - 类 `class ApprovePlan`（L129）：plan_review 控制工具，批准计划并初始化步骤状态。；`execute(...)`（L138）调用：`executable_steps`, `run.add_event`, `self._store.save_run`
-- 类 `class DispatchTask`：scheduling 控制工具，创建 paired execute/task_test 任务；按 `max_parallel_tasks` 和 `depends_on` 返回 `running` 或 `queued`。
-- 类 `class CheckTask`：scheduling 控制工具，返回任务 `queued/running/passed/failed/needs_fix` 状态和摘要。
-- 类 `class CompleteScheduling`：所有 dispatched task passed 后进入 `final_testing`。
+- 类 `class DispatchTasks`：scheduling 控制工具，批量创建 paired execute/task_test 任务；Runtime 阻塞推进该批次并返回 `passed/failed/blocked` 汇总。
+- 类 `class SubmitFinalTest`：无 queued/running/testing/needs_fix 任务后进入 `final_testing`，历史 failed 交给 final_test 做全局兜底。
 - 类 `class SubmitTaskExecution`：execute 控制工具，提交当前 task 的执行证据并进入 paired task_test。
 - 类 `class ApproveTaskTest` / `class ReportTaskFailure`：task_test 控制工具，批准单个 task 或将失败反馈续接回 execute。
 - 类 `class ApproveFinalTest` / `class ReportFinalTestFailure`：final_test 控制工具，批准全局验证或把失败反馈续接回 scheduling。
@@ -241,8 +240,8 @@ COMPLETED / FAILED -> 主智能体只接收精简 run summary
   - `async resume(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L64）；调用：`self.run`, `self.store.load_run`
   - `async run(self, *, run_id: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun`（L70）；按状态循环调用 `_run_plan/_run_plan_review/_run_scheduling/_run_final_test`，并保留旧 `_run_execute/_run_test/_run_execute_review` 兼容路径。；调用：`self._load_or_raise`, `self.store.mark_failed`
   - `result_message(self, run: MultiAgentRun) -> dict[str, Any]`（L92）；调用：`run_summary_for_main_context`
-  - `_run_scheduling(...)`：运行 scheduling 子智能体；若仍处于 scheduling，则调用 `_process_scheduled_tasks` 推进 queued/running task。
-  - `_process_scheduled_tasks(...)`：按 `CONFIG.multi_agent.max_parallel_tasks` 和 task dependencies 把 queued task 推进为 running，并逐个调用 `_run_task`。
+  - `_run_scheduling(...)`：运行 scheduling 子智能体；`DispatchTasks` 工具调用期间由 Runtime 阻塞推进派发批次。
+  - `_process_scheduled_tasks(...)`：按 `CONFIG.multi_agent.max_parallel_tasks` 和 task dependencies 把 ready task 分批推进，并用 `asyncio.gather` 并行调用 `_run_task`。
   - `_run_task(...)`：为一个 task 运行 execute -> task_test 修正循环，最多 `MAX_FIX_ATTEMPTS`。
   - `_run_final_test(...)`：执行完整任务最终验证；失败反馈回 scheduling。
   - `async _run_agent(...) -> str`：构建/续接子智能体消息，循环调用模型，执行工具并记录退出原因。；调用：`build_or_resume_subagent_messages`, `schemas_for_role`, `stream_one_round`, `_assistant_message`, `_phase_changed`, `self._execute_subagent_tool`, `self._persist_agent_messages`, `self._record_agent_budget`

@@ -7,7 +7,6 @@ from uuid import uuid4
 
 from pydantic import BaseModel, Field
 
-from mycodingagent.configuration import CONFIG
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
 from multiAgent.models import AgentRole, RunStatus, StepStatus, executable_steps
@@ -152,113 +151,103 @@ class ApprovePlan(Tool):
         return _json({"status": "ok", "next": "scheduling"})
 
 
-class DispatchTaskParams(BaseModel):
-    run_id: str
-    task: str = Field(description="Concrete task for one execute sub-agent.")
-    test_instruction: str = Field(description="Concrete test instruction for the paired task_test sub-agent.")
+class ScheduledTaskInput(BaseModel):
+    task: str = Field(description="Concrete task for one execute sub-agent.", min_length=1)
+    test_instruction: str = Field(description="Concrete test instruction for the paired task_test sub-agent.", min_length=1)
     target_files: list[str] = Field(default_factory=list)
     depends_on: list[str] = Field(default_factory=list)
 
 
-class DispatchTask(Tool):
-    name = "DispatchTask"
-    description = "Dispatch one task to a paired execute/task_test workflow. Returns running or queued."
-    params_model = DispatchTaskParams
-    category = "read"
-
-    def __init__(self, store: MultiAgentStore) -> None:
-        self._store = store
-
-    async def execute(self, params: DispatchTaskParams) -> ToolResult:
-        run = self._store.load_run(params.run_id)
-        if run is None:
-            return _json_error("run_not_found", f"run not found: {params.run_id}")
-        task_id = uuid4().hex
-        running_count = sum(1 for task in run.scheduled_tasks.values() if task.get("status") == "running")
-        max_parallel = CONFIG.multi_agent.max_parallel_tasks
-        status = "running" if running_count < max_parallel and not params.depends_on else "queued"
-        run.scheduled_tasks[task_id] = {
-            "task_id": task_id,
-            "task": params.task,
-            "test_instruction": params.test_instruction,
-            "target_files": params.target_files,
-            "depends_on": params.depends_on,
-            "status": status,
-            "summary": "",
-            "changed_files": [],
-            "reason": "",
-            "conflicts": [],
-            "attempts": 0,
-            "test_attempts": 0,
-            "created_at": time(),
-            "updated_at": time(),
-        }
-        run.add_event("task_dispatched", task_id=task_id, status=status)
-        self._store.save_run(run)
-        return _json({"status": status, "task_id": task_id})
-
-
-class CheckTaskParams(BaseModel):
+class DispatchTasksParams(BaseModel):
     run_id: str
-    task_id: str
+    tasks: list[ScheduledTaskInput] = Field(
+        description=(
+            "Batch of execute/task_test task pairs to dispatch together. Independent tasks in this batch "
+            "may run concurrently up to the runtime max_parallel_tasks limit."
+        ),
+        min_length=1,
+    )
 
 
-class CheckTask(Tool):
-    name = "CheckTask"
-    description = "Check one dispatched task status: queued, running, passed, or failed."
-    params_model = CheckTaskParams
+class DispatchTasks(Tool):
+    name = "DispatchTasks"
+    description = (
+        "Dispatch a batch of task-agent work and wait for runtime to execute all dispatchable tasks. "
+        "The tool result is the aggregated task outcome after execute/task_test agents finish, not merely queued."
+    )
+    params_model = DispatchTasksParams
     category = "read"
 
     def __init__(self, store: MultiAgentStore) -> None:
         self._store = store
 
-    async def execute(self, params: CheckTaskParams) -> ToolResult:
+    async def execute(self, params: DispatchTasksParams) -> ToolResult:
         run = self._store.load_run(params.run_id)
         if run is None:
             return _json_error("run_not_found", f"run not found: {params.run_id}")
-        task = run.scheduled_tasks.get(params.task_id)
-        if not task:
-            return _json_error("task_not_found", f"task not found: {params.task_id}")
-        payload = {
-            "status": task.get("status", "unknown"),
-            "task_id": params.task_id,
-            "summary": task.get("summary", ""),
-            "changed_files": task.get("changed_files", []),
-            "reason": task.get("reason", ""),
-            "conflicts": task.get("conflicts", []),
-        }
-        return _json({key: value for key, value in payload.items() if value not in ("", [], None)})
+        created: list[dict[str, Any]] = []
+        for item in params.tasks:
+            task_id = uuid4().hex
+            run.scheduled_tasks[task_id] = {
+                "task_id": task_id,
+                "task": item.task,
+                "test_instruction": item.test_instruction,
+                "target_files": item.target_files,
+                "depends_on": item.depends_on,
+                "status": "queued",
+                "summary": "",
+                "changed_files": [],
+                "reason": "",
+                "conflicts": [],
+                "attempts": 0,
+                "test_attempts": 0,
+                "created_at": time(),
+                "updated_at": time(),
+            }
+            created.append({"task_id": task_id, "status": "queued"})
+        run.add_event("tasks_dispatched", task_ids=[task["task_id"] for task in created])
+        self._store.save_run(run)
+        return _json({"status": "queued", "tasks": created})
 
 
-class CompleteSchedulingParams(BaseModel):
+class SubmitFinalTestParams(BaseModel):
     run_id: str
     summary: str
 
 
-class CompleteScheduling(Tool):
-    name = "CompleteScheduling"
-    description = "Complete scheduling after every dispatched task has passed."
-    params_model = CompleteSchedulingParams
+class SubmitFinalTest(Tool):
+    name = "SubmitFinalTest"
+    description = "Submit scheduling completion and request final whole-task validation after all dispatched tasks passed."
+    params_model = SubmitFinalTestParams
     category = "read"
 
     def __init__(self, store: MultiAgentStore) -> None:
         self._store = store
 
-    async def execute(self, params: CompleteSchedulingParams) -> ToolResult:
+    async def execute(self, params: SubmitFinalTestParams) -> ToolResult:
         run = self._store.load_run(params.run_id)
         if run is None:
             return _json_error("run_not_found", f"run not found: {params.run_id}")
         unfinished = [
             {"task_id": task_id, "status": task.get("status")}
             for task_id, task in run.scheduled_tasks.items()
-            if task.get("status") != "passed"
+            if task.get("status") in {"queued", "running", "testing", "needs_fix"}
+        ]
+        failed_tasks = [
+            {"task_id": task_id, "reason": task.get("reason", "")}
+            for task_id, task in run.scheduled_tasks.items()
+            if task.get("status") == "failed"
         ]
         if not run.scheduled_tasks:
             return _json_error("no_tasks", "scheduling cannot complete before dispatching at least one task")
         if unfinished:
             return _json({"status": "blocked", "unfinished_tasks": unfinished})
         run.status = RunStatus.FINAL_TESTING
-        run.review_result = {"scheduling": "completed", "summary": params.summary}
+        run.review_result = {
+            "scheduling": "completed",
+            "summary": params.summary,
+            "failed_tasks_repaired_or_superseded": failed_tasks,
+        }
         run.add_event("scheduling_completed", summary=params.summary)
         self._store.save_run(run)
         return _json({"status": "ok", "next": "final_test"})
@@ -288,8 +277,8 @@ class SubmitTaskExecution(Tool):
         task = run.scheduled_tasks.get(params.task_id)
         if not task:
             return _json_error("task_not_found", f"task not found: {params.task_id}")
-        if params.task_id != run.current_step_id:
-            return _json_error("wrong_task", f"current task is {run.current_step_id}, got {params.task_id}")
+        if task.get("status") not in {"running", "needs_fix"}:
+            return _json_error("wrong_task_status", f"task {params.task_id} is {task.get('status')}, expected running")
         task.update(
             {
                 "status": "testing",
@@ -717,7 +706,7 @@ def control_tools_for_role(store: MultiAgentStore, role: AgentRole) -> list[Tool
     if role == AgentRole.PLAN_REVIEW:
         return [ApprovePlan(store), RejectPlan(store)]
     if role == AgentRole.SCHEDULING:
-        return [DispatchTask(store), CheckTask(store), CompleteScheduling(store)]
+        return [DispatchTasks(store), SubmitFinalTest(store)]
     if role == AgentRole.EXECUTE:
         return [SubmitTaskExecution(store), SubmitSubAgentStep(store)]
     if role == AgentRole.TEST:

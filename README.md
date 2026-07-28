@@ -81,7 +81,7 @@ PLANNING
 PLAN_REVIEW
   -> plan_review 调用 ApprovePlan 或 RejectPlan
 SCHEDULING
-  -> scheduling 调用 DispatchTask / CheckTask / CompleteScheduling
+  -> scheduling 调用 DispatchTasks 批量派发任务，无未完成任务后调用 SubmitFinalTest
 TASK EXECUTION
   -> 每个任务由 execute 调用 SubmitTaskExecution，再由 task_test 调用 ApproveTaskTest 或 ReportTaskFailure
 FINAL_TESTING
@@ -91,7 +91,7 @@ COMPLETED / FAILED
 
 `RejectPlan`、`ReportTaskFailure` 和 `ReportFinalTestFailure` 不只是改变状态，还会写入 `feedback_events`。当目标子智能体下一次恢复运行时，Runtime 会把这些拒绝/失败反馈模拟为上一轮工具调用结果插入其上下文，实现续接式修正，而不是丢弃上一次子智能体上下文重跑。
 
-`scheduling` 不直接修改代码，而是通过 `DispatchTask` 创建一个或多个可执行任务。每个任务绑定一个 `execute` 和一个 `task_test` 上下文；Runtime 根据 `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 控制同时运行的任务数，默认最多 5 个。`DispatchTask` 可声明 `depends_on`，依赖未通过时任务保持 queued；依赖满足且并发槽位可用时 Runtime 将其推进到 running。`CheckTask` 返回任务三态/多态进度（queued、running、passed、failed/needs_fix），所有任务 passed 后才允许 `CompleteScheduling` 进入 `final_test`。
+`scheduling` 不直接修改代码，而是通过 `DispatchTasks` 一次性派发一个任务批次。每个任务绑定一个 `execute` 和一个 `task_test` 上下文；Runtime 根据 `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 控制批次内并行任务数，默认最多 5 个。`DispatchTasks` 会阻塞到该批次中可执行任务完成，并把 `passed` / `failed` / `blocked` 汇总结果返回给 scheduling；失败时 scheduling 派发聚焦修复任务，没有 queued/running/testing/needs_fix 任务，且历史失败已由后续修复批次处理后，调用 `SubmitFinalTest` 进入 `final_test`。
 
 ### 子智能体职责与工具权限
 
@@ -101,7 +101,7 @@ COMPLETED / FAILED
 |---|---|---|
 | `plan` | 理解任务和近期主对话，调用 `SubmitPlan` 提交结构化计划 | 只读工具 + `SubmitPlan` |
 | `plan_review` | 审查计划的覆盖、顺序、安全性和可测试性 | 只读工具 + `ApprovePlan` / `RejectPlan` |
-| `scheduling` | 拆分和调度任务，检查 queued/running/passed/failed 状态 | 只读工具 + `DispatchTask` / `CheckTask` / `CompleteScheduling` |
+| `scheduling` | 拆分任务批次，接收批次执行结果，决定修复或进入最终测试 | 只读工具 + `DispatchTasks` / `SubmitFinalTest` |
 | `execute` | 只依据 assigned task 执行当前任务 | 读写工具 + Bash + `SubmitTaskExecution` |
 | `test` | 验证对应 execute task | 只读工具 + Bash + `ApproveTaskTest` / `ReportTaskFailure` |
 | `final_test` | 对完整任务做最终验证 | 只读工具 + Bash + `ApproveFinalTest` / `ReportFinalTestFailure` |

@@ -26,6 +26,8 @@ from multiAgent.tools import (
     RejectPlanParams,
     ReportTestFailure,
     ReportTestFailureParams,
+    SubmitFinalTest,
+    SubmitFinalTestParams,
     SubmitPlan,
     SubmitPlanParams,
     SubmitSubAgentStep,
@@ -200,6 +202,48 @@ def test_execute_schemas_require_task_id(tmp_path):
 
     assert "task_id" in read_schema["parameters"]["required"]
     assert "task_id" in read_schema["parameters"]["properties"]
+
+
+def test_scheduling_schema_only_exposes_batch_dispatch_and_final_test(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    registry = ToolRegistry()
+    registry.register(DummyReadTool())
+    registry.register(DummyWriteTool())
+
+    names = {schema["name"] for schema in schemas_for_role(role=AgentRole.SCHEDULING, registry=registry, store=store)}
+
+    assert "ReadFile" in names
+    assert "WriteFile" not in names
+    assert {"DispatchTasks", "SubmitFinalTest"}.issubset(names)
+    assert "DispatchTask" not in names
+    assert "CheckTask" not in names
+    assert "CompleteScheduling" not in names
+
+
+def test_submit_final_test_allows_repaired_failed_history(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    run.status = RunStatus.SCHEDULING
+    run.scheduled_tasks = {
+        "failed_old": {"status": "failed", "reason": "original attempt failed"},
+        "repair": {"status": "passed", "summary": "repair verified"},
+    }
+    store.save_run(run)
+
+    result = asyncio.run(
+        SubmitFinalTest(store).execute(
+            SubmitFinalTestParams(run_id=run.run_id, summary="Repair task passed; ready for final validation.")
+        )
+    )
+
+    payload = json.loads(result.output)
+    updated = store.load_run(run.run_id)
+    assert updated is not None
+    assert payload["next"] == "final_test"
+    assert updated.status == RunStatus.FINAL_TESTING
+    assert updated.review_result["failed_tasks_repaired_or_superseded"] == [
+        {"task_id": "failed_old", "reason": "original attempt failed"}
+    ]
 
 
 def test_submit_step_rejects_wrong_current_step(tmp_path):
@@ -591,6 +635,51 @@ def test_execute_round_limit_failure_is_diagnostic(tmp_path, monkeypatch):
     assert result.subagent_exit_reasons[AgentRole.EXECUTE.value] == "max_agent_tool_rounds_exceeded"
     assert any(event["kind"] == "agent_round_limit_reached" for event in result.events)
     assert any(event["kind"] == "execute_step_attempt_failed" for event in result.events)
+
+
+def test_scheduled_tasks_are_processed_in_parallel_batches(tmp_path):
+    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
+    run = MultiAgentRun.create(task="task")
+    run.status = RunStatus.SCHEDULING
+    for index in range(3):
+        task_id = f"task_{index}"
+        run.scheduled_tasks[task_id] = {
+            "task_id": task_id,
+            "task": f"task {index}",
+            "test_instruction": f"test {index}",
+            "status": "queued",
+            "depends_on": [],
+        }
+    store.save_run(run)
+
+    orchestrator = MultiAgentOrchestrator(
+        store=store,
+        registry=ToolRegistry(),
+        api_client=object(),
+        memory_runtime=None,
+    )
+    running = 0
+    max_seen = 0
+
+    async def fake_run_task(*, run_id, task_id, main_messages):
+        nonlocal running, max_seen
+        running += 1
+        max_seen = max(max_seen, running)
+        await asyncio.sleep(0.01)
+        current = store.load_run(run_id)
+        assert current is not None
+        current.scheduled_tasks[task_id]["status"] = "passed"
+        store.save_run(current)
+        running -= 1
+
+    orchestrator._run_task = fake_run_task  # type: ignore[method-assign]
+
+    asyncio.run(orchestrator._process_scheduled_tasks(run, [], batch_task_ids=set(run.scheduled_tasks)))
+
+    finished = store.load_run(run.run_id)
+    assert finished is not None
+    assert {task["status"] for task in finished.scheduled_tasks.values()} == {"passed"}
+    assert max_seen > 1
 
 
 def test_multi_agent_prompts_discourage_large_file_repeated_reads():
