@@ -866,6 +866,23 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             tools=current_tools,
             rendered_prompt=rendered_prompt,
         )
+        if memory_runtime is not None and session_id:
+            memory_runtime.record_model_context(
+                session_id=session_id,
+                model_messages=model_messages,
+                tools=current_tools,
+                rendered_prompt=rendered_prompt.content,
+                prompt_hash=prompt_debug_snapshot.request_hash,
+                tools_hash=prompt_debug_snapshot.tools_hash,
+                metadata={
+                    "message_count": prompt_debug_snapshot.message_count,
+                    "tool_count": prompt_debug_snapshot.tool_count,
+                    "estimated_request_tokens": prompt_debug_snapshot.request_tokens,
+                    "runtime_context_hash": prompt_debug_snapshot.runtime_context_hash,
+                    "rendered_prompt_hash": prompt_debug_snapshot.rendered_prompt_hash,
+                    "rendered_prompt_format_version": prompt_debug_snapshot.rendered_prompt_format_version,
+                },
+            )
         print_prompt_debug_with_previous(prompt_debug_snapshot)
         assistant_text, tool_calls, usage = await stream_one_round(client, MODEL, model_messages, current_tools)  # 让模型基于当前历史输出文本或工具调用。
         if usage:

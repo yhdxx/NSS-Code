@@ -1,5 +1,7 @@
 from __future__ import annotations
 
+import threading
+
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime import client
@@ -13,6 +15,11 @@ from mycodingagent.terminal_ui.history import render_conversation_history
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
 from multiAgent import MultiAgentStore
 from multiAgent.context import run_summary_for_main_context
+
+
+_dashboard_server = None
+_dashboard_thread: threading.Thread | None = None
+_dashboard_url = ""
 
 
 def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
@@ -133,7 +140,84 @@ def build_command_registry() -> CommandRegistry:
             handler=handle_multi_agent_command,
         )
     )
+    registry.register(
+        CommandSpec(
+            name="/dashboard",
+            aliases=("dashboard", "运行时看板"),
+            description="启动只读实时前端，查看完整上下文、模型上下文、多智能体工作流和 LRFU",
+            usage="[--host HOST] [--port PORT]",
+            usages=(
+                ("", "在 127.0.0.1:8765 启动运行时看板"),
+                (" --port 9000", "指定端口启动运行时看板"),
+                (" --host 0.0.0.0 --port 8765", "指定监听地址和端口"),
+            ),
+            examples=(
+                "/dashboard",
+                "/dashboard --port 9000",
+            ),
+            handler=handle_dashboard_command,
+        )
+    )
     return registry
+
+
+async def handle_dashboard_command(context: CommandContext, arguments: str) -> CommandResult:
+    global _dashboard_server, _dashboard_thread, _dashboard_url
+
+    if arguments.strip() in {"--help", "-h", "help"}:
+        print(build_command_registry().match("/dashboard")[0].help_text(), flush=True)
+        return CommandResult()
+
+    host = "127.0.0.1"
+    port = 8765
+    parts = arguments.split()
+    index = 0
+    while index < len(parts):
+        part = parts[index]
+        if part == "--host" and index + 1 < len(parts):
+            host = parts[index + 1]
+            index += 2
+            continue
+        if part == "--port" and index + 1 < len(parts):
+            try:
+                port = int(parts[index + 1])
+            except ValueError:
+                print("端口必须是整数。", flush=True)
+                return CommandResult()
+            index += 2
+            continue
+        print(build_command_registry().match("/dashboard")[0].help_text(), flush=True)
+        return CommandResult()
+
+    if _dashboard_server is not None:
+        print(f"运行时看板已启动：{_dashboard_url}", flush=True)
+        return CommandResult()
+
+    from mycodingagent.dashboard.server import build_server
+
+    memory_db = CONFIG.memory.db_path
+    multi_agent_db = CONFIG.memory.db_path.with_name("multi_agent.sqlite3")
+    skill_lrfu_db = (CONFIG.skills.index_dir or (CONFIG.skills.root / ".skill_runtime")) / "user_skill_lrfu.sqlite3"
+    workspace_root = context.memory_runtime.workspace_root if context.memory_runtime is not None else "."
+    try:
+        _dashboard_server = build_server(
+            host=host,
+            port=port,
+            memory_db=memory_db,
+            multi_agent_db=multi_agent_db,
+            skill_lrfu_db=skill_lrfu_db,
+            workspace_root=workspace_root,
+        )
+    except OSError as exc:
+        _dashboard_server = None
+        print(f"运行时看板启动失败：{exc}", flush=True)
+        return CommandResult()
+
+    _dashboard_thread = threading.Thread(target=_dashboard_server.serve_forever, daemon=True)
+    _dashboard_thread.start()
+    _dashboard_url = f"http://{host}:{port}"
+    print(f"运行时看板已启动：{_dashboard_url}", flush=True)
+    return CommandResult()
 
 
 async def handle_multi_agent_command(context: CommandContext, arguments: str) -> CommandResult:

@@ -1,0 +1,381 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>myCodingAgent Runtime Dashboard</title>
+  <style>
+    :root {
+      color-scheme: light;
+      --bg: #f6f7f9;
+      --panel: #ffffff;
+      --line: #d9dee7;
+      --text: #17202a;
+      --muted: #697586;
+      --accent: #0f766e;
+      --accent-soft: #d9f3ee;
+      --danger: #b42318;
+      --ok: #067647;
+      --code: #0b1220;
+    }
+    * { box-sizing: border-box; }
+    body {
+      margin: 0;
+      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
+      background: var(--bg);
+      color: var(--text);
+    }
+    header {
+      display: flex;
+      align-items: center;
+      justify-content: space-between;
+      gap: 16px;
+      padding: 14px 20px;
+      border-bottom: 1px solid var(--line);
+      background: var(--panel);
+      position: sticky;
+      top: 0;
+      z-index: 2;
+    }
+    h1 { margin: 0; font-size: 18px; letter-spacing: 0; }
+    .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
+    button, select, input {
+      border: 1px solid var(--line);
+      background: #fff;
+      color: var(--text);
+      border-radius: 6px;
+      padding: 7px 10px;
+      font-size: 13px;
+    }
+    button { cursor: pointer; }
+    button.active { background: var(--accent); color: white; border-color: var(--accent); }
+    main {
+      display: grid;
+      grid-template-columns: 300px 1fr;
+      min-height: calc(100vh - 58px);
+    }
+    aside {
+      border-right: 1px solid var(--line);
+      background: var(--panel);
+      padding: 14px;
+      overflow: auto;
+      max-height: calc(100vh - 58px);
+    }
+    section { padding: 16px; overflow: auto; }
+    .cards {
+      display: grid;
+      grid-template-columns: repeat(4, minmax(160px, 1fr));
+      gap: 12px;
+      margin-bottom: 14px;
+    }
+    .card, .panel {
+      background: var(--panel);
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 12px;
+    }
+    .card b { display: block; font-size: 22px; margin-top: 4px; }
+    .muted { color: var(--muted); font-size: 12px; }
+    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .hidden { display: none; }
+    .list { display: grid; gap: 8px; }
+    .item {
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      padding: 10px;
+      background: #fff;
+    }
+    .item.selected { border-color: var(--accent); background: var(--accent-soft); }
+    .row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
+    pre {
+      background: var(--code);
+      color: #e5e7eb;
+      border-radius: 8px;
+      padding: 12px;
+      overflow: auto;
+      max-height: 55vh;
+      white-space: pre-wrap;
+      word-break: break-word;
+      font-size: 12px;
+      line-height: 1.45;
+    }
+    table {
+      width: 100%;
+      border-collapse: collapse;
+      background: #fff;
+      border: 1px solid var(--line);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      border-bottom: 1px solid var(--line);
+      padding: 8px;
+      text-align: left;
+      vertical-align: top;
+      font-size: 13px;
+    }
+    th { background: #eef2f6; }
+    .ok { color: var(--ok); font-weight: 600; }
+    .bad { color: var(--danger); font-weight: 600; }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
+    .file-grid { display: grid; grid-template-columns: 360px 1fr; gap: 12px; }
+    .file-list { max-height: 65vh; overflow: auto; }
+    .file-list button { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
+    @media (max-width: 900px) {
+      main { grid-template-columns: 1fr; }
+      aside { max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
+      .cards, .grid2, .grid3, .file-grid { grid-template-columns: 1fr; }
+    }
+  </style>
+</head>
+<body>
+  <header>
+    <h1>myCodingAgent Runtime Dashboard</h1>
+    <div class="toolbar">
+      <span id="status" class="muted">loading</span>
+      <select id="sessionSelect"></select>
+      <button id="refreshBtn">刷新</button>
+      <button id="autoBtn" class="active">实时轮询</button>
+    </div>
+  </header>
+  <main>
+    <aside>
+      <div class="muted">Sessions</div>
+      <div id="sessionList" class="list"></div>
+    </aside>
+    <section>
+      <div class="cards">
+        <div class="card"><span class="muted">Messages</span><b id="metricMessages">0</b></div>
+        <div class="card"><span class="muted">Turns</span><b id="metricTurns">0</b></div>
+        <div class="card"><span class="muted">Multi-Agent Runs</span><b id="metricRuns">0</b></div>
+        <div class="card"><span class="muted">LRFU Entries</span><b id="metricLrfu">0</b></div>
+      </div>
+      <div class="tabs">
+        <button data-tab="messages" class="active">完整上下文</button>
+        <button data-tab="model">模型看到的上下文</button>
+        <button data-tab="multi">多智能体工作流</button>
+        <button data-tab="lrfu">LRFU</button>
+        <button data-tab="project">项目文件</button>
+        <button data-tab="raw">Raw JSON</button>
+      </div>
+
+      <div id="tab-messages" class="panel"></div>
+      <div id="tab-model" class="panel hidden"></div>
+      <div id="tab-multi" class="panel hidden"></div>
+      <div id="tab-lrfu" class="panel hidden"></div>
+      <div id="tab-project" class="panel hidden"></div>
+      <div id="tab-raw" class="panel hidden"><pre id="rawJson"></pre></div>
+    </section>
+  </main>
+  <script>
+    let state = null;
+    let selectedSession = "";
+    let auto = true;
+    let timer = null;
+
+    const $ = (id) => document.getElementById(id);
+    const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
+    const pretty = (value) => JSON.stringify(value, null, 2);
+    const timeText = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "";
+
+    async function loadState() {
+      const qs = selectedSession ? `?session_id=${encodeURIComponent(selectedSession)}` : "";
+      const res = await fetch(`/api/state${qs}`, {cache: "no-store"});
+      state = await res.json();
+      selectedSession = state.selected_session_id || selectedSession;
+      render();
+    }
+
+    function render() {
+      $("status").textContent = `updated ${new Date((state.generated_at || Date.now()/1000) * 1000).toLocaleTimeString()}`;
+      $("metricMessages").textContent = state.messages.length;
+      $("metricTurns").textContent = state.turns.length;
+      $("metricRuns").textContent = state.multi_agent_runs.length;
+      $("metricLrfu").textContent = state.lrfu.user_skill_lrfu.length;
+      renderSessions();
+      renderMessages();
+      renderModel();
+      renderMulti();
+      renderLrfu();
+      renderProject();
+      $("rawJson").textContent = pretty(state);
+    }
+
+    function renderSessions() {
+      const select = $("sessionSelect");
+      select.innerHTML = state.sessions.map(s => `<option value="${esc(s.session_id)}" ${s.session_id === selectedSession ? "selected" : ""}>${esc(s.session_id.slice(0, 8))} · ${esc(s.status)} · ${esc(s.model)}</option>`).join("");
+      $("sessionList").innerHTML = state.sessions.map(s => `
+        <div class="item ${s.session_id === selectedSession ? "selected" : ""}" onclick="selectedSession='${esc(s.session_id)}'; loadState();">
+          <div class="row"><b>${esc(s.session_id.slice(0, 12))}</b><span>${esc(s.status)}</span></div>
+          <div class="muted">${esc(s.workspace_label || s.workspace_root || "")}</div>
+          <div class="muted">${timeText(s.last_accessed_at || s.updated_at)}</div>
+        </div>
+      `).join("");
+    }
+
+    function renderMessages() {
+      $("tab-messages").innerHTML = `
+        <h2>每轮完整上下文</h2>
+        <p class="muted">每个 turn 展示该轮 user/assistant/tool 消息；消息内容来自 session_messages 持久化记录。</p>
+        ${state.turns.map(t => `
+          <details class="item" open>
+            <summary><b>Turn ${t.turn_index}</b> · messages ${t.start_message_index}-${t.end_message_index}</summary>
+            ${t.messages.map(m => `
+              <div class="item">
+                <div class="row"><b>${esc(m.role)} #${esc(m.message_index)}</b><span class="muted">${timeText(m.created_at)}</span></div>
+                <pre>${esc(pretty(m))}</pre>
+              </div>
+            `).join("")}
+          </details>
+        `).join("")}
+      `;
+    }
+
+    function renderModel() {
+      const ctx = state.model_context;
+      $("tab-model").innerHTML = `
+        <h2>模型看到的上下文</h2>
+        <p class="muted">${esc(ctx.note)}</p>
+        <h3>Model Requests</h3>
+        ${modelRequestList(ctx.requests || [])}
+        <div class="grid2">
+          <div>
+            <h3>Latest View · ${esc(ctx.kind)}</h3>
+            <pre>${esc(pretty(ctx.latest_messages))}</pre>
+          </div>
+          <div>
+            <h3>Token Usage / Prompt Hash</h3>
+            ${table(state.token_usage, ["request_index","prompt_tokens","completion_tokens","total_tokens","prompt_hash","tools_hash"])}
+          </div>
+        </div>
+        <h3>Context Epochs</h3>
+        ${table(state.context_epochs, ["status","trigger","start_message_index","end_message_index","summary","created_at"])}
+        <h3>Recoverable Contexts</h3>
+        ${table(state.recoverable_contexts, ["context_id","tool_name","short_summary","content_length","token_count","lifecycle_state"])}
+      `;
+    }
+
+    function modelRequestList(requests) {
+      if (!requests || requests.length === 0) return `<p class="muted">No persisted model requests.</p>`;
+      return requests.map(req => `
+        <details class="item">
+          <summary><b>Request ${esc(req.request_index)}</b> · messages=${esc(req.model_messages.length)} · tools=${esc(req.tools.length)} · ${esc(req.prompt_hash)}</summary>
+          <div class="grid3">
+            <div><h4>Model Messages</h4><pre>${esc(pretty(req.model_messages))}</pre></div>
+            <div><h4>Tools</h4><pre>${esc(pretty(req.tools.map(toolSummary)))}</pre></div>
+            <div><h4>Metadata</h4><pre>${esc(pretty({context_id: req.context_id, created_at: timeText(req.created_at), prompt_hash: req.prompt_hash, tools_hash: req.tools_hash, metadata: req.metadata}))}</pre></div>
+          </div>
+        </details>
+      `).join("");
+    }
+
+    function toolSummary(tool) {
+      const fn = tool.function || {};
+      return {
+        type: tool.type,
+        name: fn.name || tool.name || "",
+        description: fn.description || tool.description || "",
+        parameters: fn.parameters || tool.parameters || {},
+      };
+    }
+
+    function renderMulti() {
+      $("tab-multi").innerHTML = `
+        <h2>多智能体工作流</h2>
+        ${state.multi_agent_runs.map(r => `
+          <details class="item" open>
+            <summary><b>${esc(r.run_id.slice(0, 12))}</b> · <span class="${r.status === "completed" ? "ok" : r.status === "failed" ? "bad" : ""}">${esc(r.status)}</span> · ${esc(r.task).slice(0, 120)}</summary>
+            <div class="grid2">
+              <div><h3>Plan</h3><pre>${esc(pretty(r.approved_plan.length ? r.approved_plan : r.submitted_plan))}</pre></div>
+              <div><h3>Scheduled Tasks</h3><pre>${esc(pretty(r.scheduled_tasks))}</pre></div>
+            </div>
+            <h3>Rounds / Tool Calls</h3>
+            <div class="grid2">
+              <pre>${esc(pretty(r.subagent_rounds_used))}</pre>
+              <pre>${esc(pretty(r.subagent_tool_calls_used))}</pre>
+            </div>
+            <h3>Events</h3><pre>${esc(pretty(r.events))}</pre>
+            <h3>Sub-agent Messages</h3><pre>${esc(pretty(r.subagent_messages))}</pre>
+          </details>
+        `).join("") || `<p class="muted">No multi-agent runs found.</p>`}
+      `;
+    }
+
+    function renderLrfu() {
+      $("tab-lrfu").innerHTML = `
+        <h2>用户和会话 LRFU</h2>
+        <div class="grid2">
+          <div>
+            <h3>User LRFU</h3>
+            ${table(state.lrfu.user_skill_lrfu, ["user_id","skill_name","score","last_update_round"])}
+          </div>
+          <div>
+            <h3>Session Snapshot</h3>
+            <pre>${esc(pretty(state.lrfu.session_snapshot))}</pre>
+          </div>
+        </div>
+        <h3>Pending Sessions</h3>
+        ${table(state.lrfu.pending_sessions, ["user_id","session_id","base_user_skill_call_round","session_skill_call_round","committed","updated_at"])}
+        <h3>Pending Updates</h3>
+        ${table(state.lrfu.pending_updates, ["user_id","session_id","skill_name","call_count","session_lrfu_score","committed","updated_at"])}
+      `;
+    }
+
+    function renderProject() {
+      $("tab-project").innerHTML = `
+        <h2>项目文件</h2>
+        <p class="muted">Workspace: ${esc(state.paths.workspace_root)} · omitted=${esc(state.project.omitted)}</p>
+        <div class="file-grid">
+          <div class="file-list">
+            ${state.project.files.map(f => `<button onclick="loadFile('${esc(f.path)}')">${esc(f.path)} <span class="muted">(${f.size})</span></button>`).join("")}
+          </div>
+          <div><pre id="fileContent">选择左侧文件查看内容</pre></div>
+        </div>
+      `;
+    }
+
+    async function loadFile(path) {
+      const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`, {cache: "no-store"});
+      const payload = await res.json();
+      $("fileContent").textContent = payload.error ? pretty(payload) : payload.content;
+    }
+
+    function table(rows, keys) {
+      if (!rows || rows.length === 0) return `<p class="muted">No rows.</p>`;
+      return `<table><thead><tr>${keys.map(k => `<th>${esc(k)}</th>`).join("")}</tr></thead><tbody>${
+        rows.map(row => `<tr>${keys.map(k => `<td>${esc(formatCell(row[k], k))}</td>`).join("")}</tr>`).join("")
+      }</tbody></table>`;
+    }
+
+    function formatCell(value, key) {
+      if (key.endsWith("_at") && typeof value === "number") return timeText(value);
+      if (typeof value === "object") return pretty(value);
+      return value ?? "";
+    }
+
+    document.querySelectorAll(".tabs button").forEach(btn => {
+      btn.addEventListener("click", () => {
+        document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
+        document.querySelectorAll("[id^='tab-']").forEach(p => p.classList.add("hidden"));
+        btn.classList.add("active");
+        $(`tab-${btn.dataset.tab}`).classList.remove("hidden");
+      });
+    });
+    $("sessionSelect").addEventListener("change", (e) => { selectedSession = e.target.value; loadState(); });
+    $("refreshBtn").addEventListener("click", loadState);
+    $("autoBtn").addEventListener("click", () => {
+      auto = !auto;
+      $("autoBtn").classList.toggle("active", auto);
+      if (auto) startTimer(); else clearInterval(timer);
+    });
+
+    function startTimer() {
+      clearInterval(timer);
+      timer = setInterval(() => { if (auto) loadState().catch(console.error); }, 2000);
+    }
+    loadState().catch(err => { $("status").textContent = err.message; });
+    startTimer();
+  </script>
+</body>
+</html>
