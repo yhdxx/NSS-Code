@@ -104,23 +104,57 @@ class ExtractionJob:
 @dataclass(frozen=True)
 class LongTermMemoryContext:
     version_id: str
-    summary: str
     memories: list[LongTermMemoryItem] = field(default_factory=list)
     workflow_candidates: list[LongTermMemoryItem] = field(default_factory=list)
     skill_candidates: list[LongTermMemoryItem] = field(default_factory=list)
     query_id: str = ""
 
     def to_runtime_payload(self) -> dict[str, Any]:
-        return {
-            "summary": self.summary,
-            "memories": [item.to_context_payload() for item in self.memories],
-            "workflow_candidates": [
-                item.to_context_payload(include_uid=True) for item in self.workflow_candidates
-            ],
-            "skill_candidates": [
-                item.to_context_payload(include_uid=True) for item in self.skill_candidates
-            ],
-        }
+        sections: list[str] = []
+        user_profiles = [
+            item.content
+            for item in self.memories
+            if item.memory_type == MemoryType.USER_PROFILE and item.content.strip()
+        ]
+        user_preferences = [
+            item.content
+            for item in self.memories
+            if item.memory_type == MemoryType.USER_PREFERENCE and item.content.strip()
+        ]
+        project_facts = [
+            item.content
+            for item in self.memories
+            if item.memory_type == MemoryType.PROJECT_FACT and item.content.strip()
+        ]
+        workflows = _workflow_memory_lines([*self.workflow_candidates, *self.skill_candidates])
+
+        if user_profiles:
+            sections.append(_format_memory_section("用户画像", user_profiles))
+        if user_preferences:
+            sections.append(_format_memory_section("用户偏好", user_preferences))
+        if project_facts:
+            sections.append(_format_memory_section("项目事实", project_facts))
+        if workflows:
+            sections.append(_format_memory_section("可能相关的工作流", workflows))
+
+        memory = "\n\n".join(sections).strip()
+        return {"memory": memory if memory else "未查询到相关记忆"}
+
+
+def _format_memory_section(title: str, contents: list[str]) -> str:
+    lines = [f"{title}："]
+    lines.extend(f"- {content.strip()}" for content in contents if content.strip())
+    return "\n".join(lines)
+
+
+def _workflow_memory_lines(items: list[LongTermMemoryItem]) -> list[str]:
+    lines: list[str] = []
+    for item in items:
+        content = item.content.strip()
+        if not content:
+            continue
+        lines.append(f"{content} uses_memory_uid={item.memory_uid}")
+    return lines
 
 
 @dataclass(frozen=True)

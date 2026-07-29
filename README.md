@@ -136,11 +136,17 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 
 ### 4.3 长期记忆结果
 
-长期记忆查询模型根据当前 query、最近对话和可用记忆，调用 `SubmitLongTermMemoryQueryResult` 返回三类结果：
+长期记忆查询模型根据当前 query、最近对话和可用记忆，调用 `SubmitLongTermMemoryQueryResult` 选择相关条目。Runtime 不把选择结果的结构化数组直接暴露给主 Agent，而是拼接成单一字段：
 
-- `memories`：用户画像、用户偏好、当前 workspace 项目事实、长期决策。
-- `workflow_candidates`：暂存的可复用工作流。
-- `skill_candidates`：可能值得沉淀为正式 Skill 的成熟工作流。
+```json
+{
+  "long_term_memory": {
+    "memory": "用户画像：...\n\n用户偏好：...\n\n项目事实：...\n\n可能相关的工作流：..."
+  }
+}
+```
+
+拼接时只保留用户画像、用户偏好、项目事实、可能相关的工作流四段；空段不输出。四段均为空时，`memory` 为 `未查询到相关记忆`。workflow / skill candidate 会在文本中保留 `uses_memory_uid=<memory_uid>`，用于 Runtime 统计是否被主 Agent 实际使用。
 
 当用户明确提到其他项目或历史 workspace 时，查询模型可调用 `SearchWorkspaceProjectFacts` 读取其他项目的抽象项目事实。
 
@@ -415,7 +421,7 @@ ContextEpoch 提交后，旧阶段进入冷历史：
 
 ### 10.4 查询与使用
 
-每轮用户请求前，查询模型选择可能有用的长期记忆并注入 Runtime Context。
+每轮用户请求前，查询模型选择可能有用的长期记忆；Runtime 将结果拼接为 `long_term_memory.memory` 注入 Runtime Context。
 
 如果用户明确提到其他项目，查询模型可调用 `SearchWorkspaceProjectFacts` 读取其他 workspace 的抽象项目事实。
 

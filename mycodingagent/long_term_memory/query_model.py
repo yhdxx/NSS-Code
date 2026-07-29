@@ -119,7 +119,6 @@ def _context_from_selection(
     return LongTermMemoryContext(
         version_id=version_id,
         query_id=query_id,
-        summary=str(payload.get("summary", ""))[:2000],
         memories=memories,
         workflow_candidates=workflows,
         skill_candidates=skills,

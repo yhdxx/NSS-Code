@@ -135,7 +135,7 @@ class LongTermMemoryRuntime:
         items = [*global_items, *workflow_items, *workspace_items]
         if not items:
             self._last_context_by_session.pop(session_id, None)
-            return None
+            return LongTermMemoryContext(version_id="", query_id="")
         version_id = "|".join(
             version.version_id
             for version in (global_version, workflow_version, workspace_version)

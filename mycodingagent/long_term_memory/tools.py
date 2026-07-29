@@ -134,7 +134,6 @@ class MemorySelectionPayload(BaseModel):
 
 class SubmitLongTermMemoryQueryResultParams(BaseModel):
     query_id: str = Field(min_length=1)
-    summary: str = Field(default="", max_length=2000)
     memories: List[MemorySelectionPayload] = Field(default_factory=list)
     workflow_candidates: List[MemorySelectionPayload] = Field(default_factory=list)
     skill_candidates: List[MemorySelectionPayload] = Field(default_factory=list)

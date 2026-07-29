@@ -3,7 +3,14 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
-from mycodingagent.long_term_memory.models import ExtractionStatus, MemoryItemStatus, MemoryType
+from mycodingagent.long_term_memory.models import (
+    ExtractionStatus,
+    LongTermMemoryContext,
+    LongTermMemoryItem,
+    MemoryItemStatus,
+    MemoryScope,
+    MemoryType,
+)
 from mycodingagent.long_term_memory.namespaces import GLOBAL_WORKSPACE_FINGERPRINT, WORKFLOW_STAGING_FINGERPRINT
 from mycodingagent.long_term_memory.session_serializer import build_storage_payload, session_source_hash
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
@@ -284,6 +291,90 @@ def test_workflow_candidate_downgrades_after_three_other_workspace_non_uses(tmp_
     assert origin_items[0].metadata["lifecycle_status"] == "workspace_only"
 
 
+def test_long_term_memory_runtime_payload_uses_single_memory_field_for_empty_context():
+    payload = LongTermMemoryContext(version_id="", query_id="q1").to_runtime_payload()
+
+    assert payload == {"memory": "未查询到相关记忆"}
+
+
+def test_long_term_memory_runtime_payload_concatenates_relevant_sections_only():
+    workflow = LongTermMemoryItem(
+        memory_uid="wf1",
+        version_id="v1",
+        memory_type=MemoryType.WORKFLOW_CANDIDATE,
+        scope=MemoryScope.WORKSPACE,
+        content="大文件拆分时先一次性定位边界，再批量写入。",
+        confidence=0.9,
+    )
+    skill = LongTermMemoryItem(
+        memory_uid="sk1",
+        version_id="v1",
+        memory_type=MemoryType.SKILL_CANDIDATE,
+        scope=MemoryScope.USER,
+        content="跨模块重构先跑现有测试，再改公共接口。",
+        confidence=0.9,
+    )
+    context = LongTermMemoryContext(
+        version_id="v1",
+        query_id="q1",
+        memories=[
+            LongTermMemoryItem(
+                memory_uid="u1",
+                version_id="v1",
+                memory_type=MemoryType.USER_PROFILE,
+                scope=MemoryScope.USER,
+                content="用户是 myCodingAgent 开发者。",
+                confidence=0.9,
+            ),
+            LongTermMemoryItem(
+                memory_uid="p1",
+                version_id="v1",
+                memory_type=MemoryType.USER_PREFERENCE,
+                scope=MemoryScope.USER,
+                content="偏好精简、无冗余字段的 Runtime Context。",
+                confidence=0.9,
+            ),
+            LongTermMemoryItem(
+                memory_uid="pf1",
+                version_id="v1",
+                memory_type=MemoryType.PROJECT_FACT,
+                scope=MemoryScope.PROJECT,
+                content="项目采用 LLM Runtime、Tool Runtime、Memory 分层架构。",
+                confidence=0.9,
+            ),
+            LongTermMemoryItem(
+                memory_uid="d1",
+                version_id="v1",
+                memory_type=MemoryType.DECISION,
+                scope=MemoryScope.WORKSPACE,
+                content="该类型不应注入主 Agent 长期记忆字段。",
+                confidence=0.9,
+            ),
+        ],
+        workflow_candidates=[workflow],
+        skill_candidates=[skill],
+    )
+
+    payload = context.to_runtime_payload()
+
+    assert set(payload.keys()) == {"memory"}
+    memory = payload["memory"]
+    assert "用户画像：" in memory
+    assert "- 用户是 myCodingAgent 开发者。" in memory
+    assert "用户偏好：" in memory
+    assert "- 偏好精简、无冗余字段的 Runtime Context。" in memory
+    assert "项目事实：" in memory
+    assert "- 项目采用 LLM Runtime、Tool Runtime、Memory 分层架构。" in memory
+    assert "可能相关的工作流：" in memory
+    assert "uses_memory_uid=wf1" in memory
+    assert "uses_memory_uid=sk1" in memory
+    assert "该类型不应注入" not in memory
+    assert "summary" not in payload
+    assert "memories" not in payload
+    assert "workflow_candidates" not in payload
+    assert "skill_candidates" not in payload
+
+
 def test_internal_submit_tools_expose_structured_parameters():
     patch_tool = SubmitLongTermMemoryPatch(extraction_id="e1", collector={})
     query_tool = SubmitLongTermMemoryQueryResult(query_id="q1", collector={})
@@ -291,6 +382,7 @@ def test_internal_submit_tools_expose_structured_parameters():
     assert "new_items" not in patch_tool.get_schema()["input_schema"]["properties"]
     assert "user_profiles" in patch_tool.get_schema()["input_schema"]["properties"]
     assert "project_facts" in patch_tool.get_schema()["input_schema"]["properties"]
+    assert "summary" not in query_tool.get_schema()["input_schema"]["properties"]
     assert "workflow_candidates" in query_tool.get_schema()["input_schema"]["properties"]
     assert "skill_candidates" in query_tool.get_schema()["input_schema"]["properties"]
 

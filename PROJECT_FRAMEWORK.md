@@ -176,7 +176,7 @@ RuntimeContextBuilder.build()
   -> workspace notice
   -> context mode
   -> capability recommendations
-  -> long_term_memory payload
+  -> long_term_memory.memory 文本
   -> budget state
 ```
 
@@ -574,10 +574,13 @@ claim extraction
   -> 读取 workflow staging items
   -> 读取 current workspace items
   -> query model 选择相关记忆
-  -> 注入 Runtime Context
+  -> Runtime 拼接用户画像/用户偏好/项目事实/可能相关工作流
+  -> 注入 Runtime Context 的 long_term_memory.memory
 ```
 
 当用户明确提到其他项目、路径或历史 workspace 时，查询模型可调用 `SearchWorkspaceProjectFacts` 读取其他 workspace 的抽象项目事实。
+
+若四类内容均为空，`long_term_memory.memory` 固定为 `未查询到相关记忆`。workflow 和 skill candidate 会在文本中保留 `uses_memory_uid=<memory_uid>`，以便轮次结束后判断该候选是否被实际使用。
 
 ### 11.6 Workflow 生命周期
 
