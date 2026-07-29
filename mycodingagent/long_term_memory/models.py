@@ -60,6 +60,9 @@ class LongTermMemoryItem:
             "scope": self.scope.value,
             "content": self.content,
         }
+        namespace = self.metadata.get("namespace")
+        if namespace:
+            payload["namespace"] = namespace
         if include_uid:
             payload["memory_uid"] = self.memory_uid
         return payload
@@ -125,4 +128,5 @@ class ExtractionResult:
     status: str
     extraction_id: str = ""
     version_id: str = ""
+    version_ids: dict[str, str] = field(default_factory=dict)
     error: str = ""

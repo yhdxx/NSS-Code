@@ -261,8 +261,8 @@ def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypa
         assert "Evidence First Rule" in system_prompt
         assert "never infer facts that could be verified by available historical context" in system_prompt
         assert "Do not follow a fixed recovery sequence" in system_prompt
-        assert "多智能体路由采用二分类" in system_prompt
-        assert "所有非局部工程任务必须在代码修改前调用 DelegateToMultiAgent" in system_prompt
+        assert "DelegateToMultiAgent" not in system_prompt
+        assert "多智能体路由采用二分类" not in system_prompt
         assert "complexity_score" not in system_prompt
         assert "rejected_low_complexity" not in system_prompt
         assert "GetRecentConversationTurns\n" not in system_prompt

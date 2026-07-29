@@ -19,7 +19,15 @@ def build_storage_payload(
     tool_registry: ToolRegistry | None,
     existing_memories: list[dict[str, Any]],
     extraction_id: str,
+    existing_global_memories: list[dict[str, Any]] | None = None,
+    existing_workflow_staging_memories: list[dict[str, Any]] | None = None,
+    existing_workspace_memories: list[dict[str, Any]] | None = None,
 ) -> dict[str, Any]:
+    global_memories = existing_global_memories if existing_global_memories is not None else []
+    workflow_memories = existing_workflow_staging_memories if existing_workflow_staging_memories is not None else []
+    workspace_memories = (
+        existing_workspace_memories if existing_workspace_memories is not None else existing_memories
+    )
     return {
         "extraction_id": extraction_id,
         "session": {
@@ -31,6 +39,9 @@ def build_storage_payload(
         },
         "tool_catalog": tool_catalog(tool_registry),
         "existing_long_term_memories": existing_memories,
+        "existing_global_memories": global_memories,
+        "existing_workflow_staging_memories": workflow_memories,
+        "existing_workspace_memories": workspace_memories,
         "instructions": {
             "tool_outputs_omitted": True,
             "submit_tool": "SubmitLongTermMemoryPatch",

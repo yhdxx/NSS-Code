@@ -17,6 +17,13 @@ from mycodingagent.long_term_memory.models import (
     MemoryType,
     MemoryVersionStatus,
 )
+from mycodingagent.long_term_memory.namespaces import (
+    GLOBAL_WORKSPACE_FINGERPRINT,
+    GLOBAL_WORKSPACE_LABEL,
+    WORKFLOW_STAGING_FINGERPRINT,
+    validate_type_namespace,
+    validate_type_scope,
+)
 
 
 class SQLiteLongTermMemoryStore:
@@ -98,6 +105,7 @@ class SQLiteLongTermMemoryStore:
                     version_id TEXT NOT NULL DEFAULT '',
                     exposed_workflow_json TEXT NOT NULL DEFAULT '[]',
                     exposed_skill_json TEXT NOT NULL DEFAULT '[]',
+                    used_workflow_json TEXT NOT NULL DEFAULT '[]',
                     used_skill_json TEXT NOT NULL DEFAULT '[]',
                     success INTEGER NOT NULL DEFAULT 0,
                     prompted_json TEXT NOT NULL DEFAULT '{}',
@@ -131,6 +139,12 @@ class SQLiteLongTermMemoryStore:
                 "CREATE INDEX IF NOT EXISTS idx_ltm_usage_session "
                 "ON long_term_memory_turn_usage(session_id, created_at)"
             )
+            _ensure_column(
+                conn,
+                table="long_term_memory_turn_usage",
+                column="used_workflow_json",
+                definition="TEXT NOT NULL DEFAULT '[]'",
+            )
 
     def latest_committed_version(self, *, user_id: str, workspace_fingerprint: str) -> LongTermMemoryVersion | None:
         with self._connect() as conn:
@@ -144,6 +158,12 @@ class SQLiteLongTermMemoryStore:
                 (user_id, workspace_fingerprint, MemoryVersionStatus.COMMITTED.value),
             ).fetchone()
         return _version_from_row(row) if row is not None else None
+
+    def load_latest_active_items(self, *, user_id: str, workspace_fingerprint: str) -> tuple[LongTermMemoryVersion | None, list[LongTermMemoryItem]]:
+        version = self.latest_committed_version(user_id=user_id, workspace_fingerprint=workspace_fingerprint)
+        if version is None:
+            return None, []
+        return version, self.load_items(version.version_id, active_only=True)
 
     def load_items(self, version_id: str, *, active_only: bool = True) -> list[LongTermMemoryItem]:
         query = "SELECT * FROM long_term_memory_items WHERE version_id = ?"
@@ -263,15 +283,27 @@ class SQLiteLongTermMemoryStore:
                 """
                 SELECT e.extraction_id
                 FROM long_term_memory_extractions e
-                LEFT JOIN long_term_memory_locks l
-                  ON l.lock_key = ('user:' || e.user_id || ':workspace:' || e.workspace_fingerprint)
-                 AND l.expires_at >= ?
                 WHERE e.status = ?
-                  AND l.lock_key IS NULL
+                  AND NOT EXISTS (
+                    SELECT 1
+                    FROM long_term_memory_locks l
+                    WHERE l.expires_at >= ?
+                      AND l.lock_key IN (
+                        'user:' || e.user_id || ':workspace:' || ?,
+                        'user:' || e.user_id || ':workspace:' || ?,
+                        'user:' || e.user_id || ':workspace:' || e.workspace_fingerprint
+                      )
+                  )
                 ORDER BY e.updated_at ASC
                 LIMIT ?
                 """,
-                (now, ExtractionStatus.EXTRACTING.value, max(1, limit)),
+                (
+                    ExtractionStatus.EXTRACTING.value,
+                    now,
+                    GLOBAL_WORKSPACE_FINGERPRINT,
+                    WORKFLOW_STAGING_FINGERPRINT,
+                    max(1, limit),
+                ),
             ).fetchall()
             extraction_ids = [str(row["extraction_id"]) for row in rows]
             if not extraction_ids:
@@ -304,6 +336,18 @@ class SQLiteLongTermMemoryStore:
                 WHERE extraction_id = ?
                 """,
                 (ExtractionStatus.FAILED.value, error_text[:4000], now, now, extraction_id),
+            )
+
+    def mark_extraction_committed(self, extraction_id: str, committed_version_id: str = "") -> None:
+        now = time()
+        with self._connect() as conn:
+            conn.execute(
+                """
+                UPDATE long_term_memory_extractions
+                SET status = ?, committed_version_id = ?, finished_at = ?, updated_at = ?, error_text = ''
+                WHERE extraction_id = ?
+                """,
+                (ExtractionStatus.COMMITTED.value, committed_version_id, now, now, extraction_id),
             )
 
     def acquire_write_lock(self, *, user_id: str, workspace_fingerprint: str, owner_id: str, ttl_seconds: int) -> bool:
@@ -356,7 +400,7 @@ class SQLiteLongTermMemoryStore:
         now = time()
         version_id = uuid4().hex
         existing_by_uid = {item.memory_uid: item for item in existing_items if item.status == MemoryItemStatus.ACTIVE}
-        self._validate_patch(existing_by_uid, new_items, update_items, retire_items)
+        self._validate_patch(existing_by_uid, new_items, update_items, retire_items, workspace_fingerprint=workspace_fingerprint)
         next_items: dict[str, LongTermMemoryItem] = {
             uid: LongTermMemoryItem(
                 memory_uid=item.memory_uid,
@@ -375,6 +419,16 @@ class SQLiteLongTermMemoryStore:
         }
         for raw in new_items:
             memory_uid = uuid4().hex
+            metadata = dict(raw.get("metadata") or {})
+            metadata.setdefault("namespace", workspace_fingerprint)
+            if workspace_fingerprint == WORKFLOW_STAGING_FINGERPRINT and str(raw.get("memory_type")) == MemoryType.WORKFLOW_CANDIDATE.value:
+                metadata.setdefault("queried_workspaces", [])
+                metadata.setdefault("used_workspaces", [])
+                metadata.setdefault("unused_queried_workspaces", [])
+                metadata.setdefault("exposure_count", 0)
+                metadata.setdefault("success_count", 0)
+                metadata.setdefault("lifecycle_status", "staging")
+            raw = {**raw, "metadata": metadata}
             next_items[memory_uid] = _item_from_payload(raw, version_id=version_id, memory_uid=memory_uid, now=now)
         for raw in update_items:
             previous = existing_by_uid[str(raw["memory_uid"])]
@@ -465,6 +519,71 @@ class SQLiteLongTermMemoryStore:
                 raise
         return version_id
 
+    def search_project_facts(
+        self,
+        *,
+        user_id: str,
+        query: str,
+        exclude_workspace_fingerprint: str,
+        limit: int,
+    ) -> list[dict[str, Any]]:
+        needle = query.strip().lower()
+        with self._connect() as conn:
+            version_rows = conn.execute(
+                """
+                SELECT *
+                FROM long_term_memory_versions
+                WHERE user_id = ? AND status = ?
+                  AND workspace_fingerprint NOT IN (?, ?, ?)
+                ORDER BY workspace_fingerprint, committed_at DESC, created_at DESC
+                """,
+                (
+                    user_id,
+                    MemoryVersionStatus.COMMITTED.value,
+                    exclude_workspace_fingerprint,
+                    GLOBAL_WORKSPACE_FINGERPRINT,
+                    WORKFLOW_STAGING_FINGERPRINT,
+                ),
+            ).fetchall()
+        latest_by_workspace: dict[str, LongTermMemoryVersion] = {}
+        for row in version_rows:
+            version = _version_from_row(row)
+            latest_by_workspace.setdefault(version.workspace_fingerprint, version)
+        results: list[dict[str, Any]] = []
+        for version in latest_by_workspace.values():
+            facts = [
+                item
+                for item in self.load_items(version.version_id, active_only=True)
+                if item.memory_type == MemoryType.PROJECT_FACT
+            ]
+            if needle:
+                facts = [
+                    item
+                    for item in facts
+                    if needle in version.workspace_label.lower()
+                    or needle in version.workspace_fingerprint.lower()
+                    or needle in item.content.lower()
+                ]
+            if not facts:
+                continue
+            results.append(
+                {
+                    "workspace_label": version.workspace_label,
+                    "workspace_fingerprint": version.workspace_fingerprint,
+                    "facts": [
+                        {
+                            "memory_uid": item.memory_uid,
+                            "content": item.content,
+                            "confidence": item.confidence,
+                        }
+                        for item in facts[: max(1, limit)]
+                    ],
+                }
+            )
+            if len(results) >= limit:
+                break
+        return results
+
     def record_turn_usage(
         self,
         *,
@@ -474,6 +593,7 @@ class SQLiteLongTermMemoryStore:
         version_id: str,
         exposed_workflow: list[str],
         exposed_skill: list[str],
+        used_workflow: list[str] | None = None,
         used_skill: list[str],
         success: bool,
         prompted: dict[str, Any] | None = None,
@@ -483,10 +603,10 @@ class SQLiteLongTermMemoryStore:
                 """
                 INSERT INTO long_term_memory_turn_usage(
                     usage_id, session_id, turn_start_index, turn_end_index, version_id,
-                    exposed_workflow_json, exposed_skill_json, used_skill_json,
+                    exposed_workflow_json, exposed_skill_json, used_workflow_json, used_skill_json,
                     success, prompted_json, created_at
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """,
                 (
                     uuid4().hex,
@@ -496,12 +616,86 @@ class SQLiteLongTermMemoryStore:
                     version_id,
                     json.dumps(exposed_workflow, ensure_ascii=False),
                     json.dumps(exposed_skill, ensure_ascii=False),
+                    json.dumps(used_workflow or [], ensure_ascii=False),
                     json.dumps(used_skill, ensure_ascii=False),
                     int(success),
                     json.dumps(prompted or {}, ensure_ascii=False),
                     time(),
                 ),
             )
+
+    def update_workflow_observation(
+        self,
+        *,
+        user_id: str,
+        memory_uid: str,
+        current_workspace_fingerprint: str,
+        current_workspace_label: str,
+        used_successfully: bool,
+        promotion_workspace_threshold: int,
+        downgrade_workspace_threshold: int,
+    ) -> str:
+        latest = self.latest_committed_version(user_id=user_id, workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT)
+        if latest is None:
+            return ""
+        items = self.load_items(latest.version_id, active_only=True)
+        target = next((item for item in items if item.memory_uid == memory_uid), None)
+        if target is None or target.memory_type != MemoryType.WORKFLOW_CANDIDATE:
+            return ""
+        metadata = dict(target.metadata)
+        origin = str(metadata.get("origin_workspace_fingerprint", ""))
+        queried = _string_list(metadata.get("queried_workspaces"))
+        used = _string_list(metadata.get("used_workspaces"))
+        unused = _string_list(metadata.get("unused_queried_workspaces"))
+        if current_workspace_fingerprint not in queried:
+            queried.append(current_workspace_fingerprint)
+        metadata["queried_workspaces"] = queried
+        metadata["exposure_count"] = int(metadata.get("exposure_count", 0) or 0) + 1
+        metadata["last_queried_at"] = time()
+        if used_successfully:
+            if current_workspace_fingerprint not in used:
+                used.append(current_workspace_fingerprint)
+            if current_workspace_fingerprint in unused:
+                unused.remove(current_workspace_fingerprint)
+            metadata["success_count"] = int(metadata.get("success_count", 0) or 0) + 1
+            metadata["last_used_at"] = time()
+        elif current_workspace_fingerprint not in used and current_workspace_fingerprint not in unused:
+            unused.append(current_workspace_fingerprint)
+        metadata["used_workspaces"] = used
+        metadata["unused_queried_workspaces"] = unused
+
+        other_used = {item for item in used if item and item != origin}
+        other_unused = {item for item in unused if item and item != origin}
+        if len(other_used) >= promotion_workspace_threshold:
+            return self._promote_workflow_to_skill_candidate(
+                user_id=user_id,
+                latest=latest,
+                items=items,
+                target=target,
+                metadata=metadata,
+            )
+        if len(other_unused) >= downgrade_workspace_threshold and origin:
+            return self._downgrade_workflow_to_origin_workspace(
+                user_id=user_id,
+                latest=latest,
+                items=items,
+                target=target,
+                metadata=metadata,
+                origin_workspace_fingerprint=origin,
+            )
+        return self._rewrite_items_version(
+            user_id=user_id,
+            workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+            workspace_label=latest.workspace_label,
+            parent_version_id=latest.version_id,
+            source_session_id=latest.source_session_id,
+            items=[
+                _replace_item(item, version_id="", metadata=metadata, updated_at=time())
+                if item.memory_uid == target.memory_uid
+                else item
+                for item in items
+            ],
+        )
 
     def successful_skill_reuse_count(self, memory_uid: str) -> int:
         with self._connect() as conn:
@@ -623,6 +817,166 @@ class SQLiteLongTermMemoryStore:
                 raise
         return version_id
 
+    def _promote_workflow_to_skill_candidate(
+        self,
+        *,
+        user_id: str,
+        latest: LongTermMemoryVersion,
+        items: list[LongTermMemoryItem],
+        target: LongTermMemoryItem,
+        metadata: dict[str, Any],
+    ) -> str:
+        now = time()
+        metadata["lifecycle_status"] = "promoted_to_skill_candidate"
+        metadata["promotion_reason"] = "used_successfully_by_three_other_workspaces"
+        staging_items = [
+            _replace_item(item, version_id="", status=MemoryItemStatus.RETIRED, metadata=metadata, updated_at=now)
+            if item.memory_uid == target.memory_uid
+            else item
+            for item in items
+        ]
+        staging_version = self._rewrite_items_version(
+            user_id=user_id,
+            workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+            workspace_label=latest.workspace_label,
+            parent_version_id=latest.version_id,
+            source_session_id=latest.source_session_id,
+            items=staging_items,
+        )
+        global_latest, global_items = self.load_latest_active_items(
+            user_id=user_id,
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        )
+        skill_metadata = dict(metadata)
+        skill_metadata["namespace"] = GLOBAL_WORKSPACE_FINGERPRINT
+        skill_item = LongTermMemoryItem(
+            memory_uid=uuid4().hex,
+            version_id="",
+            memory_type=MemoryType.SKILL_CANDIDATE,
+            scope=MemoryScope.USER,
+            content=target.content,
+            confidence=target.confidence,
+            evidence=list(target.evidence),
+            metadata=skill_metadata,
+            status=MemoryItemStatus.ACTIVE,
+            created_at=target.created_at,
+            updated_at=now,
+        )
+        self._rewrite_items_version(
+            user_id=user_id,
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+            workspace_label=GLOBAL_WORKSPACE_LABEL,
+            parent_version_id=global_latest.version_id if global_latest is not None else "",
+            source_session_id=latest.source_session_id,
+            items=[*global_items, skill_item],
+        )
+        return staging_version
+
+    def _downgrade_workflow_to_origin_workspace(
+        self,
+        *,
+        user_id: str,
+        latest: LongTermMemoryVersion,
+        items: list[LongTermMemoryItem],
+        target: LongTermMemoryItem,
+        metadata: dict[str, Any],
+        origin_workspace_fingerprint: str,
+    ) -> str:
+        now = time()
+        metadata["lifecycle_status"] = "workspace_only"
+        metadata["downgrade_reason"] = "queried_by_three_other_workspaces_without_use"
+        staging_version = self._rewrite_items_version(
+            user_id=user_id,
+            workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+            workspace_label=latest.workspace_label,
+            parent_version_id=latest.version_id,
+            source_session_id=latest.source_session_id,
+            items=[
+                _replace_item(item, version_id="", status=MemoryItemStatus.RETIRED, metadata=metadata, updated_at=now)
+                if item.memory_uid == target.memory_uid
+                else item
+                for item in items
+            ],
+        )
+        origin_latest, origin_items = self.load_latest_active_items(
+            user_id=user_id,
+            workspace_fingerprint=origin_workspace_fingerprint,
+        )
+        origin_label = str(metadata.get("origin_workspace_label", origin_workspace_fingerprint))
+        workspace_item = _replace_item(
+            target,
+            version_id="",
+            metadata={**metadata, "namespace": origin_workspace_fingerprint},
+            updated_at=now,
+        )
+        self._rewrite_items_version(
+            user_id=user_id,
+            workspace_fingerprint=origin_workspace_fingerprint,
+            workspace_label=origin_label,
+            parent_version_id=origin_latest.version_id if origin_latest is not None else "",
+            source_session_id=latest.source_session_id,
+            items=[*origin_items, workspace_item],
+        )
+        return staging_version
+
+    def _rewrite_items_version(
+        self,
+        *,
+        user_id: str,
+        workspace_fingerprint: str,
+        workspace_label: str,
+        parent_version_id: str,
+        source_session_id: str,
+        items: list[LongTermMemoryItem],
+    ) -> str:
+        now = time()
+        version_id = uuid4().hex
+        rewritten = [
+            _replace_item(item, version_id=version_id)
+            for item in items
+        ]
+        with self._connect() as conn:
+            conn.execute("BEGIN")
+            try:
+                conn.execute(
+                    """
+                    INSERT INTO long_term_memory_versions(
+                        version_id, user_id, workspace_fingerprint, workspace_label, status,
+                        parent_version_id, source_session_id, created_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    (
+                        version_id,
+                        user_id,
+                        workspace_fingerprint,
+                        workspace_label,
+                        MemoryVersionStatus.STAGING.value,
+                        parent_version_id,
+                        source_session_id,
+                        now,
+                    ),
+                )
+                conn.executemany(
+                    """
+                    INSERT INTO long_term_memory_items(
+                        version_id, memory_uid, memory_type, scope, content, confidence,
+                        evidence_json, metadata_json, status, created_at, updated_at
+                    )
+                    VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                    """,
+                    [_item_row_values(item) for item in rewritten],
+                )
+                conn.execute(
+                    "UPDATE long_term_memory_versions SET status = ?, committed_at = ? WHERE version_id = ?",
+                    (MemoryVersionStatus.COMMITTED.value, now, version_id),
+                )
+                conn.commit()
+            except Exception:
+                conn.rollback()
+                raise
+        return version_id
+
     @staticmethod
     def lock_key(*, user_id: str, workspace_fingerprint: str) -> str:
         return f"user:{user_id}:workspace:{workspace_fingerprint}"
@@ -633,14 +987,19 @@ class SQLiteLongTermMemoryStore:
         new_items: list[dict[str, Any]],
         update_items: list[dict[str, Any]],
         retire_items: list[dict[str, Any]],
+        *,
+        workspace_fingerprint: str = "",
     ) -> None:
         for raw in [*new_items, *update_items]:
             if not str(raw.get("content", "")).strip():
                 raise ValueError("memory content is required")
             if not raw.get("evidence"):
                 raise ValueError("memory evidence is required")
-            MemoryType(str(raw["memory_type"]))
-            MemoryScope(str(raw["scope"]))
+            memory_type = MemoryType(str(raw["memory_type"]))
+            scope = MemoryScope(str(raw["scope"]))
+            validate_type_scope(memory_type=memory_type, scope=scope)
+            if workspace_fingerprint:
+                validate_type_namespace(memory_type=memory_type, namespace=workspace_fingerprint)
         for raw in update_items:
             if str(raw.get("memory_uid", "")) not in existing_by_uid:
                 raise ValueError(f"unknown memory_uid for update: {raw.get('memory_uid')}")
@@ -673,6 +1032,48 @@ def _item_from_payload(
         created_at=created_at if created_at is not None else now,
         updated_at=now,
     )
+
+
+def _replace_item(
+    item: LongTermMemoryItem,
+    *,
+    version_id: str,
+    memory_type: MemoryType | None = None,
+    scope: MemoryScope | None = None,
+    content: str | None = None,
+    confidence: float | None = None,
+    evidence: list[str] | None = None,
+    metadata: dict[str, Any] | None = None,
+    status: MemoryItemStatus | None = None,
+    created_at: float | None = None,
+    updated_at: float | None = None,
+) -> LongTermMemoryItem:
+    return LongTermMemoryItem(
+        memory_uid=item.memory_uid,
+        version_id=version_id,
+        memory_type=memory_type or item.memory_type,
+        scope=scope or item.scope,
+        content=item.content if content is None else content,
+        confidence=item.confidence if confidence is None else confidence,
+        evidence=list(item.evidence if evidence is None else evidence),
+        metadata=dict(item.metadata if metadata is None else metadata),
+        status=status or item.status,
+        created_at=item.created_at if created_at is None else created_at,
+        updated_at=item.updated_at if updated_at is None else updated_at,
+    )
+
+
+def _string_list(value: Any) -> list[str]:
+    if isinstance(value, list):
+        return [str(item) for item in value if str(item)]
+    return []
+
+
+def _ensure_column(conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:
+    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
+    if any(str(row["name"]) == column for row in rows):
+        return
+    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _item_row_values(item: LongTermMemoryItem) -> tuple[Any, ...]:

@@ -33,8 +33,9 @@ pytest.importorskip("openai")
 
 from openai import AsyncOpenAI
 
+from multiAgent.context import run_summary_for_main_context
+from multiAgent.orchestrator import MultiAgentOrchestrator
 from multiAgent.store import MultiAgentStore
-from multiAgent.tools import DelegateToMultiAgent, DelegateToMultiAgentParams, InspectSubAgentWork
 from mycodingagent.capability_discovery.router import CapabilityRouter
 from mycodingagent.llm_runtime import client as agent_client
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
@@ -333,19 +334,22 @@ async def _case_multi_agent_minimal_workflow(tmp_path: Path) -> dict[str, Any]:
     harness = _make_harness(tmp_path / "workspace", tmp_path / "state", context_window=96_000)
     try:
         _write_multi_agent_project(harness.workspace)
-        delegate = harness.registry.get("DelegateToMultiAgent")
-        assert isinstance(delegate, DelegateToMultiAgent)
-        result = await delegate.execute(
-            DelegateToMultiAgentParams(
-                task=(
-                    "修复 /workspace 中的小型 Python 项目。当前 test_app.py 失败，"
-                    "需要让 app.user_label(user) 使用 user['name'] 和 user['role']，"
-                    "最终返回形如 'User: Ada (admin)'，并运行 python -m pytest -q 验证。"
-                ),
-                reason="该任务需要计划、执行、测试和结果审查闭环来验证多智能体最小有效链路。",
-            )
+        orchestrator = MultiAgentOrchestrator(
+            store=harness.multi_agent_store,
+            registry=harness.registry,
+            api_client=harness.api_client,
+            memory_runtime=harness.memory_runtime,
+            model=agent_client.MODEL,
         )
-        payload = json.loads(result.output)
+        run = await orchestrator.start(
+            task=(
+                "修复 /workspace 中的小型 Python 项目。当前 test_app.py 失败，"
+                "需要让 app.user_label(user) 使用 user['name'] 和 user['role']，"
+                "最终返回形如 'User: Ada (admin)'，并运行 python -m pytest -q 验证。"
+            ),
+            main_messages=[],
+        )
+        payload = json.loads(run_summary_for_main_context(run))
         run_id = payload.get("run_id", "")
         run = harness.multi_agent_store.load_run(run_id)
         verify = _run_pytest(harness.workspace)
@@ -361,7 +365,7 @@ async def _case_multi_agent_minimal_workflow(tmp_path: Path) -> dict[str, Any]:
         return {
             "success": success,
             "failure_reason": "" if success else f"multi-agent failed: {payload}, pytest={verify.stdout[-1000:]} {verify.stderr[-1000:]}",
-            "delegate_result": payload,
+            "multi_agent_result": payload,
             "run_id": run_id,
             "plan_approved": bool(run and run.approved_plan),
             "submitted_steps": len(run.step_submissions) if run else 0,
@@ -419,17 +423,6 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
 
     api_client = AsyncOpenAI(api_key=agent_client.DEEPSEEK_API_KEY, base_url=agent_client.BASE_URL)
     multi_agent_store = MultiAgentStore(state_dir / "multi_agent.sqlite3")
-    registry.register(InspectSubAgentWork(multi_agent_store))
-    registry.register(
-        DelegateToMultiAgent(
-            store=multi_agent_store,
-            registry=registry,
-            api_client=api_client,
-            memory_runtime=memory_runtime,
-            model=agent_client.MODEL,
-            main_messages_provider=lambda: [],
-        )
-    )
     return EvalHarness(
         workspace=workspace,
         state_dir=state_dir,

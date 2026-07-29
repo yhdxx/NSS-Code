@@ -321,7 +321,6 @@ def run_summary_for_main_context(run: MultiAgentRun) -> str:
             }
             for task_id, task in run.scheduled_tasks.items()
         },
-        "inspect_tool": "InspectSubAgentWork",
     }
     return json.dumps(payload, ensure_ascii=False, indent=2)
 

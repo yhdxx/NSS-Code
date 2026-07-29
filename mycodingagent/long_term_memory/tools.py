@@ -6,6 +6,7 @@ from typing import Any, Dict, List, Literal
 from pydantic import BaseModel, Field
 
 from mycodingagent.long_term_memory.models import MemoryScope, MemoryType
+from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
 
@@ -23,6 +24,13 @@ MemoryScopeLiteral = Literal["user", "workspace", "project"]
 class NewMemoryItemPayload(BaseModel):
     memory_type: MemoryTypeLiteral
     scope: MemoryScopeLiteral
+    content: str = Field(min_length=1, max_length=4000)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class BucketMemoryItemPayload(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: List[str] = Field(default_factory=list)
@@ -47,6 +55,11 @@ class RetireMemoryItemPayload(BaseModel):
 
 class SubmitLongTermMemoryPatchParams(BaseModel):
     extraction_id: str = Field(min_length=1)
+    user_profiles: List[BucketMemoryItemPayload] = Field(default_factory=list)
+    user_preferences: List[BucketMemoryItemPayload] = Field(default_factory=list)
+    project_facts: List[BucketMemoryItemPayload] = Field(default_factory=list)
+    workflows: List[BucketMemoryItemPayload] = Field(default_factory=list)
+    skill_candidates: List[BucketMemoryItemPayload] = Field(default_factory=list)
     new_items: List[NewMemoryItemPayload] = Field(default_factory=list)
     update_items: List[UpdateMemoryItemPayload] = Field(default_factory=list)
     retire_items: List[RetireMemoryItemPayload] = Field(default_factory=list)
@@ -68,6 +81,9 @@ class SubmitLongTermMemoryPatch(Tool):
     def get_schema(self) -> dict[str, Any]:
         schema = self.params_model.model_json_schema()
         schema.pop("title", None)
+        properties = schema.get("properties")
+        if isinstance(properties, dict):
+            properties.pop("new_items", None)
         return {
             "name": self.name,
             "description": self.description,
@@ -80,6 +96,35 @@ class SubmitLongTermMemoryPatch(Tool):
         payload = params.model_dump()
         self._collector["payload"] = payload
         return _json({"status": "ok", "accepted": True})
+
+
+class SearchWorkspaceProjectFactsParams(BaseModel):
+    query: str = Field(description="Project name, workspace label, path fragment, or keyword from the user query.")
+    limit: int = Field(default=5, ge=1, le=20)
+
+
+class SearchWorkspaceProjectFacts(Tool):
+    name = "SearchWorkspaceProjectFacts"
+    description = (
+        "Search abstract project facts from other workspaces only when the user explicitly asks about "
+        "another project or historical workspace. Returns project_fact memories only."
+    )
+    params_model = SearchWorkspaceProjectFactsParams
+    category = "read"
+
+    def __init__(self, *, store: SQLiteLongTermMemoryStore, user_id: str, current_workspace_fingerprint: str) -> None:
+        self._store = store
+        self._user_id = user_id
+        self._current_workspace_fingerprint = current_workspace_fingerprint
+
+    async def execute(self, params: SearchWorkspaceProjectFactsParams) -> ToolResult:
+        matches = self._store.search_project_facts(
+            user_id=self._user_id,
+            query=params.query,
+            exclude_workspace_fingerprint=self._current_workspace_fingerprint,
+            limit=params.limit,
+        )
+        return _json({"matches": matches})
 
 
 class MemorySelectionPayload(BaseModel):

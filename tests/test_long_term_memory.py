@@ -4,6 +4,7 @@ import json
 from pathlib import Path
 
 from mycodingagent.long_term_memory.models import ExtractionStatus, MemoryItemStatus, MemoryType
+from mycodingagent.long_term_memory.namespaces import GLOBAL_WORKSPACE_FINGERPRINT, WORKFLOW_STAGING_FINGERPRINT
 from mycodingagent.long_term_memory.session_serializer import build_storage_payload, session_source_hash
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch, SubmitLongTermMemoryQueryResult
@@ -75,8 +76,8 @@ def test_store_uses_staging_commit_and_latest_committed_version(tmp_path: Path):
 
     version_id = store.apply_patch_as_new_version(
         user_id="u1",
-        workspace_fingerprint="wf",
-        workspace_label="repo",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        workspace_label="User Global Memory",
         source_session_id="s1",
         parent_version_id="",
         existing_items=[],
@@ -95,7 +96,7 @@ def test_store_uses_staging_commit_and_latest_committed_version(tmp_path: Path):
         extraction_id=extraction_id,
     )
 
-    latest = store.latest_committed_version(user_id="u1", workspace_fingerprint="wf")
+    latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT)
     assert latest is not None
     assert latest.version_id == version_id
     items = store.load_items(version_id)
@@ -154,6 +155,29 @@ def test_startup_does_not_requeue_extracting_job_with_active_write_lock(tmp_path
     assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
 
 
+def test_startup_does_not_requeue_extracting_job_with_global_or_workflow_lock(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    extraction_id = store.mark_extraction_pending(
+        session_id="s1",
+        user_id="u1",
+        workspace_fingerprint="wf",
+        workspace_label="repo",
+        workspace_root="/repo",
+        source_hash="hash1",
+        source_message_count=2,
+    )
+    store.claim_extraction(extraction_id, lock_ttl_seconds=3600)
+    assert store.acquire_write_lock(
+        user_id="u1",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        owner_id="owner",
+        ttl_seconds=60,
+    )
+
+    assert store.requeue_interrupted_extractions_for_startup() == 0
+    assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
+
+
 def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
     store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
     extraction_id = store.mark_extraction_pending(
@@ -168,15 +192,15 @@ def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
     store.claim_extraction(extraction_id, lock_ttl_seconds=60)
     version_id = store.apply_patch_as_new_version(
         user_id="u1",
-        workspace_fingerprint="wf",
-        workspace_label="repo",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        workspace_label="User Global Memory",
         source_session_id="s1",
         parent_version_id="",
         existing_items=[],
         new_items=[
             {
                 "memory_type": "skill_candidate",
-                "scope": "workspace",
+                "scope": "user",
                 "content": "Use batch extraction for large file splits.",
                 "confidence": 0.9,
                 "evidence": ["message:1"],
@@ -191,23 +215,119 @@ def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
 
     promoted_version = store.mark_skill_candidate_promotion_status(
         user_id="u1",
-        workspace_fingerprint="wf",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
         memory_uid=memory_uid,
         decision="approved_for_skill",
     )
 
     assert promoted_version
-    latest = store.latest_committed_version(user_id="u1", workspace_fingerprint="wf")
+    latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT)
     assert latest is not None
     assert latest.version_id == promoted_version
     promoted_item = store.load_items(promoted_version)[0]
     assert promoted_item.metadata["promotion_status"] == "approved_for_skill"
 
 
+def test_workflow_candidate_promotes_after_three_other_workspace_uses(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    workflow_uid = _create_workflow_candidate(store, origin_workspace="origin")
+
+    for workspace in ["other-1", "other-2", "other-3"]:
+        store.update_workflow_observation(
+            user_id="u1",
+            memory_uid=workflow_uid,
+            current_workspace_fingerprint=workspace,
+            current_workspace_label=workspace,
+            used_successfully=True,
+            promotion_workspace_threshold=3,
+            downgrade_workspace_threshold=3,
+        )
+
+    staging_latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT)
+    assert staging_latest is not None
+    retired = store.load_items(staging_latest.version_id, active_only=False)[0]
+    assert retired.status == MemoryItemStatus.RETIRED
+
+    global_latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT)
+    assert global_latest is not None
+    global_items = store.load_items(global_latest.version_id)
+    assert len(global_items) == 1
+    assert global_items[0].memory_type == MemoryType.SKILL_CANDIDATE
+    assert global_items[0].metadata["lifecycle_status"] == "promoted_to_skill_candidate"
+
+
+def test_workflow_candidate_downgrades_after_three_other_workspace_non_uses(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    workflow_uid = _create_workflow_candidate(store, origin_workspace="origin")
+
+    for workspace in ["other-1", "other-2", "other-3"]:
+        store.update_workflow_observation(
+            user_id="u1",
+            memory_uid=workflow_uid,
+            current_workspace_fingerprint=workspace,
+            current_workspace_label=workspace,
+            used_successfully=False,
+            promotion_workspace_threshold=3,
+            downgrade_workspace_threshold=3,
+        )
+
+    staging_latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT)
+    assert staging_latest is not None
+    retired = store.load_items(staging_latest.version_id, active_only=False)[0]
+    assert retired.status == MemoryItemStatus.RETIRED
+
+    origin_latest = store.latest_committed_version(user_id="u1", workspace_fingerprint="origin")
+    assert origin_latest is not None
+    origin_items = store.load_items(origin_latest.version_id)
+    assert len(origin_items) == 1
+    assert origin_items[0].memory_type == MemoryType.WORKFLOW_CANDIDATE
+    assert origin_items[0].metadata["lifecycle_status"] == "workspace_only"
+
+
 def test_internal_submit_tools_expose_structured_parameters():
     patch_tool = SubmitLongTermMemoryPatch(extraction_id="e1", collector={})
     query_tool = SubmitLongTermMemoryQueryResult(query_id="q1", collector={})
 
-    assert "new_items" in patch_tool.get_schema()["input_schema"]["properties"]
+    assert "new_items" not in patch_tool.get_schema()["input_schema"]["properties"]
+    assert "user_profiles" in patch_tool.get_schema()["input_schema"]["properties"]
+    assert "project_facts" in patch_tool.get_schema()["input_schema"]["properties"]
     assert "workflow_candidates" in query_tool.get_schema()["input_schema"]["properties"]
     assert "skill_candidates" in query_tool.get_schema()["input_schema"]["properties"]
+
+
+def _create_workflow_candidate(store: SQLiteLongTermMemoryStore, *, origin_workspace: str) -> str:
+    extraction_id = store.mark_extraction_pending(
+        session_id="s-workflow",
+        user_id="u1",
+        workspace_fingerprint=origin_workspace,
+        workspace_label=origin_workspace,
+        workspace_root=f"/{origin_workspace}",
+        source_hash=f"hash-{origin_workspace}",
+        source_message_count=2,
+    )
+    store.claim_extraction(extraction_id, lock_ttl_seconds=60)
+    version_id = store.apply_patch_as_new_version(
+        user_id="u1",
+        workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+        workspace_label="Workflow Staging Memory",
+        source_session_id="s-workflow",
+        parent_version_id="",
+        existing_items=[],
+        new_items=[
+            {
+                "memory_type": "workflow_candidate",
+                "scope": "workspace",
+                "content": "For large file splits, locate all boundaries once and write modules in batch.",
+                "confidence": 0.9,
+                "evidence": ["message:1"],
+                "metadata": {
+                    "origin_workspace_fingerprint": origin_workspace,
+                    "origin_workspace_label": origin_workspace,
+                },
+            }
+        ],
+        update_items=[],
+        retire_items=[],
+        extraction_id=extraction_id,
+    )
+    return store.load_items(version_id)[0].memory_uid

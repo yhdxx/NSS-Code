@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from time import time
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 
 from pydantic import BaseModel, Field
@@ -12,79 +12,6 @@ from mycodingagent.tool_runtime.base import Tool, ToolResult
 from multiAgent.models import AgentRole, RunStatus, StepStatus, executable_steps
 from multiAgent.store import MultiAgentStore
 from multiAgent.validators import validate_failed_steps, validate_plan_payload, validate_step_exists
-
-
-class DelegateToMultiAgentParams(BaseModel):
-    task: str = Field(description="Engineering task to delegate to the multi-agent workflow.", min_length=1)
-    reason: str = Field(
-        description="One concise audit reason explaining why this task requires multi-agent execution.",
-        min_length=1,
-        max_length=500,
-    )
-
-
-class DelegateToMultiAgent(Tool):
-    name = "DelegateToMultiAgent"
-    description = (
-        "Delegate non-local engineering work to the multi-agent workflow.\n\n"
-        "Handle work directly only when all are true: the task is local, clear, low-risk, "
-        "does not cross module/state/interface/data/security/runtime/build boundaries, "
-        "does not reorganize multiple project parts, does not require independent plan/review/test "
-        "separation, and failure would be easy to detect and fix locally.\n\n"
-        "Call this tool when any are true: the task needs planning before execution, spans multiple "
-        "related parts, changes or reorganizes project structure, must preserve behavior while changing "
-        "implementation, needs test/review loops, affects broad behavior or high-risk state, or the "
-        "impact is not clearly local.\n\n"
-        "The reason field is required for auditability."
-    )
-    params_model = DelegateToMultiAgentParams
-    category = "command"
-
-    def __init__(
-        self,
-        *,
-        store: MultiAgentStore,
-        registry: Any,
-        api_client: Any,
-        memory_runtime: Any | None = None,
-        model: str = "",
-        main_messages_provider: Callable[[], list[dict[str, Any]]] | None = None,
-    ) -> None:
-        self._store = store
-        self._registry = registry
-        self._api_client = api_client
-        self._memory_runtime = memory_runtime
-        self._model = model
-        self._main_messages_provider = main_messages_provider or (lambda: [])
-
-    def get_schema(self) -> dict[str, Any]:
-        schema = self.params_model.model_json_schema()
-        schema.pop("title", None)
-        return {
-            "name": self.name,
-            "description": self.description,
-            "input_schema": schema,
-        }
-
-    async def execute(self, params: DelegateToMultiAgentParams) -> ToolResult:
-        task = params.task.strip()
-        reason = params.reason.strip()
-        if not task:
-            return _json_error("missing_task", "task is required")
-        if not reason:
-            return _json_error("missing_reason", "reason is required for delegation auditability")
-
-        from multiAgent.orchestrator import MultiAgentOrchestrator
-
-        orchestrator = MultiAgentOrchestrator(
-            store=self._store,
-            registry=self._registry,
-            api_client=self._api_client,
-            memory_runtime=self._memory_runtime,
-            model=self._model,
-        )
-        run = await orchestrator.start(task=task, main_messages=list(self._main_messages_provider()))
-        return _json(_delegate_result_payload(run))
 
 
 class SubmitPlanParams(BaseModel):
@@ -651,56 +578,6 @@ class RejectExecution(Tool):
         return _json({"status": "ok", "next": "execute", "failed_steps": failed_steps})
 
 
-class InspectSubAgentWorkParams(BaseModel):
-    run_id: str = Field(description="Exact multi-agent run_id to inspect.")
-    agent: str = Field(description="Sub-agent name: plan, plan_review, scheduling, execute, test, final_test, or execute_review.")
-    step_id: str = Field(default="", description="Optional step_id filter for execute work.")
-    task_id: str = Field(default="", description="Optional task_id filter for task agent work.")
-    offset: int = Field(default=0, ge=0)
-    limit: int = Field(default=12000, ge=1, le=50000)
-
-
-class InspectSubAgentWork(Tool):
-    name = "InspectSubAgentWork"
-    description = (
-        "Inspect paginated stored sub-agent messages for a multi-agent run by run_id and agent. "
-        "Pagination fields describe this inspection result only; they do not indicate model context truncation."
-    )
-    params_model = InspectSubAgentWorkParams
-    category = "read"
-    is_concurrency_safe = True
-
-    def __init__(self, store: MultiAgentStore) -> None:
-        self._store = store
-
-    async def execute(self, params: InspectSubAgentWorkParams) -> ToolResult:
-        run = self._store.load_run(params.run_id)
-        if run is None:
-            return _json_error("run_not_found", f"run not found: {params.run_id}")
-        try:
-            role = AgentRole(params.agent)
-        except ValueError:
-            return _json_error("invalid_agent", f"invalid agent: {params.agent}")
-        content = _render_agent_work(run, role, params.step_id or params.task_id)
-        chunk = content[params.offset : params.offset + params.limit]
-        next_offset = params.offset + len(chunk)
-        return _json(
-            {
-                "run_id": run.run_id,
-                "agent": role.value,
-                "step_id": params.step_id,
-                "task_id": params.task_id,
-                "content": chunk,
-                "content_total_chars": len(content),
-                "chunk_offset": params.offset,
-                "chunk_limit": params.limit,
-                "next_offset": next_offset if next_offset < len(content) else None,
-                "has_more_inspection_content": next_offset < len(content),
-                "has_more": next_offset < len(content),
-            }
-        )
-
-
 def control_tools_for_role(store: MultiAgentStore, role: AgentRole) -> list[Tool]:
     if role == AgentRole.PLAN:
         return [SubmitPlan(store)]
@@ -717,28 +594,6 @@ def control_tools_for_role(store: MultiAgentStore, role: AgentRole) -> list[Tool
     if role == AgentRole.EXECUTE_REVIEW:
         return [ApproveExecution(store), RejectExecution(store)]
     return []
-
-
-def _render_agent_work(run: Any, role: AgentRole, step_id: str = "") -> str:
-    parts: list[str] = []
-    if role == AgentRole.EXECUTE and step_id:
-        submission = run.step_submissions.get(step_id)
-        if submission:
-            parts.append(f"Step {step_id} submission:\n{json.dumps(submission, ensure_ascii=False, indent=2)}")
-    message_key = f"{role.value}:{step_id}" if step_id else role.value
-    final_answer = run.subagent_final_answers.get(message_key, run.subagent_final_answers.get(role.value, ""))
-    if final_answer:
-        parts.append(f"Final answer:\n{final_answer}")
-    messages = run.subagent_messages.get(message_key, run.subagent_messages.get(role.value, []))
-    rendered_messages: list[str] = []
-    for message in messages:
-        text = json.dumps(message, ensure_ascii=False, default=str)
-        if step_id and step_id not in text:
-            continue
-        rendered_messages.append(text)
-    if rendered_messages:
-        parts.append("Messages:\n" + "\n".join(rendered_messages))
-    return "\n\n".join(parts)
 
 
 def _append_feedback_event(
@@ -759,33 +614,6 @@ def _append_feedback_event(
         "delivered": False,
     }
     run.feedback_events.setdefault(target_agent.value, []).append(event)
-
-
-def _delegate_result_payload(run: Any) -> dict[str, Any]:
-    payload = {
-        "status": str(run.status.value if hasattr(run.status, "value") else run.status),
-        "run_id": run.run_id,
-        "plan_summary": run.plan_summary,
-        "test_result": run.test_result,
-        "scheduling_result": run.review_result,
-        "scheduled_tasks": {
-            task_id: {
-                "status": task.get("status"),
-                "summary": task.get("summary", ""),
-                "changed_files": task.get("changed_files", []),
-                "reason": task.get("reason", ""),
-                "failure_type": task.get("failure_type", ""),
-                "last_test_message": task.get("last_test_message", ""),
-                "last_tool_summary": task.get("last_tool_summary", ""),
-                "test_attempts": task.get("test_attempts", 0),
-            }
-            for task_id, task in dict(getattr(run, "scheduled_tasks", {})).items()
-        },
-        "inspect_tool": "InspectSubAgentWork",
-    }
-    if str(payload["status"]) == RunStatus.FAILED.value:
-        payload["error"] = run.error
-    return payload
 
 
 def _json(payload: dict[str, Any]) -> ToolResult:

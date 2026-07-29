@@ -36,7 +36,6 @@ from mycodingagent.mcp_integration.hooks import CLIApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from multiAgent import MultiAgentStore
-from multiAgent.tools import DelegateToMultiAgent, InspectSubAgentWork
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
 try:  # 开始可能抛出异常的保护代码块。
@@ -76,17 +75,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         memory_runtime=memory_runtime,
     )
     multi_agent_store = MultiAgentStore()
-    registry.register(InspectSubAgentWork(multi_agent_store))
-    registry.register(
-        DelegateToMultiAgent(
-            store=multi_agent_store,
-            registry=registry,
-            api_client=api_client,
-            memory_runtime=memory_runtime,
-            model=client.MODEL,
-            main_messages_provider=lambda: messages,
-        )
-    )
     long_term_memory_runtime = None
     if memory_runtime is not None and CONFIG.long_term_memory.enabled:
         long_term_memory_runtime = LongTermMemoryRuntime(

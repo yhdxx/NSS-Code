@@ -416,8 +416,9 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
     os.environ.setdefault("MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED", "0")
 
     from openai import AsyncOpenAI
+    from multiAgent.context import run_summary_for_main_context
+    from multiAgent.orchestrator import MultiAgentOrchestrator
     from multiAgent.store import MultiAgentStore
-    from multiAgent.tools import DelegateToMultiAgent, DelegateToMultiAgentParams, InspectSubAgentWork
     from mycodingagent.configuration import CONFIG
     from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
@@ -450,18 +451,6 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
         # Replace default sandbox-rooted tools with workspace-rooted tools for this isolated case.
         registry = _workspace_registry(workspace, memory_runtime)
         multi_store = MultiAgentStore(state_dir / f"{mode}_multi_agent.sqlite3")
-        if mode == "multi_agent":
-            registry.register(InspectSubAgentWork(multi_store))
-            registry.register(
-                DelegateToMultiAgent(
-                    store=multi_store,
-                    registry=registry,
-                    api_client=api_client,
-                    memory_runtime=memory_runtime,
-                    model=CONFIG.api.model,
-                    main_messages_provider=lambda: [],
-                )
-            )
         run_log = io.StringIO()
         try:
             with contextlib.redirect_stdout(run_log):
@@ -479,28 +468,31 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
                         memory_runtime=memory_runtime,
                         core_tool_schemas=registry.get_all_schemas("openai"),
                     )
-                    delegate_payload: dict[str, Any] = {}
+                    multi_agent_payload: dict[str, Any] = {}
                     tool_names = _tool_call_names_from_messages(messages)
                 else:
-                    delegate = registry.get("DelegateToMultiAgent")
-                    assert isinstance(delegate, DelegateToMultiAgent)
-                    result = await delegate.execute(
-                        DelegateToMultiAgentParams(
-                            task=(
-                                f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
-                                f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
-                            ),
-                            reason="评测 multi_agent_mode：该模式要求使用 plan/review/execute/test/review 闭环完成代码任务。",
-                        )
+                    orchestrator = MultiAgentOrchestrator(
+                        store=multi_store,
+                        registry=registry,
+                        api_client=api_client,
+                        memory_runtime=memory_runtime,
+                        model=CONFIG.api.model,
                     )
-                    text = result.output
-                    delegate_payload = _json_loads(result.output)
+                    run = await orchestrator.start(
+                        task=(
+                            f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
+                            f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
+                        ),
+                        main_messages=[],
+                    )
+                    text = run_summary_for_main_context(run)
+                    multi_agent_payload = _json_loads(text)
                     tool_names = []
             verify = _run_eval_test(workspace, case["test_command"])
             after = _snapshot_project_files(workspace)
             changed_files = sorted(path for path in after if before.get(path) != after.get(path))
             token_summary = _memory_token_summary(memory_runtime)
-            run_id = str(delegate_payload.get("run_id") or "")
+            run_id = str(multi_agent_payload.get("run_id") or "")
             run = multi_store.load_run(run_id) if run_id else None
             passed = verify.returncode == 0
             return {
@@ -519,7 +511,7 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
                 "prompt_tokens": token_summary.get("prompt_tokens", 0),
                 "completion_tokens": token_summary.get("completion_tokens", 0),
                 "total_tokens": token_summary.get("total_tokens", 0),
-                "delegate_status": delegate_payload.get("status", "") if delegate_payload else "",
+                "multi_agent_status": multi_agent_payload.get("status", "") if multi_agent_payload else "",
                 "multi_agent_run_id": run_id,
                 "subagent_rounds": run.subagent_rounds_used if run else {},
                 "subagent_tool_calls": run.subagent_tool_calls_used if run else {},

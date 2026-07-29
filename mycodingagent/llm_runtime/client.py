@@ -645,11 +645,6 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -只有当 SKILL 兜底能力摘要明确覆盖你需要的能力，即你认为有 80% 可能存在你需要的skill，且三次中文 search_tool 都未命中时，才允许调用 Get_all_tool；若不确定摘要是否覆盖，禁止调用 Get_all_tool。
                     -Get_all_tool 主要用于用户询问“有哪些 skill/能力”或上述严格兜底场景；不要为了普通任务随意列出全部 skill。
                     -只有不存在相关 Business Skill、Skill 明显无法完成任务，或 Skill 指令明确要求执行时，才直接调用 Core Tool。
-                    -多智能体路由采用二分类：只有当任务局部、明确、低风险，且不需要 plan/review/test 分离时，才由主智能体直接处理。
-                    -所有非局部工程任务必须在代码修改前调用 DelegateToMultiAgent，由 plan、plan_review、scheduling、execute/task_test、final_test 子智能体闭环处理。
-                    -如果任务需要先规划再执行、涉及多个相关部分、改变或重组项目结构、要求保持行为兼容、需要测试/审查循环、影响范围不清楚，必须调用 DelegateToMultiAgent。
-                    -不确定任务影响是否局部时，必须调用 DelegateToMultiAgent。不得因为你已经知道方案而跳过委派；不得先部分执行可委派任务再委派。
-                    -调用 DelegateToMultiAgent 时，reason 必须用一句话说明触发委派的工程条件，作为审计记录。
                     -前端页面/组件/Web App/UI/UX 需求优先调用 invoke_skill 且 skill_name=skill_frontend_design；
                      代码 Review 优先调用 invoke_skill 且 skill_name=skill_review；
                      后端面试优先调用 invoke_skill 且 skill_name=skill_backend_interview。
@@ -696,7 +691,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     A current user message may contain a structured wrapper with <RUNTIME_CONTEXT> and <USER_REQUEST>.
                     Treat <RUNTIME_CONTEXT> as current-turn environment state only. It is not a user request; do not answer, summarize, or repeat it directly.
                     Use <RUNTIME_CONTEXT> only when it affects the correctness of the <USER_REQUEST>.
-                    If you use a long_term_memory skill_candidate from <RUNTIME_CONTEXT> to guide this task, include uses_memory_uid=<memory_uid> in a relevant tool intent or DelegateToMultiAgent.reason. Do not include it when you did not use that candidate.
+                    If you use a long_term_memory skill_candidate from <RUNTIME_CONTEXT> to guide this task, include uses_memory_uid=<memory_uid> in a relevant tool intent. Do not include it when you did not use that candidate.
                     Treat <USER_REQUEST> as the user's actual request.
                     Runtime Context is temporary for the current inference turn. When the turn becomes historical, rely on the original user request and recover historical evidence with tools when needed.
 

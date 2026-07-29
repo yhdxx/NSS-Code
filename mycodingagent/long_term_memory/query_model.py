@@ -9,8 +9,8 @@ from openai import AsyncOpenAI
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime.client import PendingToolCall, format_openai_tools, stream_one_round
-from mycodingagent.long_term_memory.models import LongTermMemoryContext, LongTermMemoryItem, MemoryType
-from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryQueryResult
+from mycodingagent.long_term_memory.models import LongTermMemoryContext, LongTermMemoryItem, MemoryScope, MemoryType
+from mycodingagent.long_term_memory.tools import SearchWorkspaceProjectFacts, SubmitLongTermMemoryQueryResult
 
 
 PROMPT_PATH = Path(__file__).resolve().parents[2] / "multiAgent" / "prompts" / "long_term_memory_query" / "SYSTEM.md"
@@ -29,10 +29,18 @@ class LongTermMemoryQueryModel:
         version_id: str,
         items: list[LongTermMemoryItem],
         workspace: dict[str, str],
+        project_fact_search: dict[str, Any] | None = None,
     ) -> LongTermMemoryContext | None:
         query_id = uuid4().hex
         collector: dict[str, Any] = {}
         submit_tool = SubmitLongTermMemoryQueryResult(query_id=query_id, collector=collector)
+        search_tool = None
+        if project_fact_search is not None:
+            search_tool = SearchWorkspaceProjectFacts(
+                store=project_fact_search["store"],
+                user_id=str(project_fact_search["user_id"]),
+                current_workspace_fingerprint=str(project_fact_search["current_workspace_fingerprint"]),
+            )
         payload = {
             "query_id": query_id,
             "current_user_query": current_query,
@@ -49,7 +57,9 @@ class LongTermMemoryQueryModel:
             {"role": "system", "content": _read_prompt(PROMPT_PATH)},
             {"role": "user", "content": json.dumps(payload, ensure_ascii=False, indent=2, default=str)},
         ]
-        tools = format_openai_tools([_openai_schema(submit_tool)])
+        tool_objects = [submit_tool, *([search_tool] if search_tool is not None else [])]
+        tools = format_openai_tools([_openai_schema(tool) for tool in tool_objects])
+        available_items = list(items)
         for _ in range(3):
             assistant_text, tool_calls, _usage = await stream_one_round(
                 self.api_client,
@@ -64,16 +74,19 @@ class LongTermMemoryQueryModel:
                 continue
             for index, call in enumerate(tool_calls):
                 call_id = call.tool_id or f"ltm_query_call_{index}"
-                if call.tool_name != submit_tool.name:
-                    output = f"Error: query model may only call {submit_tool.name}."
-                else:
+                if call.tool_name == submit_tool.name:
                     output = await _execute_submit_tool(submit_tool, call)
+                elif search_tool is not None and call.tool_name == search_tool.name:
+                    output = await _execute_search_tool(search_tool, call)
+                    available_items.extend(_items_from_project_fact_search_output(output))
+                else:
+                    output = f"Error: query model may only call allowed long-term memory query tools."
                 messages.append({"role": "tool", "tool_call_id": call_id, "content": output})
             if collector.get("payload") is not None:
                 return _context_from_selection(
                     version_id=version_id,
                     query_id=query_id,
-                    items=items,
+                    items=available_items,
                     payload=dict(collector["payload"]),
                 )
         return None
@@ -145,6 +158,22 @@ def _item_for_query(item: LongTermMemoryItem) -> dict[str, Any]:
         "scope": item.scope.value,
         "content": item.content,
         "confidence": item.confidence,
+        "metadata": {
+            key: value
+            for key, value in item.metadata.items()
+            if key
+            in {
+                "namespace",
+                "origin_workspace_fingerprint",
+                "origin_workspace_label",
+                "queried_workspaces",
+                "used_workspaces",
+                "unused_queried_workspaces",
+                "exposure_count",
+                "success_count",
+                "lifecycle_status",
+            }
+        },
     }
 
 
@@ -155,6 +184,49 @@ async def _execute_submit_tool(tool: SubmitLongTermMemoryQueryResult, call: Pend
     except Exception as exc:
         return f"Tool execution error: {exc}"
     return result.output
+
+
+async def _execute_search_tool(tool: SearchWorkspaceProjectFacts, call: PendingToolCall) -> str:
+    try:
+        params = tool.params_model.model_validate_json(call.arguments or "{}")
+        result = await tool.execute(params)
+    except Exception as exc:
+        return f"Tool execution error: {exc}"
+    return result.output
+
+
+def _items_from_project_fact_search_output(output: str) -> list[LongTermMemoryItem]:
+    try:
+        payload = json.loads(output)
+    except json.JSONDecodeError:
+        return []
+    items: list[LongTermMemoryItem] = []
+    for match in payload.get("matches", []):
+        if not isinstance(match, dict):
+            continue
+        workspace_label = str(match.get("workspace_label", ""))
+        workspace_fingerprint = str(match.get("workspace_fingerprint", ""))
+        for fact in match.get("facts", []):
+            if not isinstance(fact, dict):
+                continue
+            items.append(
+                LongTermMemoryItem(
+                    memory_uid=str(fact.get("memory_uid", "")),
+                    version_id="project_fact_search",
+                    memory_type=MemoryType.PROJECT_FACT,
+                    scope=MemoryScope.PROJECT,
+                    content=str(fact.get("content", "")),
+                    confidence=float(fact.get("confidence", 0.0) or 0.0),
+                    evidence=[],
+                    metadata={
+                        "namespace": workspace_fingerprint,
+                        "workspace_label": workspace_label,
+                        "workspace_fingerprint": workspace_fingerprint,
+                        "source": "SearchWorkspaceProjectFacts",
+                    },
+                )
+            )
+    return items
 
 
 def _assistant_message(assistant_text: str, tool_calls: list[PendingToolCall]) -> dict[str, Any]:

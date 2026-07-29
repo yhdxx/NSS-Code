@@ -10,7 +10,17 @@ from uuid import uuid4
 from openai import AsyncOpenAI
 
 from mycodingagent.configuration import CONFIG
-from mycodingagent.long_term_memory.models import ExtractionResult, LongTermMemoryContext, MemoryType
+from mycodingagent.long_term_memory.models import ExtractionResult, LongTermMemoryContext, MemoryScope, MemoryType
+from mycodingagent.long_term_memory.namespaces import (
+    GLOBAL_WORKSPACE_FINGERPRINT,
+    GLOBAL_WORKSPACE_LABEL,
+    WORKFLOW_STAGING_FINGERPRINT,
+    WORKFLOW_STAGING_LABEL,
+    default_scope_for_type,
+    label_for_namespace,
+    namespace_for_bucket,
+    type_for_bucket,
+)
 from mycodingagent.long_term_memory.query_model import LongTermMemoryQueryModel
 from mycodingagent.long_term_memory.session_serializer import (
     build_storage_payload,
@@ -110,17 +120,27 @@ class LongTermMemoryRuntime:
         if not CONFIG.long_term_memory.enabled:
             return None
         session_id = self.memory_runtime.get_current_session_id() or ""
-        version = self.store.latest_committed_version(
+        global_version, global_items = self.store.load_latest_active_items(
+            user_id=self.user_id,
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        )
+        workflow_version, workflow_items = self.store.load_latest_active_items(
+            user_id=self.user_id,
+            workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+        )
+        workspace_version, workspace_items = self.store.load_latest_active_items(
             user_id=self.user_id,
             workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
         )
-        if version is None:
-            self._last_context_by_session.pop(session_id, None)
-            return None
-        items = self.store.load_items(version.version_id, active_only=True)
+        items = [*global_items, *workflow_items, *workspace_items]
         if not items:
             self._last_context_by_session.pop(session_id, None)
             return None
+        version_id = "|".join(
+            version.version_id
+            for version in (global_version, workflow_version, workspace_version)
+            if version is not None
+        )
         try:
             context = await self.query_model.select(
                 current_query=current_query,
@@ -128,12 +148,17 @@ class LongTermMemoryRuntime:
                     recent_messages,
                     max_turns=CONFIG.long_term_memory.query_recent_turns,
                 ),
-                version_id=version.version_id,
+                version_id=version_id,
                 items=items,
                 workspace={
                     "workspace_root": self.memory_runtime.workspace_root,
                     "workspace_label": self.memory_runtime.workspace_label,
                     "workspace_fingerprint": self.memory_runtime.workspace_fingerprint,
+                },
+                project_fact_search={
+                    "store": self.store,
+                    "user_id": self.user_id,
+                    "current_workspace_fingerprint": self.memory_runtime.workspace_fingerprint,
                 },
             )
         except Exception:
@@ -157,7 +182,9 @@ class LongTermMemoryRuntime:
             return
         exposed_workflow = [item.memory_uid for item in context.workflow_candidates]
         exposed_skill = [item.memory_uid for item in context.skill_candidates]
-        used_skill = sorted(set(exposed_skill) & _extract_used_memory_uids(messages[turn_start_index:]))
+        used_memory = _extract_used_memory_uids(messages[turn_start_index:])
+        used_workflow = sorted(set(exposed_workflow) & used_memory)
+        used_skill = sorted(set(exposed_skill) & used_memory)
         self.store.record_turn_usage(
             session_id=session_id,
             turn_start_index=turn_start_index,
@@ -165,9 +192,20 @@ class LongTermMemoryRuntime:
             version_id=context.version_id,
             exposed_workflow=exposed_workflow,
             exposed_skill=exposed_skill,
+            used_workflow=used_workflow,
             used_skill=used_skill,
             success=success,
         )
+        for memory_uid in exposed_workflow:
+            self.store.update_workflow_observation(
+                user_id=self.user_id,
+                memory_uid=memory_uid,
+                current_workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
+                current_workspace_label=self.memory_runtime.workspace_label,
+                used_successfully=success and memory_uid in used_workflow,
+                promotion_workspace_threshold=3,
+                downgrade_workspace_threshold=3,
+            )
         if not success:
             return
         for memory_uid in used_skill:
@@ -181,6 +219,7 @@ class LongTermMemoryRuntime:
                 version_id=context.version_id,
                 exposed_workflow=[],
                 exposed_skill=[memory_uid],
+                used_workflow=[],
                 used_skill=[memory_uid],
                 success=True,
                 prompted={"memory_uid": memory_uid, "decision": decision},
@@ -203,14 +242,28 @@ class LongTermMemoryRuntime:
         if job is None:
             return ExtractionResult(status="skipped", extraction_id=extraction_id, error="extraction is locked")
         owner_id = uuid4().hex
-        if not self.store.acquire_write_lock(
-            user_id=job.user_id,
-            workspace_fingerprint=job.workspace_fingerprint,
-            owner_id=owner_id,
-            ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
-        ):
-            self.store.mark_extraction_failed(extraction_id, "memory write lock is held")
-            return ExtractionResult(status="failed", extraction_id=extraction_id, error="memory write lock is held")
+        lock_namespaces = [
+            GLOBAL_WORKSPACE_FINGERPRINT,
+            WORKFLOW_STAGING_FINGERPRINT,
+            job.workspace_fingerprint,
+        ]
+        acquired: list[str] = []
+        for namespace in dict.fromkeys(lock_namespaces):
+            if not self.store.acquire_write_lock(
+                user_id=job.user_id,
+                workspace_fingerprint=namespace,
+                owner_id=owner_id,
+                ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
+            ):
+                for acquired_namespace in acquired:
+                    self.store.release_write_lock(
+                        user_id=job.user_id,
+                        workspace_fingerprint=acquired_namespace,
+                        owner_id=owner_id,
+                    )
+                self.store.mark_extraction_failed(extraction_id, "memory write lock is held")
+                return ExtractionResult(status="failed", extraction_id=extraction_id, error="memory write lock is held")
+            acquired.append(namespace)
         try:
             result = await self._extract_claimed_job(job)
             return result
@@ -218,41 +271,83 @@ class LongTermMemoryRuntime:
             self.store.mark_extraction_failed(extraction_id, str(exc))
             return ExtractionResult(status="failed", extraction_id=extraction_id, error=str(exc))
         finally:
-            self.store.release_write_lock(
-                user_id=job.user_id,
-                workspace_fingerprint=job.workspace_fingerprint,
-                owner_id=owner_id,
-            )
+            for namespace in acquired:
+                self.store.release_write_lock(
+                    user_id=job.user_id,
+                    workspace_fingerprint=namespace,
+                    owner_id=owner_id,
+                )
 
     async def _extract_claimed_job(self, job: Any) -> ExtractionResult:
         state = self.memory_runtime.store.load_session(job.session_id)
         if state is None:
             raise ValueError(f"session not found: {job.session_id}")
-        latest = self.store.latest_committed_version(
+        global_latest, global_items = self.store.load_latest_active_items(
+            user_id=job.user_id,
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        )
+        workflow_latest, workflow_items = self.store.load_latest_active_items(
+            user_id=job.user_id,
+            workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+        )
+        workspace_latest, workspace_items = self.store.load_latest_active_items(
             user_id=job.user_id,
             workspace_fingerprint=job.workspace_fingerprint,
         )
-        existing_items = self.store.load_items(latest.version_id, active_only=True) if latest is not None else []
         payload = build_storage_payload(
             session_state=state,
             tool_registry=self.registry,
-            existing_memories=[_item_for_storage(item) for item in existing_items],
+            existing_memories=[
+                _item_for_storage(item)
+                for item in [*global_items, *workflow_items, *workspace_items]
+            ],
+            existing_global_memories=[_item_for_storage(item) for item in global_items],
+            existing_workflow_staging_memories=[_item_for_storage(item) for item in workflow_items],
+            existing_workspace_memories=[_item_for_storage(item) for item in workspace_items],
             extraction_id=job.extraction_id,
         )
         patch = await self.storage_model.extract_patch(payload)
-        version_id = self.store.apply_patch_as_new_version(
-            user_id=job.user_id,
-            workspace_fingerprint=job.workspace_fingerprint,
-            workspace_label=job.workspace_label,
-            source_session_id=job.session_id,
-            parent_version_id=latest.version_id if latest is not None else "",
-            existing_items=existing_items,
-            new_items=list(patch.get("new_items", [])),
-            update_items=list(patch.get("update_items", [])),
-            retire_items=list(patch.get("retire_items", [])),
-            extraction_id=job.extraction_id,
+        namespace_existing = {
+            GLOBAL_WORKSPACE_FINGERPRINT: (global_latest, global_items),
+            WORKFLOW_STAGING_FINGERPRINT: (workflow_latest, workflow_items),
+            job.workspace_fingerprint: (workspace_latest, workspace_items),
+        }
+        patches = _patch_by_namespace(
+            patch=patch,
+            current_workspace_fingerprint=job.workspace_fingerprint,
+            current_workspace_label=job.workspace_label,
+            existing_by_namespace={namespace: items for namespace, (_version, items) in namespace_existing.items()},
         )
-        return ExtractionResult(status="committed", extraction_id=job.extraction_id, version_id=version_id)
+        version_ids: dict[str, str] = {}
+        for namespace, namespace_patch in patches.items():
+            latest, existing_items = namespace_existing.get(namespace, (None, []))
+            version_id = self.store.apply_patch_as_new_version(
+                user_id=job.user_id,
+                workspace_fingerprint=namespace,
+                workspace_label=label_for_namespace(namespace, job.workspace_label),
+                source_session_id=job.session_id,
+                parent_version_id=latest.version_id if latest is not None else "",
+                existing_items=existing_items,
+                new_items=namespace_patch["new_items"],
+                update_items=namespace_patch["update_items"],
+                retire_items=namespace_patch["retire_items"],
+                extraction_id=job.extraction_id,
+            )
+            version_ids[namespace] = version_id
+        if not version_ids:
+            self.store.mark_extraction_committed(job.extraction_id, "")
+        preferred_version_id = (
+            version_ids.get(job.workspace_fingerprint)
+            or version_ids.get(GLOBAL_WORKSPACE_FINGERPRINT)
+            or version_ids.get(WORKFLOW_STAGING_FINGERPRINT)
+            or ""
+        )
+        return ExtractionResult(
+            status="committed",
+            extraction_id=job.extraction_id,
+            version_id=preferred_version_id,
+            version_ids=version_ids,
+        )
 
     def _should_prompt_skill_promotion(self, memory_uid: str) -> bool:
         if self.store.successful_skill_reuse_count(memory_uid) < CONFIG.long_term_memory.skill_candidate_success_threshold:
@@ -265,7 +360,7 @@ class LongTermMemoryRuntime:
         owner_id = uuid4().hex
         if not self.store.acquire_write_lock(
             user_id=self.user_id,
-            workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
             owner_id=owner_id,
             ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
         ):
@@ -273,14 +368,14 @@ class LongTermMemoryRuntime:
         try:
             self.store.mark_skill_candidate_promotion_status(
                 user_id=self.user_id,
-                workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
+                workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
                 memory_uid=memory_uid,
                 decision=decision,
             )
         finally:
             self.store.release_write_lock(
                 user_id=self.user_id,
-                workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
+                workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
                 owner_id=owner_id,
             )
 
@@ -295,6 +390,97 @@ def _item_for_storage(item: Any) -> dict[str, Any]:
         "evidence": item.evidence,
         "metadata": item.metadata,
     }
+
+
+def _patch_by_namespace(
+    *,
+    patch: dict[str, Any],
+    current_workspace_fingerprint: str,
+    current_workspace_label: str,
+    existing_by_namespace: dict[str, list[Any]],
+) -> dict[str, dict[str, list[dict[str, Any]]]]:
+    result: dict[str, dict[str, list[dict[str, Any]]]] = {}
+    for bucket_name in ("user_profiles", "user_preferences", "project_facts", "workflows", "skill_candidates"):
+        memory_type = type_for_bucket(bucket_name)
+        namespace = namespace_for_bucket(bucket_name, current_workspace_fingerprint)
+        for raw in list(patch.get(bucket_name, []) or []):
+            if not isinstance(raw, dict):
+                continue
+            item = _new_item_from_bucket(
+                raw,
+                bucket_name=bucket_name,
+                memory_type=memory_type,
+                namespace=namespace,
+                current_workspace_fingerprint=current_workspace_fingerprint,
+                current_workspace_label=current_workspace_label,
+            )
+            _namespace_patch(result, namespace)["new_items"].append(item)
+
+    # Backward-compatible path for older tests or stored prompts. New schema hides this field.
+    for raw in list(patch.get("new_items", []) or []):
+        if not isinstance(raw, dict):
+            continue
+        memory_type = MemoryType(str(raw.get("memory_type")))
+        namespace = _namespace_for_memory_type(memory_type, current_workspace_fingerprint)
+        _namespace_patch(result, namespace)["new_items"].append(dict(raw))
+
+    uid_to_namespace = {
+        item.memory_uid: namespace
+        for namespace, items in existing_by_namespace.items()
+        for item in items
+    }
+    for field in ("update_items", "retire_items"):
+        for raw in list(patch.get(field, []) or []):
+            if not isinstance(raw, dict):
+                continue
+            namespace = uid_to_namespace.get(str(raw.get("memory_uid", "")))
+            if namespace is None:
+                # Preserve validation semantics by sending unknown ids to workspace patch.
+                namespace = current_workspace_fingerprint
+            _namespace_patch(result, namespace)[field].append(dict(raw))
+
+    return {
+        namespace: namespace_patch
+        for namespace, namespace_patch in result.items()
+        if namespace_patch["new_items"] or namespace_patch["update_items"] or namespace_patch["retire_items"]
+    }
+
+
+def _new_item_from_bucket(
+    raw: dict[str, Any],
+    *,
+    bucket_name: str,
+    memory_type: MemoryType,
+    namespace: str,
+    current_workspace_fingerprint: str,
+    current_workspace_label: str,
+) -> dict[str, Any]:
+    scope_value = raw.get("scope") or default_scope_for_type(memory_type).value
+    metadata = dict(raw.get("metadata") or {})
+    metadata["namespace"] = namespace
+    if bucket_name == "workflows":
+        metadata.setdefault("origin_workspace_fingerprint", current_workspace_fingerprint)
+        metadata.setdefault("origin_workspace_label", current_workspace_label)
+    return {
+        "memory_type": memory_type.value,
+        "scope": str(scope_value),
+        "content": raw.get("content", ""),
+        "confidence": raw.get("confidence", 0.0),
+        "evidence": list(raw.get("evidence", []) or []),
+        "metadata": metadata,
+    }
+
+
+def _namespace_for_memory_type(memory_type: MemoryType, current_workspace_fingerprint: str) -> str:
+    if memory_type in {MemoryType.USER_PROFILE, MemoryType.USER_PREFERENCE, MemoryType.SKILL_CANDIDATE}:
+        return GLOBAL_WORKSPACE_FINGERPRINT
+    if memory_type == MemoryType.WORKFLOW_CANDIDATE:
+        return WORKFLOW_STAGING_FINGERPRINT
+    return current_workspace_fingerprint
+
+
+def _namespace_patch(result: dict[str, dict[str, list[dict[str, Any]]]], namespace: str) -> dict[str, list[dict[str, Any]]]:
+    return result.setdefault(namespace, {"new_items": [], "update_items": [], "retire_items": []})
 
 
 def _extract_used_memory_uids(messages: list[dict[str, Any]]) -> set[str]:

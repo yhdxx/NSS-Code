@@ -115,8 +115,8 @@ def build_command_registry() -> CommandRegistry:
     registry.register(
         CommandSpec(
             name="/multiAgent",
-            aliases=("multiAgent", "多智能体"),
-            description="使用隔离的 plan/review/execute/test/review 多智能体工作流执行复杂任务",
+            aliases=("/multiagent", "multiAgent", "multiagent", "多智能体"),
+            description="显式使用隔离的 plan/review/scheduling/execute/test 多智能体工作流执行复杂任务",
             usage="[status|resume <run_id>|inspect <run_id>|<task>]",
             usages=(
                 (" <task>", "创建并运行新的多智能体任务"),
@@ -126,6 +126,7 @@ def build_command_registry() -> CommandRegistry:
             ),
             examples=(
                 "/multiAgent 按上一轮计划修改代码",
+                "/multiagent 按上一轮计划修改代码",
                 "/multiAgent status",
                 "/multiAgent resume <run_id>",
                 "/multiAgent inspect <run_id>",

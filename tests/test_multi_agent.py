@@ -16,10 +16,6 @@ from multiAgent.tool_policy import schemas_for_role
 from multiAgent.tools import (
     ApprovePlan,
     ApprovePlanParams,
-    DelegateToMultiAgent,
-    DelegateToMultiAgentParams,
-    InspectSubAgentWork,
-    InspectSubAgentWorkParams,
     RejectExecution,
     RejectExecutionParams,
     RejectPlan,
@@ -32,7 +28,6 @@ from multiAgent.tools import (
     SubmitPlanParams,
     SubmitSubAgentStep,
     SubmitSubAgentStepParams,
-    _delegate_result_payload,
 )
 from multiAgent.validators import validate_plan_payload
 from mycodingagent.llm_runtime.client import PendingToolCall
@@ -273,40 +268,6 @@ def test_submit_step_rejects_wrong_current_step(tmp_path):
     assert payload["error"] == "wrong_step"
 
 
-def test_inspect_subagent_work_returns_minimal_paginated_payload(tmp_path):
-    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
-    run = MultiAgentRun.create(task="task")
-    run.subagent_final_answers[AgentRole.EXECUTE.value] = "abcdef"
-    store.save_run(run)
-
-    result = asyncio.run(
-        InspectSubAgentWork(store).execute(
-            InspectSubAgentWorkParams(run_id=run.run_id, agent="execute", offset=0, limit=5)
-        )
-    )
-
-    payload = json.loads(result.output)
-    assert set(payload) == {
-        "run_id",
-        "agent",
-        "step_id",
-        "task_id",
-        "content",
-        "content_total_chars",
-        "chunk_offset",
-        "chunk_limit",
-        "next_offset",
-        "has_more_inspection_content",
-        "has_more",
-    }
-    assert payload["content"]
-    assert payload["has_more"] is True
-    assert payload["has_more_inspection_content"] is True
-    assert payload["content_total_chars"] > len(payload["content"])
-    assert payload["chunk_offset"] == 0
-    assert payload["chunk_limit"] == 5
-
-
 def test_main_result_summary_does_not_include_full_approved_plan(tmp_path):
     store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
     run = MultiAgentRun.create(task="task")
@@ -324,123 +285,23 @@ def test_main_result_summary_does_not_include_full_approved_plan(tmp_path):
 
     assert summary["plan_summary"] == "Compact summary"
     assert "approved_plan" not in summary
+    assert "inspect_tool" not in summary
 
 
-def test_delegate_schema_uses_binary_routing_inputs(tmp_path):
-    tool = DelegateToMultiAgent(
-        store=MultiAgentStore(tmp_path / "multi_agent.sqlite3"),
-        registry=ToolRegistry(),
-        api_client=object(),
-    )
-
-    schema = tool.get_schema()["input_schema"]
-    description = tool.get_schema()["description"]
-
-    assert set(schema["properties"]) == {"task", "reason"}
-    assert schema["required"] == ["task", "reason"]
-    assert "complexity_score" not in json.dumps(schema)
-    assert "Delegate non-local engineering work" in description
-    assert "Handle work directly only when all are true" in description
-    assert "complexity_score" not in description
-
-
-def test_delegate_rejects_blank_reason(tmp_path):
-    tool = DelegateToMultiAgent(
-        store=MultiAgentStore(tmp_path / "multi_agent.sqlite3"),
-        registry=ToolRegistry(),
-        api_client=object(),
-    )
-
-    result = asyncio.run(
-        tool.execute(
-            DelegateToMultiAgentParams(
-                task="complex task",
-                reason=" ",
-            )
-        )
-    )
-
-    payload = json.loads(result.output)
-    assert payload["status"] == "error"
-    assert payload["error"] == "missing_reason"
-
-
-def test_delegate_starts_workflow_for_complex_task(tmp_path, monkeypatch):
-    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
-    captured = {}
-
-    class FakeOrchestrator:
-        def __init__(self, *, store, registry, api_client, memory_runtime=None, model=None):
-            self.store = store
-            captured["registry"] = registry
-            captured["api_client"] = api_client
-
-        async def start(self, *, task, main_messages):
-            captured["task"] = task
-            captured["main_messages"] = main_messages
-            run = MultiAgentRun.create(task=task)
-            run.status = RunStatus.COMPLETED
-            run.plan_summary = "Compact plan"
-            run.test_result = {"status": "approved"}
-            run.review_result = {"status": "approved", "summary": "ok"}
-            self.store.save_run(run)
-            return run
-
-    monkeypatch.setattr("multiAgent.orchestrator.MultiAgentOrchestrator", FakeOrchestrator)
-    tool = DelegateToMultiAgent(
-        store=store,
-        registry=ToolRegistry(),
-        api_client=object(),
-        main_messages_provider=lambda: [{"role": "user", "content": "visible context"}],
-    )
-
-    result = asyncio.run(
-        tool.execute(
-            DelegateToMultiAgentParams(
-                task="cross-module refactor",
-                reason="Cross-module behavior change requiring sequencing and review.",
-            )
-        )
-    )
-
-    payload = json.loads(result.output)
-    assert payload["status"] == "completed"
-    assert payload["plan_summary"] == "Compact plan"
-    assert payload["inspect_tool"] == "InspectSubAgentWork"
-    assert "subagent_messages" not in payload
-    assert captured["task"] == "cross-module refactor"
-    assert captured["main_messages"] == [{"role": "user", "content": "visible context"}]
-
-
-def test_subagent_schemas_do_not_include_delegate_tool(tmp_path):
+def test_multi_agent_is_not_exposed_as_main_model_tool(tmp_path):
     store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
     registry = ToolRegistry()
-    registry.register(
-        DelegateToMultiAgent(
-            store=store,
-            registry=registry,
-            api_client=object(),
-        )
-    )
+    registry.register(DummyReadTool())
+    registry.register(DummyWriteTool())
+
+    main_names = {schema["name"] for schema in registry.get_all_schemas("openai")}
+    assert "DelegateToMultiAgent" not in main_names
+    assert "InspectSubAgentWork" not in main_names
 
     for role in AgentRole:
-        names = {schema["name"] for schema in schemas_for_role(role=role, registry=registry, store=store)}
-        assert "DelegateToMultiAgent" not in names
-
-
-def test_main_registry_schema_includes_delegate_tool(tmp_path):
-    registry = ToolRegistry()
-    registry.register(
-        DelegateToMultiAgent(
-            store=MultiAgentStore(tmp_path / "multi_agent.sqlite3"),
-            registry=registry,
-            api_client=object(),
-        )
-    )
-
-    names = {schema["name"] for schema in registry.get_all_schemas("openai")}
-
-    assert "DelegateToMultiAgent" in names
+        role_names = {schema["name"] for schema in schemas_for_role(role=role, registry=registry, store=store)}
+        assert "DelegateToMultiAgent" not in role_names
+        assert "InspectSubAgentWork" not in role_names
 
 
 def test_reject_plan_feedback_is_delivered_to_resumed_plan_context(tmp_path):
@@ -861,15 +722,7 @@ def test_task_test_no_decision_fails_with_diagnostic_after_retry(tmp_path, monke
     assert "last_tool_summary" in st
     assert "test_attempts" in st
 
-    # 2. _delegate_result_payload diagnostic fields
-    delegate_payload = _delegate_result_payload(updated)
-    dp_st = delegate_payload["scheduled_tasks"]["task_1"]
-    assert "failure_type" in dp_st
-    assert "last_test_message" in dp_st
-    assert "last_tool_summary" in dp_st
-    assert "test_attempts" in dp_st
-
-    # 3. _scheduled_task_result contains test_attempts
+    # 2. _scheduled_task_result contains test_attempts
     assert "test_attempts" in result["tasks"][0]
 
 
