@@ -1000,6 +1000,8 @@ class SQLiteLongTermMemoryStore:
             validate_type_scope(memory_type=memory_type, scope=scope)
             if workspace_fingerprint:
                 validate_type_namespace(memory_type=memory_type, namespace=workspace_fingerprint)
+            if memory_type in {MemoryType.WORKFLOW_CANDIDATE, MemoryType.SKILL_CANDIDATE}:
+                _validate_workflow_metadata(raw)
         for raw in update_items:
             if str(raw.get("memory_uid", "")) not in existing_by_uid:
                 raise ValueError(f"unknown memory_uid for update: {raw.get('memory_uid')}")
@@ -1008,6 +1010,25 @@ class SQLiteLongTermMemoryStore:
                 raise ValueError(f"unknown memory_uid for retire: {raw.get('memory_uid')}")
             if not str(raw.get("reason", "")).strip():
                 raise ValueError("retire reason is required")
+
+
+def _validate_workflow_metadata(raw: dict[str, Any]) -> None:
+    metadata = raw.get("metadata")
+    if not isinstance(metadata, dict):
+        raise ValueError("workflow metadata is required")
+    workflow = metadata.get("workflow")
+    if not isinstance(workflow, dict):
+        raise ValueError("workflow metadata.workflow is required")
+    for field in ("name", "description", "when_to_use"):
+        if not str(workflow.get(field, "")).strip():
+            raise ValueError(f"workflow metadata.workflow.{field} is required")
+    when_not_use = workflow.get("when_not_use")
+    if not isinstance(when_not_use, list):
+        raise ValueError("workflow metadata.workflow.when_not_use must be an array")
+    if len(when_not_use) > 3:
+        raise ValueError("workflow metadata.workflow.when_not_use cannot contain more than 3 items")
+    if any(not str(item).strip() for item in when_not_use):
+        raise ValueError("workflow metadata.workflow.when_not_use items cannot be empty")
 
 
 def _item_from_payload(

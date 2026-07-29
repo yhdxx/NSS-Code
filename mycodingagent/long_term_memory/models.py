@@ -153,7 +153,32 @@ def _workflow_memory_lines(items: list[LongTermMemoryItem]) -> list[str]:
         content = item.content.strip()
         if not content:
             continue
-        lines.append(f"{content} uses_memory_uid={item.memory_uid}")
+        workflow = item.metadata.get("workflow")
+        if not isinstance(workflow, dict):
+            raise ValueError(f"workflow memory missing structured metadata: {item.memory_uid}")
+        name = str(workflow.get("name", "")).strip()
+        description = str(workflow.get("description", "")).strip()
+        when_to_use = str(workflow.get("when_to_use", "")).strip()
+        when_not_use = [
+            str(value).strip()
+            for value in list(workflow.get("when_not_use", []) or [])
+            if str(value).strip()
+        ]
+        if not name or not description or not when_to_use or len(when_not_use) > 3:
+            raise ValueError(f"workflow memory has invalid structured metadata: {item.memory_uid}")
+        when_not_use_text = "；".join(when_not_use) if when_not_use else "无"
+        lines.append(
+            "\n".join(
+                [
+                    f"name: {name}",
+                    f"description: {description}",
+                    f"when_to_use: {when_to_use}",
+                    f"when_not_use: {when_not_use_text}",
+                    f"content: {content}",
+                    f"uses_memory_uid={item.memory_uid}",
+                ]
+            )
+        )
     return lines
 
 

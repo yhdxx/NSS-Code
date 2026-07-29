@@ -151,11 +151,10 @@ def _selected_items(
 
 
 def _item_for_query(item: LongTermMemoryItem) -> dict[str, Any]:
-    return {
+    payload: dict[str, Any] = {
         "memory_uid": item.memory_uid,
         "type": item.memory_type.value,
         "scope": item.scope.value,
-        "content": item.content,
         "confidence": item.confidence,
         "metadata": {
             key: value
@@ -174,6 +173,31 @@ def _item_for_query(item: LongTermMemoryItem) -> dict[str, Any]:
             }
         },
     }
+    if item.memory_type in {MemoryType.WORKFLOW_CANDIDATE, MemoryType.SKILL_CANDIDATE}:
+        workflow = item.metadata.get("workflow")
+        if not isinstance(workflow, dict):
+            raise ValueError(f"workflow memory missing structured metadata: {item.memory_uid}")
+        when_not_use = [
+            str(value).strip()
+            for value in list(workflow.get("when_not_use", []) or [])
+            if str(value).strip()
+        ]
+        if len(when_not_use) > 3:
+            raise ValueError(f"workflow memory has too many when_not_use entries: {item.memory_uid}")
+        payload.update(
+            {
+                "name": str(workflow.get("name", "")).strip(),
+                "description": str(workflow.get("description", "")).strip(),
+                "when_to_use": str(workflow.get("when_to_use", "")).strip(),
+                "when_not_use": when_not_use,
+                "content": item.content,
+            }
+        )
+        if not payload["name"] or not payload["description"] or not payload["when_to_use"] or not item.content.strip():
+            raise ValueError(f"workflow memory has invalid structured metadata: {item.memory_uid}")
+    else:
+        payload["content"] = item.content
+    return payload
 
 
 async def _execute_submit_tool(tool: SubmitLongTermMemoryQueryResult, call: PendingToolCall) -> str:

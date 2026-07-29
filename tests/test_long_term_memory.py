@@ -3,6 +3,8 @@ from __future__ import annotations
 import json
 from pathlib import Path
 
+import pytest
+
 from mycodingagent.long_term_memory.models import (
     ExtractionStatus,
     LongTermMemoryContext,
@@ -208,10 +210,15 @@ def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
             {
                 "memory_type": "skill_candidate",
                 "scope": "user",
-                "content": "Use batch extraction for large file splits.",
+                "content": "Locate boundaries once, then split files in batch.",
                 "confidence": 0.9,
                 "evidence": ["message:1"],
-                "metadata": {},
+                "metadata": _workflow_metadata(
+                    name="large_file_batch_split",
+                    description="Use for large-file modularization where repeated reads inflate context.",
+                    when_to_use="A task extracts multiple modules or sections from the same large source file.",
+                    when_not_use=[],
+                ),
             }
         ],
         update_items=[],
@@ -303,16 +310,28 @@ def test_long_term_memory_runtime_payload_concatenates_relevant_sections_only():
         version_id="v1",
         memory_type=MemoryType.WORKFLOW_CANDIDATE,
         scope=MemoryScope.WORKSPACE,
-        content="大文件拆分时先一次性定位边界，再批量写入。",
+        content="先一次性定位所有边界，再批量写入目标文件。",
         confidence=0.9,
+        metadata=_workflow_metadata(
+            name="large_file_batch_split",
+            description="用于处理大文件拆分和模块化重构。",
+            when_to_use="同一个大文件需要提取多个模块并写入多个目标文件时使用。",
+            when_not_use=[],
+        ),
     )
     skill = LongTermMemoryItem(
         memory_uid="sk1",
         version_id="v1",
         memory_type=MemoryType.SKILL_CANDIDATE,
         scope=MemoryScope.USER,
-        content="跨模块重构先跑现有测试，再改公共接口。",
+        content="先跑现有测试建立基线，再修改公共接口并回归验证。",
         confidence=0.9,
+        metadata=_workflow_metadata(
+            name="cross_module_refactor_baseline",
+            description="用于跨模块重构前建立测试基线。",
+            when_to_use="任务需要修改公共接口或跨模块调用链时使用。",
+            when_not_use=["只修改文档或注释时不要使用"],
+        ),
     )
     context = LongTermMemoryContext(
         version_id="v1",
@@ -378,13 +397,84 @@ def test_long_term_memory_runtime_payload_concatenates_relevant_sections_only():
 def test_internal_submit_tools_expose_structured_parameters():
     patch_tool = SubmitLongTermMemoryPatch(extraction_id="e1", collector={})
     query_tool = SubmitLongTermMemoryQueryResult(query_id="q1", collector={})
+    patch_schema = patch_tool.get_schema()["input_schema"]
 
-    assert "new_items" not in patch_tool.get_schema()["input_schema"]["properties"]
-    assert "user_profiles" in patch_tool.get_schema()["input_schema"]["properties"]
-    assert "project_facts" in patch_tool.get_schema()["input_schema"]["properties"]
+    assert "new_items" not in patch_schema["properties"]
+    assert "user_profiles" in patch_schema["properties"]
+    assert "project_facts" in patch_schema["properties"]
+    assert "WorkflowMemoryPayload" in patch_schema["$defs"]
+    workflow_props = patch_schema["$defs"]["WorkflowMemoryPayload"]["properties"]
+    for field in ("name", "description", "when_to_use", "when_not_use", "content"):
+        assert field in workflow_props
+    assert workflow_props["when_not_use"]["maxItems"] == 3
     assert "summary" not in query_tool.get_schema()["input_schema"]["properties"]
     assert "workflow_candidates" in query_tool.get_schema()["input_schema"]["properties"]
     assert "skill_candidates" in query_tool.get_schema()["input_schema"]["properties"]
+
+
+def test_store_rejects_legacy_content_only_workflow(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    extraction_id = store.mark_extraction_pending(
+        session_id="s-legacy",
+        user_id="u1",
+        workspace_fingerprint="wf",
+        workspace_label="repo",
+        workspace_root="/repo",
+        source_hash="hash-legacy",
+        source_message_count=2,
+    )
+    store.claim_extraction(extraction_id, lock_ttl_seconds=60)
+
+    with pytest.raises(ValueError, match="metadata.workflow is required"):
+        store.apply_patch_as_new_version(
+            user_id="u1",
+            workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
+            workspace_label="Workflow Staging Memory",
+            source_session_id="s-legacy",
+            parent_version_id="",
+            existing_items=[],
+            new_items=[
+                {
+                    "memory_type": "workflow_candidate",
+                    "scope": "workspace",
+                    "content": "Use batch extraction for large file splits.",
+                    "confidence": 0.9,
+                    "evidence": ["message:1"],
+                    "metadata": {},
+                }
+            ],
+            update_items=[],
+            retire_items=[],
+            extraction_id=extraction_id,
+        )
+
+
+def test_query_model_expands_structured_workflow_fields():
+    pytest.importorskip("openai")
+    from mycodingagent.long_term_memory.query_model import _item_for_query
+
+    item = LongTermMemoryItem(
+        memory_uid="wf1",
+        version_id="v1",
+        memory_type=MemoryType.WORKFLOW_CANDIDATE,
+        scope=MemoryScope.WORKSPACE,
+        content="先定位边界，再批量写入。",
+        confidence=0.9,
+        metadata=_workflow_metadata(
+            name="large_file_batch_split",
+            description="用于大文件拆分。",
+            when_to_use="同一大文件拆出多个模块时使用。",
+            when_not_use=["只改一个小函数时不要使用"],
+        ),
+    )
+
+    payload = _item_for_query(item)
+
+    assert payload["name"] == "large_file_batch_split"
+    assert payload["description"] == "用于大文件拆分。"
+    assert payload["when_to_use"] == "同一大文件拆出多个模块时使用。"
+    assert payload["when_not_use"] == ["只改一个小函数时不要使用"]
+    assert payload["content"] == "先定位边界，再批量写入。"
 
 
 def _create_workflow_candidate(store: SQLiteLongTermMemoryStore, *, origin_workspace: str) -> str:
@@ -409,13 +499,19 @@ def _create_workflow_candidate(store: SQLiteLongTermMemoryStore, *, origin_works
             {
                 "memory_type": "workflow_candidate",
                 "scope": "workspace",
-                "content": "For large file splits, locate all boundaries once and write modules in batch.",
+                "content": "Locate all boundaries once, then write all target modules in one batch.",
                 "confidence": 0.9,
                 "evidence": ["message:1"],
-                "metadata": {
-                    "origin_workspace_fingerprint": origin_workspace,
-                    "origin_workspace_label": origin_workspace,
-                },
+                "metadata": _workflow_metadata(
+                    name="large_file_batch_split",
+                    description="Use for large-file splits where repeated reads would inflate context.",
+                    when_to_use="A task extracts several modules or functions from one large file.",
+                    when_not_use=[],
+                    extra={
+                        "origin_workspace_fingerprint": origin_workspace,
+                        "origin_workspace_label": origin_workspace,
+                    },
+                ),
             }
         ],
         update_items=[],
@@ -423,3 +519,21 @@ def _create_workflow_candidate(store: SQLiteLongTermMemoryStore, *, origin_works
         extraction_id=extraction_id,
     )
     return store.load_items(version_id)[0].memory_uid
+
+
+def _workflow_metadata(
+    *,
+    name: str,
+    description: str,
+    when_to_use: str,
+    when_not_use: list[str],
+    extra: dict | None = None,
+) -> dict:
+    metadata = dict(extra or {})
+    metadata["workflow"] = {
+        "name": name,
+        "description": description,
+        "when_to_use": when_to_use,
+        "when_not_use": when_not_use,
+    }
+    return metadata

@@ -10,27 +10,23 @@ from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
 
-MemoryTypeLiteral = Literal[
-    "user_profile",
-    "user_preference",
-    "project_fact",
-    "decision",
-    "workflow_candidate",
-    "skill_candidate",
-]
+MemoryTypeLiteral = Literal["user_profile", "user_preference", "project_fact", "decision"]
+WorkflowMemoryTypeLiteral = Literal["workflow_candidate", "skill_candidate"]
 MemoryScopeLiteral = Literal["user", "workspace", "project"]
 
 
-class NewMemoryItemPayload(BaseModel):
-    memory_type: MemoryTypeLiteral
-    scope: MemoryScopeLiteral
+class BucketMemoryItemPayload(BaseModel):
     content: str = Field(min_length=1, max_length=4000)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: List[str] = Field(default_factory=list)
     metadata: Dict[str, Any] = Field(default_factory=dict)
 
 
-class BucketMemoryItemPayload(BaseModel):
+class WorkflowMemoryPayload(BaseModel):
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=1000)
+    when_to_use: str = Field(min_length=1, max_length=1000)
+    when_not_use: List[str] = Field(default_factory=list, max_length=3)
     content: str = Field(min_length=1, max_length=4000)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: List[str] = Field(default_factory=list)
@@ -41,6 +37,20 @@ class UpdateMemoryItemPayload(BaseModel):
     memory_uid: str = Field(min_length=1)
     memory_type: MemoryTypeLiteral
     scope: MemoryScopeLiteral
+    content: str = Field(min_length=1, max_length=4000)
+    confidence: float = Field(ge=0.0, le=1.0)
+    evidence: List[str] = Field(default_factory=list)
+    metadata: Dict[str, Any] = Field(default_factory=dict)
+
+
+class UpdateWorkflowMemoryItemPayload(BaseModel):
+    memory_uid: str = Field(min_length=1)
+    memory_type: WorkflowMemoryTypeLiteral
+    scope: MemoryScopeLiteral
+    name: str = Field(min_length=1, max_length=120)
+    description: str = Field(min_length=1, max_length=1000)
+    when_to_use: str = Field(min_length=1, max_length=1000)
+    when_not_use: List[str] = Field(default_factory=list, max_length=3)
     content: str = Field(min_length=1, max_length=4000)
     confidence: float = Field(ge=0.0, le=1.0)
     evidence: List[str] = Field(default_factory=list)
@@ -58,10 +68,11 @@ class SubmitLongTermMemoryPatchParams(BaseModel):
     user_profiles: List[BucketMemoryItemPayload] = Field(default_factory=list)
     user_preferences: List[BucketMemoryItemPayload] = Field(default_factory=list)
     project_facts: List[BucketMemoryItemPayload] = Field(default_factory=list)
-    workflows: List[BucketMemoryItemPayload] = Field(default_factory=list)
-    skill_candidates: List[BucketMemoryItemPayload] = Field(default_factory=list)
-    new_items: List[NewMemoryItemPayload] = Field(default_factory=list)
+    workflows: List[WorkflowMemoryPayload] = Field(default_factory=list)
+    skill_candidates: List[WorkflowMemoryPayload] = Field(default_factory=list)
     update_items: List[UpdateMemoryItemPayload] = Field(default_factory=list)
+    update_workflows: List[UpdateWorkflowMemoryItemPayload] = Field(default_factory=list)
+    update_skill_candidates: List[UpdateWorkflowMemoryItemPayload] = Field(default_factory=list)
     retire_items: List[RetireMemoryItemPayload] = Field(default_factory=list)
 
 
@@ -81,9 +92,6 @@ class SubmitLongTermMemoryPatch(Tool):
     def get_schema(self) -> dict[str, Any]:
         schema = self.params_model.model_json_schema()
         schema.pop("title", None)
-        properties = schema.get("properties")
-        if isinstance(properties, dict):
-            properties.pop("new_items", None)
         return {
             "name": self.name,
             "description": self.description,

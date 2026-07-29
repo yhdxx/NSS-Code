@@ -551,6 +551,16 @@ Runtime 根据 bucket 推导：
 | `workflows` | `workflow_candidate` | workflow staging |
 | `skill_candidates` | `skill_candidate` | global user |
 
+`workflows` 与 `skill_candidates` 使用新的强结构 schema：
+
+- `name`：稳定短名称，用于识别和审计。
+- `description`：说明该 workflow 解决什么问题。
+- `when_to_use`：查询模型判断是否注入的正向适用条件。
+- `when_not_use`：误用反例边界，初始可为空，最多 3 条，只能由后续失败、用户纠正或复盘补充。
+- `content`：具体执行流程。
+
+Store 层会拒绝缺少结构化 workflow 字段的 workflow_candidate / skill_candidate。
+
 ### 11.4 写入与并发
 
 ```text

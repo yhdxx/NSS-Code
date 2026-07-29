@@ -146,7 +146,7 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 }
 ```
 
-拼接时只保留用户画像、用户偏好、项目事实、可能相关的工作流四段；空段不输出。四段均为空时，`memory` 为 `未查询到相关记忆`。workflow / skill candidate 会在文本中保留 `uses_memory_uid=<memory_uid>`，用于 Runtime 统计是否被主 Agent 实际使用。
+拼接时只保留用户画像、用户偏好、项目事实、可能相关的工作流四段；空段不输出。四段均为空时，`memory` 为 `未查询到相关记忆`。workflow / skill candidate 采用强结构字段 `name`、`description`、`when_to_use`、`when_not_use`、`content`；Runtime 注入时会展开这些字段并保留 `uses_memory_uid=<memory_uid>`，用于统计主 Agent 是否实际使用。
 
 当用户明确提到其他项目或历史 workspace 时，查询模型可调用 `SearchWorkspaceProjectFacts` 读取其他项目的抽象项目事实。
 

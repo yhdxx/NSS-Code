@@ -18,8 +18,12 @@
 12.绝对不要将具体的代码片段、行号、代码差异（diffs）、文件修改列表、命令输出、测试日志或临时的 Bug 修复过程存储为 project_facts。
 13.如果后续消息否定或修正了早期的结论，请勿将已被否定的结论存为有效记忆。
 14.使用 workflows 来记录从任务或失败中总结出的可复用流程。它们会进入工作流暂存区，而不是直接进入全局技能记忆。
-15.仅将 skill_candidates 用于已经足够成熟、可以转化为可复用技能（Skill）的工作流；请勿直接创建技能（Skill）。
-16.切勿过早地将新工作流转化为 skill_candidates。运行时会在工作流跨多个工作区被成功使用后，才将其提升为技能候选。
-17.当 existing_global_memories、existing_workflow_staging_memories 或 existing_workspace_memories 中已包含相同的持久概念时，优先使用 update_items（更新条目），避免创建重复记忆。
-18.证据（Evidence）必须引用所提供会话中的消息编号或轮次索引。
-19.提交新记忆时，请将其放入对应的强类型分类桶中：user_profiles、user_preferences、project_facts、workflows、skill_candidates。除非没有强类型分类桶能表示该条目，否则请勿使用旧版字段 new_items。
+15.workflows 与 skill_candidates 必须使用结构化字段：name、description、when_to_use、when_not_use、content、confidence、evidence、metadata。
+16.name 是短名称；description 说明该 workflow 解决什么问题；when_to_use 说明何时应该使用；content 说明具体执行步骤。四者不得互相替代或重复堆叠。
+17.when_not_use 初始通常为空数组。只有会话中出现真实失败、用户纠正或模型明确复盘出误用边界时，才补充 when_not_use。
+18.when_not_use 最多包含 3 条，每条必须是稳定、可复用的反例边界；不要记录临时失败日志、单次异常或过细场景。
+19.仅将 skill_candidates 用于已经足够成熟、可以转化为可复用技能（Skill）的工作流；请勿直接创建技能（Skill）。
+20.切勿过早地将新工作流转化为 skill_candidates。运行时会在工作流跨多个工作区被成功使用后，才将其提升为技能候选。
+21.当 existing_global_memories、existing_workflow_staging_memories 或 existing_workspace_memories 中已包含相同的持久概念时，优先使用 update_items、update_workflows 或 update_skill_candidates（更新条目），避免创建重复记忆。
+22.证据（Evidence）必须引用所提供会话中的消息编号或轮次索引。
+23.提交新记忆时，请将其放入对应的强类型分类桶中：user_profiles、user_preferences、project_facts、workflows、skill_candidates。

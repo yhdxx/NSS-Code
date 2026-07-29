@@ -381,7 +381,7 @@ class LongTermMemoryRuntime:
 
 
 def _item_for_storage(item: Any) -> dict[str, Any]:
-    return {
+    payload = {
         "memory_uid": item.memory_uid,
         "type": item.memory_type.value,
         "scope": item.scope.value,
@@ -390,6 +390,22 @@ def _item_for_storage(item: Any) -> dict[str, Any]:
         "evidence": item.evidence,
         "metadata": item.metadata,
     }
+    if item.memory_type in {MemoryType.WORKFLOW_CANDIDATE, MemoryType.SKILL_CANDIDATE}:
+        workflow = item.metadata.get("workflow") if isinstance(item.metadata, dict) else None
+        if isinstance(workflow, dict):
+            payload.update(
+                {
+                    "name": str(workflow.get("name", "")).strip(),
+                    "description": str(workflow.get("description", "")).strip(),
+                    "when_to_use": str(workflow.get("when_to_use", "")).strip(),
+                    "when_not_use": [
+                        str(value).strip()
+                        for value in list(workflow.get("when_not_use", []) or [])
+                        if str(value).strip()
+                    ][:3],
+                }
+            )
+    return payload
 
 
 def _patch_by_namespace(
@@ -416,19 +432,26 @@ def _patch_by_namespace(
             )
             _namespace_patch(result, namespace)["new_items"].append(item)
 
-    # Backward-compatible path for older tests or stored prompts. New schema hides this field.
-    for raw in list(patch.get("new_items", []) or []):
-        if not isinstance(raw, dict):
-            continue
-        memory_type = MemoryType(str(raw.get("memory_type")))
-        namespace = _namespace_for_memory_type(memory_type, current_workspace_fingerprint)
-        _namespace_patch(result, namespace)["new_items"].append(dict(raw))
-
     uid_to_namespace = {
         item.memory_uid: namespace
         for namespace, items in existing_by_namespace.items()
         for item in items
     }
+    for field in ("update_workflows", "update_skill_candidates"):
+        for raw in list(patch.get(field, []) or []):
+            if not isinstance(raw, dict):
+                continue
+            namespace = uid_to_namespace.get(str(raw.get("memory_uid", "")))
+            if namespace is None:
+                namespace = current_workspace_fingerprint
+            memory_type = MemoryType(str(raw.get("memory_type")))
+            item = _structured_workflow_item(
+                raw,
+                memory_type=memory_type,
+                namespace=namespace,
+            )
+            _namespace_patch(result, namespace)["update_items"].append(item)
+
     for field in ("update_items", "retire_items"):
         for raw in list(patch.get(field, []) or []):
             if not isinstance(raw, dict):
@@ -458,9 +481,12 @@ def _new_item_from_bucket(
     scope_value = raw.get("scope") or default_scope_for_type(memory_type).value
     metadata = dict(raw.get("metadata") or {})
     metadata["namespace"] = namespace
-    if bucket_name == "workflows":
-        metadata.setdefault("origin_workspace_fingerprint", current_workspace_fingerprint)
-        metadata.setdefault("origin_workspace_label", current_workspace_label)
+    if bucket_name in {"workflows", "skill_candidates"}:
+        item = _structured_workflow_item(raw, memory_type=memory_type, namespace=namespace)
+        if bucket_name == "workflows":
+            item["metadata"].setdefault("origin_workspace_fingerprint", current_workspace_fingerprint)
+            item["metadata"].setdefault("origin_workspace_label", current_workspace_label)
+        return item
     return {
         "memory_type": memory_type.value,
         "scope": str(scope_value),
@@ -471,12 +497,34 @@ def _new_item_from_bucket(
     }
 
 
-def _namespace_for_memory_type(memory_type: MemoryType, current_workspace_fingerprint: str) -> str:
-    if memory_type in {MemoryType.USER_PROFILE, MemoryType.USER_PREFERENCE, MemoryType.SKILL_CANDIDATE}:
-        return GLOBAL_WORKSPACE_FINGERPRINT
-    if memory_type == MemoryType.WORKFLOW_CANDIDATE:
-        return WORKFLOW_STAGING_FINGERPRINT
-    return current_workspace_fingerprint
+def _structured_workflow_item(
+    raw: dict[str, Any],
+    *,
+    memory_type: MemoryType,
+    namespace: str,
+) -> dict[str, Any]:
+    if memory_type not in {MemoryType.WORKFLOW_CANDIDATE, MemoryType.SKILL_CANDIDATE}:
+        raise ValueError(f"structured workflow item has invalid type: {memory_type.value}")
+    when_not_use = [str(item).strip() for item in list(raw.get("when_not_use", []) or []) if str(item).strip()]
+    if len(when_not_use) > 3:
+        raise ValueError("workflow when_not_use cannot contain more than 3 items")
+    metadata = dict(raw.get("metadata") or {})
+    metadata["namespace"] = namespace
+    metadata["workflow"] = {
+        "name": str(raw.get("name", "")).strip(),
+        "description": str(raw.get("description", "")).strip(),
+        "when_to_use": str(raw.get("when_to_use", "")).strip(),
+        "when_not_use": when_not_use,
+    }
+    return {
+        "memory_uid": str(raw.get("memory_uid", "")),
+        "memory_type": memory_type.value,
+        "scope": str(raw.get("scope") or default_scope_for_type(memory_type).value),
+        "content": raw.get("content", ""),
+        "confidence": raw.get("confidence", 0.0),
+        "evidence": list(raw.get("evidence", []) or []),
+        "metadata": metadata,
+    }
 
 
 def _namespace_patch(result: dict[str, dict[str, list[dict[str, Any]]]], namespace: str) -> dict[str, list[dict[str, Any]]]:
