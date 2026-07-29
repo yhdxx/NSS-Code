@@ -276,21 +276,6 @@ class SQLiteMemoryStore:
                 )
                 """
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS session_runtime_observations (
-                    observation_id TEXT PRIMARY KEY,
-                    session_id TEXT NOT NULL,
-                    request_index INTEGER NOT NULL,
-                    user_prompt TEXT NOT NULL DEFAULT '',
-                    context_mode TEXT NOT NULL DEFAULT '',
-                    capability_result_json TEXT NOT NULL DEFAULT '{}',
-                    long_term_memory_json TEXT NOT NULL DEFAULT '{}',
-                    metadata_json TEXT NOT NULL DEFAULT '{}',
-                    created_at REAL NOT NULL
-                )
-                """
-            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_messages_session ON session_messages(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_tool_outputs_session ON session_tool_outputs(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_historical_turns_session ON historical_turns(session_id, turn_index)")
@@ -306,7 +291,6 @@ class SQLiteMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoint_records_session ON checkpoint_records(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_session ON session_token_usage(session_id, request_index)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_model_contexts_session ON session_model_contexts(session_id, request_index)")
-            conn.execute("CREATE INDEX IF NOT EXISTS idx_runtime_observations_session ON session_runtime_observations(session_id, request_index)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_root ON sessions(workspace_root)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_fingerprint ON sessions(workspace_fingerprint)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed_at ON sessions(last_accessed_at)")
@@ -562,56 +546,6 @@ class SQLiteMemoryStore:
                     rendered_prompt,
                     prompt_hash,
                     tools_hash,
-                    json.dumps(metadata, ensure_ascii=False),
-                    now,
-                ),
-            )
-            conn.execute(
-                "UPDATE sessions SET updated_at = ?, last_accessed_at = ? WHERE session_id = ?",
-                (now, now, session_id),
-            )
-
-    def next_runtime_observation_request_index(self, session_id: str) -> int:
-        with self._connect() as conn:
-            row = conn.execute(
-                "SELECT COALESCE(MAX(request_index), 0) AS max_index FROM session_runtime_observations WHERE session_id = ?",
-                (session_id,),
-            ).fetchone()
-        return int(row["max_index"] or 0) + 1
-
-    def save_runtime_observation(
-        self,
-        *,
-        observation_id: str,
-        session_id: str,
-        request_index: int,
-        user_prompt: str,
-        context_mode: str,
-        capability_result: dict,
-        long_term_memory: dict,
-        metadata: dict,
-    ) -> None:
-        now = time()
-        with self._connect() as conn:
-            if self._session_status(conn, session_id) == "historical":
-                return
-            conn.execute(
-                """
-                INSERT OR REPLACE INTO session_runtime_observations(
-                    observation_id, session_id, request_index, user_prompt,
-                    context_mode, capability_result_json, long_term_memory_json,
-                    metadata_json, created_at
-                )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
-                """,
-                (
-                    observation_id,
-                    session_id,
-                    request_index,
-                    user_prompt,
-                    context_mode,
-                    json.dumps(capability_result, ensure_ascii=False),
-                    json.dumps(long_term_memory, ensure_ascii=False),
                     json.dumps(metadata, ensure_ascii=False),
                     now,
                 ),
@@ -1083,7 +1017,6 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_model_contexts WHERE session_id = ?", (session_id,))
-            conn.execute("DELETE FROM session_runtime_observations WHERE session_id = ?", (session_id,))
             return cursor.rowcount > 0
 
     def delete_expired_sessions(self, *, max_age_seconds: float) -> int:
@@ -1109,7 +1042,6 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_model_contexts WHERE session_id = ?", (session_id,))
-                conn.execute("DELETE FROM session_runtime_observations WHERE session_id = ?", (session_id,))
             return len(session_ids)
 
     def load_session(self, session_id: str) -> SessionState | None:

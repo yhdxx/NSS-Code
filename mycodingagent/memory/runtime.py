@@ -522,36 +522,6 @@ class MemoryRuntime:
         )
         return request_index
 
-    def record_runtime_observation(
-        self,
-        *,
-        session_id: str,
-        user_prompt: str,
-        context_mode: str,
-        capability_result: dict[str, Any] | None = None,
-        long_term_memory: dict[str, Any] | None = None,
-        metadata: dict[str, Any] | None = None,
-    ) -> int:
-        self.store.ensure_session(
-            session_id=session_id,
-            model=self.model,
-            workspace_root=self.workspace_root,
-            workspace_label=self.workspace_label,
-            workspace_fingerprint=self.workspace_fingerprint,
-        )
-        request_index = self.store.next_runtime_observation_request_index(session_id)
-        self.store.save_runtime_observation(
-            observation_id=uuid4().hex,
-            session_id=session_id,
-            request_index=request_index,
-            user_prompt=user_prompt,
-            context_mode=context_mode,
-            capability_result=copy.deepcopy(capability_result or {}),
-            long_term_memory=copy.deepcopy(long_term_memory or {}),
-            metadata=copy.deepcopy(metadata or {}),
-        )
-        return request_index
-
     def load_token_usage_summary(self, session_id: str) -> TokenUsageSummary:
         return self.store.load_token_usage_summary(session_id)
 

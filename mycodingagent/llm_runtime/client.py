@@ -812,15 +812,6 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             core_tool_schemas,
             capability_router=capability_router,
         )
-    if memory_runtime is not None and session_id:
-        memory_runtime.record_runtime_observation(
-            session_id=session_id,
-            user_prompt=prompt,
-            context_mode=current_context_mode(),
-            capability_result=capability_result.to_runtime_payload() if capability_result is not None else {},
-            long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else {},
-            metadata={"tool_count": len(current_tools), "turn_start": turn_start},
-        )
     seen_tool_failures: set[tuple[str, str]] = set()
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。

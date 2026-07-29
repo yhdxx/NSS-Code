@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import threading
 
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
@@ -194,37 +193,12 @@ async def handle_dashboard_command(context: CommandContext, arguments: str) -> C
         print(f"运行时看板已启动：{_dashboard_url}", flush=True)
         return CommandResult()
 
-    from mycodingagent.dashboard.server import DashboardAgentBridge, DashboardEventHub, build_server
+    from mycodingagent.dashboard.server import build_server
 
     memory_db = CONFIG.memory.db_path
     multi_agent_db = CONFIG.memory.db_path.with_name("multi_agent.sqlite3")
     skill_lrfu_db = (CONFIG.skills.index_dir or (CONFIG.skills.root / ".skill_runtime")) / "user_skill_lrfu.sqlite3"
     workspace_root = context.memory_runtime.workspace_root if context.memory_runtime is not None else "."
-    event_hub = DashboardEventHub()
-    bridge = None
-    if (
-        context.api_client is not None
-        and context.registry is not None
-        and context.tools is not None
-        and context.get_messages is not None
-        and context.set_messages is not None
-    ):
-        bridge = DashboardAgentBridge(
-            loop=asyncio.get_running_loop(),
-            api_client=context.api_client,
-            registry=context.registry,
-            tools=context.tools,
-            get_messages=context.get_messages,
-            set_messages=context.set_messages,
-            skill_runtime=context.skill_runtime,
-            core_tool_schemas=context.core_tool_schemas,
-            workspace_tracker=context.workspace_tracker,
-            memory_runtime=context.memory_runtime,
-            file_state_cache=context.file_state_cache,
-            capability_router=context.capability_router,
-            long_term_memory_runtime=context.long_term_memory_runtime,
-            event_hub=event_hub,
-        )
     try:
         _dashboard_server = build_server(
             host=host,
@@ -233,9 +207,6 @@ async def handle_dashboard_command(context: CommandContext, arguments: str) -> C
             multi_agent_db=multi_agent_db,
             skill_lrfu_db=skill_lrfu_db,
             workspace_root=workspace_root,
-            mcp_manager=context.mcp_manager,
-            bridge=bridge,
-            event_hub=event_hub,
         )
     except OSError as exc:
         _dashboard_server = None

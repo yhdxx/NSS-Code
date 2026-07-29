@@ -1,13 +1,10 @@
 from __future__ import annotations
 
 import argparse
-import asyncio
 import json
 import mimetypes
 import os
-import queue
 import sqlite3
-import threading
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
@@ -33,13 +30,11 @@ class DashboardDataProvider:
         multi_agent_db: Path | str | None = None,
         skill_lrfu_db: Path | str | None = None,
         workspace_root: Path | str | None = None,
-        mcp_manager: Any | None = None,
     ) -> None:
         self.memory_db = Path(memory_db or CONFIG.memory.db_path).expanduser()
         self.multi_agent_db = Path(multi_agent_db or CONFIG.memory.db_path.with_name("multi_agent.sqlite3")).expanduser()
         self.skill_lrfu_db = Path(skill_lrfu_db or _default_skill_lrfu_db()).expanduser()
         self.workspace_root = Path(workspace_root or os.getcwd()).expanduser().resolve()
-        self.mcp_manager = mcp_manager
 
     def state(self, *, session_id: str = "", limit: int = 20) -> dict[str, Any]:
         sessions = self._sessions(limit=limit)
@@ -63,9 +58,6 @@ class DashboardDataProvider:
             "recoverable_contexts": self._recoverable_contexts(selected_session_id),
             "multi_agent_runs": self._multi_agent_runs(limit=limit),
             "lrfu": self._lrfu(selected_session_id),
-            "capabilities": self._capabilities(selected_session_id),
-            "mcp": self._mcp(),
-            "long_term_memory": self._long_term_memory(selected_session_id),
             "project": self._project_index(limit=600),
         }
 
@@ -199,7 +191,7 @@ class DashboardDataProvider:
                 return []
             rows = conn.execute(
                 """
-                SELECT context_id, request_index, model_messages_json, tools_json,
+                SELECT context_id, request_index, model_messages_json, tools_json, rendered_prompt,
                        prompt_hash, tools_hash, metadata_json, created_at
                 FROM session_model_contexts
                 WHERE session_id = ?
@@ -215,193 +207,13 @@ class DashboardDataProvider:
                 "request_index": int(row["request_index"]),
                 "model_messages": _safe_json(row["model_messages_json"], []),
                 "tools": _safe_json(row["tools_json"], []),
+                "rendered_prompt": row["rendered_prompt"],
                 "prompt_hash": row["prompt_hash"],
                 "tools_hash": row["tools_hash"],
                 "metadata": _safe_json(row["metadata_json"], {}),
                 "created_at": float(row["created_at"]),
             })
         return requests
-
-    def _runtime_observations(self, session_id: str, *, include_payloads: bool = False) -> list[dict[str, Any]]:
-        conn = self._connect(self.memory_db)
-        if conn is None:
-            return []
-        with conn:
-            if not self._table_exists(conn, "session_runtime_observations"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT observation_id, request_index, user_prompt, context_mode,
-                       capability_result_json, long_term_memory_json, metadata_json, created_at
-                FROM session_runtime_observations
-                WHERE session_id = ?
-                ORDER BY request_index DESC
-                LIMIT 30
-                """,
-                (session_id,),
-            ).fetchall()
-        observations: list[dict[str, Any]] = []
-        for row in rows:
-            capability_result = _safe_json(row["capability_result_json"], {})
-            long_term_memory = _safe_json(row["long_term_memory_json"], {})
-            metadata = _safe_json(row["metadata_json"], {})
-            if not isinstance(capability_result, dict):
-                capability_result = {}
-            if not isinstance(long_term_memory, dict):
-                long_term_memory = {}
-            if not isinstance(metadata, dict):
-                metadata = {}
-            recommendations = capability_result.get("recommendations", [])
-            if not isinstance(recommendations, list):
-                recommendations = []
-            memory_items = long_term_memory.get("memories", [])
-            if not isinstance(memory_items, list):
-                memory_items = []
-            observation = {
-                "request_index": int(row["request_index"]),
-                "user_prompt": row["user_prompt"],
-                "context_mode": row["context_mode"],
-                "tool_count": int(metadata.get("tool_count") or 0),
-                "recommended_skill_count": len(
-                    [item for item in recommendations if isinstance(item, dict) and item.get("kind") == "skill"]
-                ),
-                "recommended_mcp_count": len(
-                    [item for item in recommendations if isinstance(item, dict) and item.get("kind") == "mcp_server"]
-                ),
-                "memory_item_count": len(memory_items),
-                "created_at": float(row["created_at"]),
-            }
-            if include_payloads:
-                observation["capability_result"] = capability_result
-                observation["long_term_memory"] = long_term_memory
-            observations.append(observation)
-        return observations
-
-    def _capabilities(self, session_id: str) -> dict[str, Any]:
-        observations = self._runtime_observations(session_id, include_payloads=True)
-        latest = observations[0] if observations else {}
-        capability_result = latest.get("capability_result") or {}
-        if not isinstance(capability_result, dict):
-            capability_result = {}
-        recommendations = capability_result.get("recommendations") or []
-        if not isinstance(recommendations, list):
-            recommendations = []
-        return {
-            "latest": capability_result,
-            "recent": self._runtime_observations(session_id),
-            "recommended_skills": [
-                item for item in recommendations if isinstance(item, dict) and item.get("kind") == "skill"
-            ],
-            "recommended_mcp_servers": [
-                item for item in recommendations if isinstance(item, dict) and item.get("kind") == "mcp_server"
-            ],
-        }
-
-    def _mcp(self) -> dict[str, Any]:
-        if self.mcp_manager is None:
-            return {"live": False, "servers": []}
-        try:
-            servers = [server.to_payload() for server in self.mcp_manager.list_servers()]
-        except Exception as exc:
-            return {"live": True, "servers": [], "error": str(exc)}
-        return {
-            "live": True,
-            "server_count": self.mcp_manager.server_count(),
-            "available_count": self.mcp_manager.available_count(),
-            "servers": servers,
-        }
-
-    def _long_term_memory(self, session_id: str) -> dict[str, Any]:
-        observations = self._runtime_observations(session_id, include_payloads=True)
-        latest_context = (observations[0].get("long_term_memory") if observations else {}) or {}
-        return {
-            "latest_context": latest_context,
-            "versions": self._long_term_memory_versions(),
-            "items": self._long_term_memory_items(),
-            "extractions": self._long_term_memory_extractions(),
-            "turn_usage": self._long_term_memory_turn_usage(session_id),
-        }
-
-    def _long_term_memory_versions(self) -> list[dict[str, Any]]:
-        conn = self._connect(self.memory_db)
-        if conn is None:
-            return []
-        with conn:
-            if not self._table_exists(conn, "long_term_memory_versions"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM long_term_memory_versions
-                ORDER BY committed_at DESC, created_at DESC
-                LIMIT 20
-                """
-            ).fetchall()
-        return [_row_dict(row) for row in rows]
-
-    def _long_term_memory_items(self) -> list[dict[str, Any]]:
-        conn = self._connect(self.memory_db)
-        if conn is None:
-            return []
-        with conn:
-            if not self._table_exists(conn, "long_term_memory_items"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM long_term_memory_items
-                ORDER BY updated_at DESC
-                LIMIT 100
-                """
-            ).fetchall()
-        return [_row_dict(row, parse_json_fields={"evidence_json", "metadata_json"}) for row in rows]
-
-    def _long_term_memory_extractions(self) -> list[dict[str, Any]]:
-        conn = self._connect(self.memory_db)
-        if conn is None:
-            return []
-        with conn:
-            if not self._table_exists(conn, "long_term_memory_extractions"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM long_term_memory_extractions
-                ORDER BY updated_at DESC
-                LIMIT 50
-                """
-            ).fetchall()
-        return [_row_dict(row) for row in rows]
-
-    def _long_term_memory_turn_usage(self, session_id: str) -> list[dict[str, Any]]:
-        conn = self._connect(self.memory_db)
-        if conn is None:
-            return []
-        with conn:
-            if not self._table_exists(conn, "long_term_memory_turn_usage"):
-                return []
-            rows = conn.execute(
-                """
-                SELECT *
-                FROM long_term_memory_turn_usage
-                WHERE session_id = ?
-                ORDER BY created_at DESC
-                LIMIT 50
-                """,
-                (session_id,),
-            ).fetchall()
-        return [
-            _row_dict(
-                row,
-                parse_json_fields={
-                    "exposed_workflow_json",
-                    "exposed_skill_json",
-                    "used_skill_json",
-                    "prompted_json",
-                },
-            )
-            for row in rows
-        ]
 
     def _context_snapshots(self, session_id: str) -> list[dict[str, Any]]:
         conn = self._connect(self.memory_db)
@@ -619,127 +431,8 @@ class DashboardDataProvider:
         return any(part in skip for part in path.relative_to(self.workspace_root).parts)
 
 
-class DashboardEventHub:
-    def __init__(self) -> None:
-        self._subscribers: list[queue.Queue] = []
-        self._lock = threading.Lock()
-
-    def subscribe(self) -> queue.Queue:
-        subscriber: queue.Queue = queue.Queue()
-        with self._lock:
-            self._subscribers.append(subscriber)
-        return subscriber
-
-    def unsubscribe(self, subscriber: queue.Queue) -> None:
-        with self._lock:
-            if subscriber in self._subscribers:
-                self._subscribers.remove(subscriber)
-
-    def publish(self, event: str, payload: dict[str, Any]) -> None:
-        message = {"event": event, "payload": payload, "created_at": time.time()}
-        with self._lock:
-            subscribers = list(self._subscribers)
-        for subscriber in subscribers:
-            subscriber.put(message)
-
-
-class DashboardAgentBridge:
-    def __init__(
-        self,
-        *,
-        loop: asyncio.AbstractEventLoop,
-        api_client: Any,
-        registry: Any,
-        tools: list[dict],
-        get_messages: Any,
-        set_messages: Any,
-        skill_runtime: Any | None = None,
-        core_tool_schemas: list[dict] | None = None,
-        workspace_tracker: Any | None = None,
-        memory_runtime: Any | None = None,
-        file_state_cache: Any | None = None,
-        capability_router: Any | None = None,
-        long_term_memory_runtime: Any | None = None,
-        event_hub: DashboardEventHub | None = None,
-    ) -> None:
-        self.loop = loop
-        self.api_client = api_client
-        self.registry = registry
-        self.tools = tools
-        self.get_messages = get_messages
-        self.set_messages = set_messages
-        self.skill_runtime = skill_runtime
-        self.core_tool_schemas = core_tool_schemas
-        self.workspace_tracker = workspace_tracker
-        self.memory_runtime = memory_runtime
-        self.file_state_cache = file_state_cache
-        self.capability_router = capability_router
-        self.long_term_memory_runtime = long_term_memory_runtime
-        self.event_hub = event_hub
-        self._busy_lock = threading.Lock()
-
-    def submit(self, message: str) -> dict[str, Any]:
-        prompt = message.strip()
-        if not prompt:
-            return {"ok": False, "error": "empty_message"}
-        if not self._busy_lock.acquire(blocking=False):
-            return {"ok": False, "error": "busy"}
-        future = asyncio.run_coroutine_threadsafe(self._run(prompt), self.loop)
-        try:
-            return future.result()
-        finally:
-            self._busy_lock.release()
-
-    async def _run(self, prompt: str) -> dict[str, Any]:
-        from mycodingagent.llm_runtime import client as agent_client
-
-        self._publish("chat_started", {"message": prompt})
-        try:
-            previous_messages = self.get_messages() if callable(self.get_messages) else []
-            answer, updated_messages = await agent_client.ask_deepseek(
-                self.api_client,
-                prompt,
-                self.registry,
-                self.tools,
-                previous_messages or None,
-                skill_runtime=self.skill_runtime,
-                core_tool_schemas=self.core_tool_schemas,
-                workspace_tracker=self.workspace_tracker,
-                memory_runtime=self.memory_runtime,
-                capability_router=self.capability_router,
-                long_term_memory_runtime=self.long_term_memory_runtime,
-            )
-            if self.memory_runtime is not None:
-                rollover = await self.memory_runtime.on_turn_completed(
-                    messages=updated_messages,
-                    skill_runtime=self.skill_runtime,
-                    file_state_cache=self.file_state_cache,
-                    workspace_tracker=self.workspace_tracker,
-                    system_prompt_source=updated_messages[0] if updated_messages else None,
-                    tools=self.tools,
-                    current_prompt=prompt,
-                )
-                if rollover.performed and rollover.new_messages is not None:
-                    updated_messages = rollover.new_messages
-            if callable(self.set_messages):
-                self.set_messages(updated_messages)
-            payload = {"ok": True, "answer": answer, "message_count": len(updated_messages)}
-            self._publish("chat_completed", payload)
-            return payload
-        except Exception as exc:
-            payload = {"ok": False, "error": str(exc)}
-            self._publish("chat_error", payload)
-            return payload
-
-    def _publish(self, event: str, payload: dict[str, Any]) -> None:
-        if self.event_hub is not None:
-            self.event_hub.publish(event, payload)
-
-
 class DashboardHandler(BaseHTTPRequestHandler):
     provider: DashboardDataProvider
-    bridge: DashboardAgentBridge | None = None
-    event_hub: DashboardEventHub | None = None
 
     def do_GET(self) -> None:  # noqa: N802
         parsed = urlparse(self.path)
@@ -754,23 +447,7 @@ class DashboardHandler(BaseHTTPRequestHandler):
             path = (qs.get("path") or [""])[0]
             self._send_json(self.provider.file_payload(path))
             return
-        if parsed.path == "/api/events":
-            self._send_events()
-            return
         self._send_static(parsed.path)
-
-    def do_POST(self) -> None:  # noqa: N802
-        parsed = urlparse(self.path)
-        if parsed.path != "/api/chat":
-            self._send_json({"ok": False, "error": "not_found"}, status=404)
-            return
-        if self.bridge is None:
-            self._send_json({"ok": False, "error": "chat_unavailable"}, status=503)
-            return
-        payload = self._read_json_body()
-        message = str(payload.get("message") or "")
-        result = self.bridge.submit(message)
-        self._send_json(result, status=200 if result.get("ok") else 409 if result.get("error") == "busy" else 400)
 
     def log_message(self, format: str, *args: Any) -> None:
         return
@@ -783,44 +460,6 @@ class DashboardHandler(BaseHTTPRequestHandler):
         self.send_header("Content-Length", str(len(raw)))
         self.end_headers()
         self.wfile.write(raw)
-
-    def _send_events(self) -> None:
-        if self.event_hub is None:
-            self._send_json({"ok": False, "error": "events_unavailable"}, status=503)
-            return
-        subscriber = self.event_hub.subscribe()
-        self.send_response(200)
-        self.send_header("Content-Type", "text/event-stream; charset=utf-8")
-        self.send_header("Cache-Control", "no-store")
-        self.send_header("Connection", "keep-alive")
-        self.end_headers()
-        try:
-            while True:
-                try:
-                    message = subscriber.get(timeout=15)
-                except queue.Empty:
-                    message = {"event": "heartbeat", "payload": {}, "created_at": time.time()}
-                raw = (
-                    f"event: {message['event']}\n"
-                    f"data: {json.dumps(message, ensure_ascii=False, default=str)}\n\n"
-                ).encode("utf-8")
-                self.wfile.write(raw)
-                self.wfile.flush()
-        except (BrokenPipeError, ConnectionResetError):
-            return
-        finally:
-            self.event_hub.unsubscribe(subscriber)
-
-    def _read_json_body(self) -> dict[str, Any]:
-        length = int(self.headers.get("Content-Length") or "0")
-        if length <= 0:
-            return {}
-        raw = self.rfile.read(length)
-        try:
-            payload = json.loads(raw.decode("utf-8"))
-        except (UnicodeDecodeError, json.JSONDecodeError):
-            return {}
-        return payload if isinstance(payload, dict) else {}
 
     def _send_static(self, request_path: str) -> None:
         relative = "index.html" if request_path in {"", "/"} else request_path.lstrip("/")
@@ -870,23 +509,14 @@ def build_server(
     multi_agent_db: Path | str | None = None,
     skill_lrfu_db: Path | str | None = None,
     workspace_root: Path | str | None = None,
-    mcp_manager: Any | None = None,
-    bridge: DashboardAgentBridge | None = None,
-    event_hub: DashboardEventHub | None = None,
 ) -> ThreadingHTTPServer:
-    event_hub = event_hub or DashboardEventHub()
     provider = DashboardDataProvider(
         memory_db=memory_db,
         multi_agent_db=multi_agent_db,
         skill_lrfu_db=skill_lrfu_db,
         workspace_root=workspace_root,
-        mcp_manager=mcp_manager,
     )
-    handler = type(
-        "BoundDashboardHandler",
-        (DashboardHandler,),
-        {"provider": provider, "bridge": bridge, "event_hub": event_hub},
-    )
+    handler = type("BoundDashboardHandler", (DashboardHandler,), {"provider": provider})
     return ThreadingHTTPServer((host, port), handler)
 
 
