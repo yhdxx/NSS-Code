@@ -58,6 +58,21 @@ def test_dashboard_state_reads_runtime_tables(tmp_path):
         tools_hash="model-tools",
         metadata={"message_count": 1, "tool_count": 1},
     )
+    memory_store.save_runtime_observation(
+        observation_id="obs1",
+        session_id="s1",
+        request_index=1,
+        user_prompt="hello",
+        context_mode="raw",
+        capability_result={
+            "recommendations": [
+                {"kind": "skill", "name": "skill_frontend", "score": 0.9},
+                {"kind": "mcp_server", "name": "github", "score": 0.8},
+            ]
+        },
+        long_term_memory={"memories": [{"memory_type": "project_fact", "content": "uses dashboard"}]},
+        metadata={"tool_count": 7},
+    )
     with sqlite3.connect(memory_db) as conn:
         conn.execute(
             """
@@ -99,6 +114,11 @@ def test_dashboard_state_reads_runtime_tables(tmp_path):
     assert state["model_context"]["latest_messages"][0]["content"] == "<RUNTIME_CONTEXT>{}</RUNTIME_CONTEXT>"
     assert state["model_context"]["requests"][0]["tools"][0]["function"]["name"] == "ReadFile"
     assert state["token_usage"][0]["metadata_json"]["runtime_context_hash"] == "ctx"
+    assert state["capabilities"]["recommended_skills"][0]["name"] == "skill_frontend"
+    assert state["capabilities"]["recommended_mcp_servers"][0]["name"] == "github"
+    assert state["capabilities"]["recent"][0]["tool_count"] == 7
+    assert state["capabilities"]["recent"][0]["memory_item_count"] == 1
+    assert "capability_result" not in state["capabilities"]["recent"][0]
     assert state["multi_agent_runs"][0]["scheduled_tasks"]["task1"]["status"] == "passed"
     assert state["lrfu"]["user_skill_lrfu"][0]["skill_name"] == "skill_frontend"
     assert state["project"]["files"][0]["path"] == "app.py"

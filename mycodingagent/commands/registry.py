@@ -15,6 +15,12 @@ class CommandContext:
     api_client: Any = None
     multi_agent_store: Any = None
     long_term_memory_runtime: Any = None
+    capability_router: Any = None
+    mcp_manager: Any = None
+    tools: list[dict] | None = None
+    core_tool_schemas: list[dict] | None = None
+    get_messages: Callable[[], list[dict]] | None = None
+    set_messages: Callable[[list[dict]], None] | None = None
 
 
 @dataclass

@@ -169,6 +169,13 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
     mcp_user_rounds = 0
 
+    def get_messages() -> list[dict]:
+        return messages
+
+    def set_messages(new_messages: list[dict]) -> None:
+        nonlocal messages
+        messages = new_messages
+
     try:  # 开始可能抛出异常的保护代码块。
         while True:  # 在条件满足时持续循环。
             if memory_runtime is not None:
@@ -202,6 +209,12 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     api_client=api_client,
                     multi_agent_store=multi_agent_store,
                     long_term_memory_runtime=long_term_memory_runtime,
+                    capability_router=capability_router,
+                    mcp_manager=mcp_manager,
+                    tools=tools,
+                    core_tool_schemas=core_tool_schemas,
+                    get_messages=get_messages,
+                    set_messages=set_messages,
                 ),
             )
             if command_result.handled:

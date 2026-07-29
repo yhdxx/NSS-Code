@@ -3,181 +3,146 @@
 <head>
   <meta charset="utf-8">
   <meta name="viewport" content="width=device-width, initial-scale=1">
-  <title>myCodingAgent Runtime Dashboard</title>
+  <title>myCodingAgent Console</title>
   <style>
     :root {
       color-scheme: light;
-      --bg: #f6f7f9;
+      --bg: #eef2f7;
       --panel: #ffffff;
-      --line: #d9dee7;
-      --text: #17202a;
-      --muted: #697586;
+      --panel2: #f8fafc;
+      --line: #d7dee9;
+      --text: #111827;
+      --muted: #667085;
       --accent: #0f766e;
-      --accent-soft: #d9f3ee;
-      --danger: #b42318;
+      --accent2: #2563eb;
+      --soft: #e7f5f2;
+      --warn: #b54708;
+      --bad: #b42318;
       --ok: #067647;
-      --code: #0b1220;
+      --code: #101828;
+      --shadow: 0 16px 40px rgba(15, 23, 42, .08);
     }
     * { box-sizing: border-box; }
-    body {
-      margin: 0;
-      font-family: -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif;
-      background: var(--bg);
-      color: var(--text);
-    }
-    header {
-      display: flex;
-      align-items: center;
-      justify-content: space-between;
-      gap: 16px;
-      padding: 14px 20px;
-      border-bottom: 1px solid var(--line);
-      background: var(--panel);
-      position: sticky;
-      top: 0;
-      z-index: 2;
-    }
+    body { margin: 0; font-family: Inter, -apple-system, BlinkMacSystemFont, "Segoe UI", sans-serif; background: var(--bg); color: var(--text); }
+    header { height: 64px; display: flex; align-items: center; justify-content: space-between; padding: 0 18px; background: rgba(255,255,255,.92); border-bottom: 1px solid var(--line); position: sticky; top: 0; z-index: 5; backdrop-filter: blur(10px); }
     h1 { margin: 0; font-size: 18px; letter-spacing: 0; }
+    h2 { margin: 0 0 10px; font-size: 16px; }
+    h3 { margin: 16px 0 8px; font-size: 13px; color: #344054; }
+    h4 { margin: 0 0 6px; font-size: 12px; color: #475467; }
+    button, select, textarea, input { border: 1px solid var(--line); border-radius: 8px; background: #fff; color: var(--text); font: inherit; }
+    button { padding: 8px 11px; cursor: pointer; }
+    button.primary { background: var(--accent); color: #fff; border-color: var(--accent); }
+    button.active { background: var(--text); color: #fff; border-color: var(--text); }
+    textarea { width: 100%; min-height: 92px; padding: 12px; resize: vertical; line-height: 1.45; }
     .toolbar { display: flex; gap: 8px; align-items: center; flex-wrap: wrap; }
-    button, select, input {
-      border: 1px solid var(--line);
-      background: #fff;
-      color: var(--text);
-      border-radius: 6px;
-      padding: 7px 10px;
-      font-size: 13px;
-    }
-    button { cursor: pointer; }
-    button.active { background: var(--accent); color: white; border-color: var(--accent); }
-    main {
-      display: grid;
-      grid-template-columns: 300px 1fr;
-      min-height: calc(100vh - 58px);
-    }
-    aside {
-      border-right: 1px solid var(--line);
-      background: var(--panel);
-      padding: 14px;
-      overflow: auto;
-      max-height: calc(100vh - 58px);
-    }
-    section { padding: 16px; overflow: auto; }
-    .cards {
-      display: grid;
-      grid-template-columns: repeat(4, minmax(160px, 1fr));
-      gap: 12px;
-      margin-bottom: 14px;
-    }
-    .card, .panel {
-      background: var(--panel);
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 12px;
-    }
-    .card b { display: block; font-size: 22px; margin-top: 4px; }
+    .shell { display: grid; grid-template-columns: 280px minmax(420px, 1fr) 460px; gap: 14px; padding: 14px; min-height: calc(100vh - 64px); }
+    .rail, .chat, .inspector { background: var(--panel); border: 1px solid var(--line); border-radius: 12px; box-shadow: var(--shadow); overflow: hidden; }
+    .rail, .inspector { max-height: calc(100vh - 92px); overflow: auto; }
+    .rail { padding: 12px; }
+    .chat { display: grid; grid-template-rows: auto 1fr auto; min-height: calc(100vh - 92px); }
+    .chat-head, .composer, .panel-head { padding: 12px; border-bottom: 1px solid var(--line); background: var(--panel2); }
+    .composer { border-top: 1px solid var(--line); border-bottom: 0; }
+    .feed { padding: 14px; overflow: auto; }
+    .msg { border: 1px solid var(--line); border-radius: 10px; padding: 10px 12px; margin-bottom: 10px; background: #fff; }
+    .msg.user { border-left: 4px solid var(--accent2); }
+    .msg.assistant { border-left: 4px solid var(--accent); }
+    .msg.tool { border-left: 4px solid #7c3aed; }
+    .meta { color: var(--muted); font-size: 12px; }
     .muted { color: var(--muted); font-size: 12px; }
-    .tabs { display: flex; gap: 8px; flex-wrap: wrap; margin-bottom: 12px; }
+    .badge { display: inline-flex; align-items: center; gap: 6px; border: 1px solid var(--line); border-radius: 999px; padding: 3px 8px; font-size: 12px; background: #fff; }
+    .ok { color: var(--ok); font-weight: 700; }
+    .bad { color: var(--bad); font-weight: 700; }
+    .warn { color: var(--warn); font-weight: 700; }
+    .cards { display: grid; grid-template-columns: repeat(2, 1fr); gap: 8px; margin: 10px 0; }
+    .card { border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 10px; }
+    .card b { display: block; font-size: 20px; margin-top: 2px; }
+    .session { border: 1px solid var(--line); border-radius: 10px; padding: 9px; margin-bottom: 8px; background: #fff; cursor: pointer; }
+    .session.selected { background: var(--soft); border-color: var(--accent); }
+    .tabs { display: flex; gap: 6px; padding: 10px; border-bottom: 1px solid var(--line); background: var(--panel2); flex-wrap: wrap; position: sticky; top: 0; z-index: 2; }
+    .tabs button { padding: 7px 9px; font-size: 12px; }
+    .panel { padding: 12px; }
     .hidden { display: none; }
-    .list { display: grid; gap: 8px; }
-    .item {
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      padding: 10px;
-      background: #fff;
-    }
-    .item.selected { border-color: var(--accent); background: var(--accent-soft); }
-    .row { display: flex; justify-content: space-between; gap: 10px; align-items: baseline; }
-    pre {
-      background: var(--code);
-      color: #e5e7eb;
-      border-radius: 8px;
-      padding: 12px;
-      overflow: auto;
-      max-height: 55vh;
-      white-space: pre-wrap;
-      word-break: break-word;
-      font-size: 12px;
-      line-height: 1.45;
-    }
-    table {
-      width: 100%;
-      border-collapse: collapse;
-      background: #fff;
-      border: 1px solid var(--line);
-      border-radius: 8px;
-      overflow: hidden;
-    }
-    th, td {
-      border-bottom: 1px solid var(--line);
-      padding: 8px;
-      text-align: left;
-      vertical-align: top;
-      font-size: 13px;
-    }
+    details.item, .item { border: 1px solid var(--line); border-radius: 10px; background: #fff; padding: 10px; margin-bottom: 10px; }
+    summary { cursor: pointer; }
+    pre { background: var(--code); color: #eef2ff; border-radius: 10px; padding: 11px; overflow: auto; max-height: 420px; white-space: pre-wrap; word-break: break-word; font-size: 12px; line-height: 1.45; }
+    table { width: 100%; border-collapse: collapse; border: 1px solid var(--line); border-radius: 10px; overflow: hidden; background: #fff; }
+    th, td { border-bottom: 1px solid var(--line); padding: 8px; text-align: left; vertical-align: top; font-size: 12px; }
     th { background: #eef2f6; }
-    .ok { color: var(--ok); font-weight: 600; }
-    .bad { color: var(--danger); font-weight: 600; }
-    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 12px; }
-    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 12px; }
-    .file-grid { display: grid; grid-template-columns: 360px 1fr; gap: 12px; }
-    .file-list { max-height: 65vh; overflow: auto; }
-    .file-list button { display: block; width: 100%; text-align: left; margin-bottom: 4px; }
-    @media (max-width: 900px) {
-      main { grid-template-columns: 1fr; }
-      aside { max-height: none; border-right: 0; border-bottom: 1px solid var(--line); }
-      .cards, .grid2, .grid3, .file-grid { grid-template-columns: 1fr; }
-    }
+    .grid2 { display: grid; grid-template-columns: 1fr 1fr; gap: 10px; }
+    .grid3 { display: grid; grid-template-columns: repeat(3, 1fr); gap: 10px; }
+    .file-grid { display: grid; grid-template-columns: 210px 1fr; gap: 10px; }
+    .file-list { max-height: 520px; overflow: auto; }
+    .file-list button { width: 100%; text-align: left; margin-bottom: 4px; overflow: hidden; text-overflow: ellipsis; }
+    @media (max-width: 1180px) { .shell { grid-template-columns: 1fr; } .rail, .inspector, .chat { max-height: none; min-height: auto; } .grid2, .grid3, .file-grid { grid-template-columns: 1fr; } }
   </style>
 </head>
 <body>
   <header>
-    <h1>myCodingAgent Runtime Dashboard</h1>
+    <h1>myCodingAgent Console</h1>
     <div class="toolbar">
-      <span id="status" class="muted">loading</span>
+      <span id="status" class="badge">loading</span>
       <select id="sessionSelect"></select>
       <button id="refreshBtn">刷新</button>
-      <button id="autoBtn" class="active">实时轮询</button>
+      <button id="autoBtn" class="active">实时</button>
     </div>
   </header>
-  <main>
-    <aside>
-      <div class="muted">Sessions</div>
-      <div id="sessionList" class="list"></div>
-    </aside>
-    <section>
+  <main class="shell">
+    <aside class="rail">
+      <div class="meta">Workspace</div>
+      <div id="workspace" class="item"></div>
       <div class="cards">
-        <div class="card"><span class="muted">Messages</span><b id="metricMessages">0</b></div>
-        <div class="card"><span class="muted">Turns</span><b id="metricTurns">0</b></div>
-        <div class="card"><span class="muted">Multi-Agent Runs</span><b id="metricRuns">0</b></div>
-        <div class="card"><span class="muted">LRFU Entries</span><b id="metricLrfu">0</b></div>
+        <div class="card"><span class="meta">Messages</span><b id="metricMessages">0</b></div>
+        <div class="card"><span class="meta">Turns</span><b id="metricTurns">0</b></div>
+        <div class="card"><span class="meta">MA Runs</span><b id="metricRuns">0</b></div>
+        <div class="card"><span class="meta">LRFU</span><b id="metricLrfu">0</b></div>
       </div>
-      <div class="tabs">
-        <button data-tab="messages" class="active">完整上下文</button>
-        <button data-tab="model">模型看到的上下文</button>
-        <button data-tab="multi">多智能体工作流</button>
-        <button data-tab="lrfu">LRFU</button>
-        <button data-tab="project">项目文件</button>
-        <button data-tab="raw">Raw JSON</button>
-      </div>
+      <h3>Sessions</h3>
+      <div id="sessionList"></div>
+    </aside>
 
-      <div id="tab-messages" class="panel"></div>
+    <section class="chat">
+      <div class="chat-head">
+        <div class="toolbar"><b>Agent Chat</b><span id="chatState" class="badge">ready</span></div>
+      </div>
+      <div id="feed" class="feed"></div>
+      <div class="composer">
+        <textarea id="promptInput" placeholder="在这里直接和当前 agent 会话沟通；Shift+Enter 换行，Ctrl+Enter 发送"></textarea>
+        <div class="toolbar" style="justify-content: space-between; margin-top: 8px;">
+          <span class="muted">Web Chat 使用当前 CLI agent 的同一套 runtime 和上下文。</span>
+          <button id="sendBtn" class="primary">发送</button>
+        </div>
+      </div>
+    </section>
+
+    <aside class="inspector">
+      <div class="tabs">
+        <button data-tab="overview" class="active">总览</button>
+        <button data-tab="model">模型上下文</button>
+        <button data-tab="capabilities">Skill/MCP</button>
+        <button data-tab="memory">长期记忆</button>
+        <button data-tab="multi">多智能体</button>
+        <button data-tab="lrfu">LRFU</button>
+        <button data-tab="project">文件</button>
+      </div>
+      <div id="tab-overview" class="panel"></div>
       <div id="tab-model" class="panel hidden"></div>
+      <div id="tab-capabilities" class="panel hidden"></div>
+      <div id="tab-memory" class="panel hidden"></div>
       <div id="tab-multi" class="panel hidden"></div>
       <div id="tab-lrfu" class="panel hidden"></div>
       <div id="tab-project" class="panel hidden"></div>
-      <div id="tab-raw" class="panel hidden"><pre id="rawJson"></pre></div>
-    </section>
+    </aside>
   </main>
   <script>
     let state = null;
     let selectedSession = "";
     let auto = true;
     let timer = null;
-
     const $ = (id) => document.getElementById(id);
     const esc = (value) => String(value ?? "").replace(/[&<>"']/g, (m) => ({'&':'&amp;','<':'&lt;','>':'&gt;','"':'&quot;',"'":'&#39;'}[m]));
     const pretty = (value) => JSON.stringify(value, null, 2);
     const timeText = (ts) => ts ? new Date(ts * 1000).toLocaleString() : "";
+    const latestRoute = () => state.capabilities?.latest || {};
 
     async function loadState() {
       const qs = selectedSession ? `?session_id=${encodeURIComponent(selectedSession)}` : "";
@@ -189,193 +154,92 @@
 
     function render() {
       $("status").textContent = `updated ${new Date((state.generated_at || Date.now()/1000) * 1000).toLocaleTimeString()}`;
+      $("workspace").innerHTML = `<b>${esc(state.paths.workspace_root)}</b><div class="muted">memory=${esc(state.paths.memory_db)}</div>`;
       $("metricMessages").textContent = state.messages.length;
       $("metricTurns").textContent = state.turns.length;
       $("metricRuns").textContent = state.multi_agent_runs.length;
       $("metricLrfu").textContent = state.lrfu.user_skill_lrfu.length;
-      renderSessions();
-      renderMessages();
-      renderModel();
-      renderMulti();
-      renderLrfu();
-      renderProject();
-      $("rawJson").textContent = pretty(state);
+      renderSessions(); renderFeed(); renderOverview(); renderModel(); renderCapabilities(); renderMemory(); renderMulti(); renderLrfu(); renderProject();
     }
 
     function renderSessions() {
-      const select = $("sessionSelect");
-      select.innerHTML = state.sessions.map(s => `<option value="${esc(s.session_id)}" ${s.session_id === selectedSession ? "selected" : ""}>${esc(s.session_id.slice(0, 8))} · ${esc(s.status)} · ${esc(s.model)}</option>`).join("");
-      $("sessionList").innerHTML = state.sessions.map(s => `
-        <div class="item ${s.session_id === selectedSession ? "selected" : ""}" onclick="selectedSession='${esc(s.session_id)}'; loadState();">
-          <div class="row"><b>${esc(s.session_id.slice(0, 12))}</b><span>${esc(s.status)}</span></div>
-          <div class="muted">${esc(s.workspace_label || s.workspace_root || "")}</div>
-          <div class="muted">${timeText(s.last_accessed_at || s.updated_at)}</div>
-        </div>
-      `).join("");
+      $("sessionSelect").innerHTML = state.sessions.map(s => `<option value="${esc(s.session_id)}" ${s.session_id === selectedSession ? "selected" : ""}>${esc(s.session_id.slice(0, 8))} · ${esc(s.status)} · ${esc(s.model)}</option>`).join("");
+      $("sessionList").innerHTML = state.sessions.map(s => `<div class="session ${s.session_id === selectedSession ? "selected" : ""}" onclick="selectedSession='${esc(s.session_id)}'; loadState();"><b>${esc(s.session_id.slice(0, 12))}</b><div class="muted">${esc(s.workspace_label || s.workspace_root || "")}</div><div class="muted">${timeText(s.last_accessed_at || s.updated_at)}</div></div>`).join("");
     }
 
-    function renderMessages() {
-      $("tab-messages").innerHTML = `
-        <h2>每轮完整上下文</h2>
-        <p class="muted">每个 turn 展示该轮 user/assistant/tool 消息；消息内容来自 session_messages 持久化记录。</p>
-        ${state.turns.map(t => `
-          <details class="item" open>
-            <summary><b>Turn ${t.turn_index}</b> · messages ${t.start_message_index}-${t.end_message_index}</summary>
-            ${t.messages.map(m => `
-              <div class="item">
-                <div class="row"><b>${esc(m.role)} #${esc(m.message_index)}</b><span class="muted">${timeText(m.created_at)}</span></div>
-                <pre>${esc(pretty(m))}</pre>
-              </div>
-            `).join("")}
-          </details>
-        `).join("")}
-      `;
+    function renderFeed() {
+      $("feed").innerHTML = state.messages.filter(m => m.role !== "system").map(m => `<div class="msg ${esc(m.role)}"><div class="meta">${esc(m.role)} #${esc(m.message_index ?? "")} ${timeText(m.created_at)}</div><div>${messageBody(m)}</div></div>`).join("") || `<p class="muted">还没有会话消息。</p>`;
+      $("feed").scrollTop = $("feed").scrollHeight;
+    }
+    function messageBody(m) {
+      if (typeof m.content === "string") return `<pre>${esc(m.content)}</pre>`;
+      return `<pre>${esc(pretty(m))}</pre>`;
+    }
+
+    function renderOverview() {
+      const route = latestRoute();
+      const lastRequest = (state.capabilities?.recent || [])[0] || {};
+      $("tab-overview").innerHTML = `<h2>运行总览</h2><div class="grid2"><div class="item"><b>当前模型输入状态</b><pre>${esc(pretty({
+        context_mode: lastRequest.context_mode || "",
+        prompt: lastRequest.user_prompt || "",
+        tool_count: lastRequest.tool_count || 0,
+        skill_count: lastRequest.recommended_skill_count || 0,
+        mcp_count: lastRequest.recommended_mcp_count || 0,
+        memory_count: lastRequest.memory_item_count || 0
+      }))}</pre></div><div class="item"><b>Token Usage</b>${table(state.token_usage.slice(-8), ["request_index","prompt_tokens","completion_tokens","total_tokens"])}</div></div><h3>能力路由结果</h3><pre>${esc(pretty({
+        recommendations: route.recommendations || [],
+        generated_at: route.generated_at || ""
+      }))}</pre>`;
     }
 
     function renderModel() {
       const ctx = state.model_context;
-      $("tab-model").innerHTML = `
-        <h2>模型看到的上下文</h2>
-        <p class="muted">${esc(ctx.note)}</p>
-        <h3>Model Requests</h3>
-        ${modelRequestList(ctx.requests || [])}
-        <div class="grid2">
-          <div>
-            <h3>Latest View · ${esc(ctx.kind)}</h3>
-            <pre>${esc(pretty(ctx.latest_messages))}</pre>
-          </div>
-          <div>
-            <h3>Token Usage / Prompt Hash</h3>
-            ${table(state.token_usage, ["request_index","prompt_tokens","completion_tokens","total_tokens","prompt_hash","tools_hash"])}
-          </div>
-        </div>
-        <h3>Context Epochs</h3>
-        ${table(state.context_epochs, ["status","trigger","start_message_index","end_message_index","summary","created_at"])}
-        <h3>Recoverable Contexts</h3>
-        ${table(state.recoverable_contexts, ["context_id","tool_name","short_summary","content_length","token_count","lifecycle_state"])}
-      `;
+      $("tab-model").innerHTML = `<h2>模型实际上下文</h2><p class="muted">${esc(ctx.note)}</p><h3>Model Requests</h3>${modelRequestList(ctx.requests || [])}<h3>Context Epochs</h3>${table(state.context_epochs, ["status","trigger","start_message_index","end_message_index","summary","created_at"])}<h3>Recoverable Contexts</h3>${table(state.recoverable_contexts, ["context_id","tool_name","short_summary","content_length","token_count","lifecycle_state"])}`;
     }
-
     function modelRequestList(requests) {
-      if (!requests || requests.length === 0) return `<p class="muted">No persisted model requests.</p>`;
-      return requests.map(req => `
-        <details class="item">
-          <summary><b>Request ${esc(req.request_index)}</b> · messages=${esc(req.model_messages.length)} · tools=${esc(req.tools.length)} · ${esc(req.prompt_hash)}</summary>
-          <div class="grid3">
-            <div><h4>Model Messages</h4><pre>${esc(pretty(req.model_messages))}</pre></div>
-            <div><h4>Tools</h4><pre>${esc(pretty(req.tools.map(toolSummary)))}</pre></div>
-            <div><h4>Metadata</h4><pre>${esc(pretty({context_id: req.context_id, created_at: timeText(req.created_at), prompt_hash: req.prompt_hash, tools_hash: req.tools_hash, metadata: req.metadata}))}</pre></div>
-          </div>
-        </details>
-      `).join("");
+      if (!requests.length) return `<p class="muted">No persisted model requests.</p>`;
+      return requests.map(req => `<details class="item"><summary><b>Request ${esc(req.request_index)}</b> · messages=${esc(req.model_messages.length)} · tools=${esc(req.tools.length)} · ${esc(req.prompt_hash)}</summary><div class="grid3"><div><h4>Messages</h4><pre>${esc(pretty(req.model_messages))}</pre></div><div><h4>Tools</h4><pre>${esc(pretty(req.tools.map(toolSummary)))}</pre></div><div><h4>Metadata</h4><pre>${esc(pretty({context_id:req.context_id, created_at:timeText(req.created_at), prompt_hash:req.prompt_hash, tools_hash:req.tools_hash, metadata:req.metadata}))}</pre></div></div></details>`).join("");
     }
+    function toolSummary(tool) { const fn = tool.function || {}; return {type: tool.type, name: fn.name || tool.name || "", description: fn.description || tool.description || "", parameters: fn.parameters || tool.parameters || {}}; }
 
-    function toolSummary(tool) {
-      const fn = tool.function || {};
-      return {
-        type: tool.type,
-        name: fn.name || tool.name || "",
-        description: fn.description || tool.description || "",
-        parameters: fn.parameters || tool.parameters || {},
-      };
+    function renderCapabilities() {
+      $("tab-capabilities").innerHTML = `<h2>Skill / MCP</h2><div class="grid2"><div><h3>检索到的 Skill</h3>${cardList(state.capabilities.recommended_skills || [])}</div><div><h3>检索到的 MCP Server</h3>${cardList(state.capabilities.recommended_mcp_servers || [])}</div></div><h3>MCP Servers</h3>${table(state.mcp.servers || [], ["name","available","tools_count","resources_count","prompts_count","error"])}<h3>最近路由摘要</h3>${table(state.capabilities.recent || [], ["request_index","context_mode","tool_count","recommended_skill_count","recommended_mcp_count","created_at"])}`;
+    }
+    function cardList(items) { return items.length ? items.map(i => `<div class="item"><b>${esc(i.name || i.skill_name)}</b><div class="muted">score=${esc(i.score)} · ${esc((i.reasons || []).join(", "))}</div><div>${esc(i.description || "")}</div></div>`).join("") : `<p class="muted">No rows.</p>`; }
+
+    function renderMemory() {
+      const mem = state.long_term_memory || {};
+      $("tab-memory").innerHTML = `<h2>长期记忆</h2><h3>当前轮注入记忆</h3><pre>${esc(pretty(mem.latest_context || {}))}</pre><h3>Memory Items</h3>${table(mem.items || [], ["memory_type","scope","content","confidence","status","updated_at"])}<h3>Versions</h3>${table(mem.versions || [], ["version_id","status","workspace_label","source_session_id","committed_at"])}<h3>Extractions</h3>${table(mem.extractions || [], ["extraction_id","session_id","status","source_message_count","error_text","updated_at"])}<h3>Turn Usage</h3>${table(mem.turn_usage || [], ["turn_start_index","turn_end_index","success","exposed_skill_json","used_skill_json","created_at"])}`;
     }
 
     function renderMulti() {
-      $("tab-multi").innerHTML = `
-        <h2>多智能体工作流</h2>
-        ${state.multi_agent_runs.map(r => `
-          <details class="item" open>
-            <summary><b>${esc(r.run_id.slice(0, 12))}</b> · <span class="${r.status === "completed" ? "ok" : r.status === "failed" ? "bad" : ""}">${esc(r.status)}</span> · ${esc(r.task).slice(0, 120)}</summary>
-            <div class="grid2">
-              <div><h3>Plan</h3><pre>${esc(pretty(r.approved_plan.length ? r.approved_plan : r.submitted_plan))}</pre></div>
-              <div><h3>Scheduled Tasks</h3><pre>${esc(pretty(r.scheduled_tasks))}</pre></div>
-            </div>
-            <h3>Rounds / Tool Calls</h3>
-            <div class="grid2">
-              <pre>${esc(pretty(r.subagent_rounds_used))}</pre>
-              <pre>${esc(pretty(r.subagent_tool_calls_used))}</pre>
-            </div>
-            <h3>Events</h3><pre>${esc(pretty(r.events))}</pre>
-            <h3>Sub-agent Messages</h3><pre>${esc(pretty(r.subagent_messages))}</pre>
-          </details>
-        `).join("") || `<p class="muted">No multi-agent runs found.</p>`}
-      `;
+      $("tab-multi").innerHTML = `<h2>多智能体工作流</h2>${state.multi_agent_runs.map(r => `<details class="item" open><summary><b>${esc(r.run_id.slice(0,12))}</b> · <span class="${r.status === "completed" ? "ok" : r.status === "failed" ? "bad" : "warn"}">${esc(r.status)}</span> · ${esc(r.task).slice(0,120)}</summary><div class="grid2"><div><h3>Plan</h3><pre>${esc(pretty(r.approved_plan.length ? r.approved_plan : r.submitted_plan))}</pre></div><div><h3>Scheduled Tasks</h3><pre>${esc(pretty(r.scheduled_tasks))}</pre></div></div><h3>Events</h3><pre>${esc(pretty(r.events))}</pre><h3>Sub-agent Messages</h3><pre>${esc(pretty(r.subagent_messages))}</pre></details>`).join("") || `<p class="muted">No multi-agent runs found.</p>`}`;
     }
 
-    function renderLrfu() {
-      $("tab-lrfu").innerHTML = `
-        <h2>用户和会话 LRFU</h2>
-        <div class="grid2">
-          <div>
-            <h3>User LRFU</h3>
-            ${table(state.lrfu.user_skill_lrfu, ["user_id","skill_name","score","last_update_round"])}
-          </div>
-          <div>
-            <h3>Session Snapshot</h3>
-            <pre>${esc(pretty(state.lrfu.session_snapshot))}</pre>
-          </div>
-        </div>
-        <h3>Pending Sessions</h3>
-        ${table(state.lrfu.pending_sessions, ["user_id","session_id","base_user_skill_call_round","session_skill_call_round","committed","updated_at"])}
-        <h3>Pending Updates</h3>
-        ${table(state.lrfu.pending_updates, ["user_id","session_id","skill_name","call_count","session_lrfu_score","committed","updated_at"])}
-      `;
+    function renderLrfu() { $("tab-lrfu").innerHTML = `<h2>LRFU</h2><div class="grid2"><div><h3>User LRFU</h3>${table(state.lrfu.user_skill_lrfu, ["user_id","skill_name","score","last_update_round"])}</div><div><h3>Session Snapshot</h3><pre>${esc(pretty(state.lrfu.session_snapshot))}</pre></div></div><h3>Pending Sessions</h3>${table(state.lrfu.pending_sessions, ["user_id","session_id","base_user_skill_call_round","session_skill_call_round","committed","updated_at"])}<h3>Pending Updates</h3>${table(state.lrfu.pending_updates, ["user_id","session_id","skill_name","call_count","session_lrfu_score","committed","updated_at"])}`; }
+
+    function renderProject() { $("tab-project").innerHTML = `<h2>项目文件</h2><p class="muted">Workspace: ${esc(state.paths.workspace_root)} · omitted=${esc(state.project.omitted)}</p><div class="file-grid"><div class="file-list">${state.project.files.map(f => `<button onclick="loadFile('${esc(f.path)}')">${esc(f.path)} <span class="muted">(${f.size})</span></button>`).join("")}</div><div><pre id="fileContent">选择左侧文件查看内容</pre></div></div>`; }
+    async function loadFile(path) { const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`, {cache:"no-store"}); const payload = await res.json(); $("fileContent").textContent = payload.error ? pretty(payload) : payload.content; }
+
+    function table(rows, keys) { if (!rows || !rows.length) return `<p class="muted">No rows.</p>`; return `<table><thead><tr>${keys.map(k => `<th>${esc(k)}</th>`).join("")}</tr></thead><tbody>${rows.map(row => `<tr>${keys.map(k => `<td>${esc(formatCell(row[k], k))}</td>`).join("")}</tr>`).join("")}</tbody></table>`; }
+    function formatCell(value, key) { if (key.endsWith("_at") && typeof value === "number") return timeText(value); if (typeof value === "object") return pretty(value); return value ?? ""; }
+
+    async function sendMessage() {
+      const input = $("promptInput"); const message = input.value.trim(); if (!message) return;
+      $("sendBtn").disabled = true; $("chatState").textContent = "running";
+      try { const res = await fetch('/api/chat', {method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({message})}); const payload = await res.json(); if (!payload.ok) alert(payload.error || 'chat failed'); input.value = ''; await loadState(); }
+      finally { $("sendBtn").disabled = false; $("chatState").textContent = "ready"; }
     }
 
-    function renderProject() {
-      $("tab-project").innerHTML = `
-        <h2>项目文件</h2>
-        <p class="muted">Workspace: ${esc(state.paths.workspace_root)} · omitted=${esc(state.project.omitted)}</p>
-        <div class="file-grid">
-          <div class="file-list">
-            ${state.project.files.map(f => `<button onclick="loadFile('${esc(f.path)}')">${esc(f.path)} <span class="muted">(${f.size})</span></button>`).join("")}
-          </div>
-          <div><pre id="fileContent">选择左侧文件查看内容</pre></div>
-        </div>
-      `;
-    }
-
-    async function loadFile(path) {
-      const res = await fetch(`/api/file?path=${encodeURIComponent(path)}`, {cache: "no-store"});
-      const payload = await res.json();
-      $("fileContent").textContent = payload.error ? pretty(payload) : payload.content;
-    }
-
-    function table(rows, keys) {
-      if (!rows || rows.length === 0) return `<p class="muted">No rows.</p>`;
-      return `<table><thead><tr>${keys.map(k => `<th>${esc(k)}</th>`).join("")}</tr></thead><tbody>${
-        rows.map(row => `<tr>${keys.map(k => `<td>${esc(formatCell(row[k], k))}</td>`).join("")}</tr>`).join("")
-      }</tbody></table>`;
-    }
-
-    function formatCell(value, key) {
-      if (key.endsWith("_at") && typeof value === "number") return timeText(value);
-      if (typeof value === "object") return pretty(value);
-      return value ?? "";
-    }
-
-    document.querySelectorAll(".tabs button").forEach(btn => {
-      btn.addEventListener("click", () => {
-        document.querySelectorAll(".tabs button").forEach(b => b.classList.remove("active"));
-        document.querySelectorAll("[id^='tab-']").forEach(p => p.classList.add("hidden"));
-        btn.classList.add("active");
-        $(`tab-${btn.dataset.tab}`).classList.remove("hidden");
-      });
-    });
-    $("sessionSelect").addEventListener("change", (e) => { selectedSession = e.target.value; loadState(); });
+    document.querySelectorAll('.tabs button').forEach(btn => btn.addEventListener('click', () => { document.querySelectorAll('.tabs button').forEach(b => b.classList.remove('active')); document.querySelectorAll('[id^="tab-"]').forEach(p => p.classList.add('hidden')); btn.classList.add('active'); $(`tab-${btn.dataset.tab}`).classList.remove('hidden'); }));
+    $("sessionSelect").addEventListener("change", e => { selectedSession = e.target.value; loadState(); });
     $("refreshBtn").addEventListener("click", loadState);
-    $("autoBtn").addEventListener("click", () => {
-      auto = !auto;
-      $("autoBtn").classList.toggle("active", auto);
-      if (auto) startTimer(); else clearInterval(timer);
-    });
-
-    function startTimer() {
-      clearInterval(timer);
-      timer = setInterval(() => { if (auto) loadState().catch(console.error); }, 2000);
-    }
-    loadState().catch(err => { $("status").textContent = err.message; });
-    startTimer();
+    $("autoBtn").addEventListener("click", () => { auto = !auto; $("autoBtn").classList.toggle("active", auto); if (auto) startTimer(); else clearInterval(timer); });
+    $("sendBtn").addEventListener("click", sendMessage);
+    $("promptInput").addEventListener("keydown", e => { if (e.key === 'Enter' && e.ctrlKey) sendMessage(); });
+    function startTimer() { clearInterval(timer); timer = setInterval(() => { if (auto) loadState().catch(console.error); }, 2000); }
+    try { const events = new EventSource('/api/events'); events.onmessage = () => loadState().catch(console.error); ['chat_started','chat_completed','chat_error'].forEach(name => events.addEventListener(name, () => loadState().catch(console.error))); } catch (_) {}
+    loadState().catch(err => { $("status").textContent = err.message; }); startTimer();
   </script>
 </body>
 </html>
