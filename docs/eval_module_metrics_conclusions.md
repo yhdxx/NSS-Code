@@ -1,6 +1,6 @@
 # myCodingAgent 有效性测试说明
 
-生成时间：2026-07-27  
+生成时间：2026-07-28  
 测试原则：先生成测试集，再执行真实组件/真实 API 测试，最后根据结果生成结论。  
 结果来源：`tests/eval/datasets/*.jsonl` 与 `tests/eval/results/*.jsonl`。
 
@@ -14,7 +14,7 @@
 | Long-Term Memory Workflow 长期记忆 | 6 个 workflow 场景，已抽样执行 3 个 | 已执行小样本 | 注入 workflow 记忆后准确率 100%，无记忆基线 0% |
 | BatchRecoverContext 恢复工具 | 10 条恢复测试集，已抽样执行 3 条 | 已执行小样本 | 恢复工具调用率 100%，答案准确率 100% |
 | 500+ Skill Router | 520 个 Skill，100 条 query | 已执行 | Recall@1/3/5 与 MRR 均为 100% |
-| Multi-Agent 多智能体 | 24 个代码任务，48 次真实执行 | 已执行 | direct 与 multi-agent 准确率均为 100%，但多智能体耗时和工具调用成本显著更高 |
+| Multi-Agent 多智能体 | 30 个代码任务；本轮新增并复测 6 个 large 任务，12 次真实执行 | 已执行 large 复测 | direct 准确率 100%，multi-agent 准确率 83.33%；multi-agent 平均耗时约为 direct 的 10.59 倍，且 1 条 large case 超时 |
 
 ## 1. BGE 嵌入服务预检
 
@@ -129,18 +129,27 @@
 |---|---|
 | 测试模块 | 多智能体协作有效性 |
 | 测试指标 | direct mode 与 multi-agent mode 的准确率、平均耗时、平均工具调用次数、隐藏测试通过率 |
-| 测试方式 | 对 24 个代码任务执行完整 A/B：小规模项目 12 个、中规模项目 12 个；每个任务分别运行 direct mode 和 multi-agent mode，共 48 次真实执行；每次执行后运行 pytest 验证 |
-| 测试结果 | direct 准确率 100%，multi-agent 准确率 100%；direct 平均耗时 21.0418s，multi-agent 平均耗时 322.4428s；direct 平均工具调用 8.2917 次，multi-agent 平均工具调用 27.5417 次 |
-| 测试结论 | 当前测试集难度下，多智能体没有体现准确率优势，但显著增加耗时和工具调用成本；因此简单/中等确定性修复任务不应默认走多智能体，多智能体更适合高风险、影响范围不清、需要独立计划/测试/审查闭环的复杂任务 |
+| 测试方式 | 新增 6 个 large 代码任务，覆盖 domain / repository / service / api / test 多层调用链；每个任务分别运行 direct mode 与 multi-agent mode，共 12 次真实 API 执行；每次执行后运行 pytest 验证 |
+| 测试结果 | direct 准确率 100%，multi-agent 准确率 83.33%；direct 平均耗时 47.8842s，multi-agent 平均耗时 507.1638s；direct 平均工具调用 19.5 次，multi-agent 平均工具调用 43.3333 次 |
+| 测试结论 | large 复测显示当前多智能体仍存在明显效率问题：5/6 个 large case 成功，但 `reporting_refunds` multi-agent 超过 1800s 未完成；因此现阶段多智能体不应作为普通代码修复默认路径，只适合用户明确要求审查闭环或高风险任务，并且需要继续优化 plan/scheduling 的读文件策略、任务边界和超时控制 |
 
 分规模结果：
 
 | 项目规模 | 模式 | Case 数 | 准确率 | 平均耗时 | 平均工具调用 |
 |---|---|---:|---:|---:|---:|
-| small | direct | 12 | 100% | 13.9752s | 6.1667 |
-| small | multi-agent | 12 | 100% | 219.4178s | 22.4167 |
-| medium | direct | 12 | 100% | 28.1083s | 10.4167 |
-| medium | multi-agent | 12 | 100% | 425.4678s | 32.6667 |
+| large | direct | 6 | 100% | 47.8842s | 19.5 |
+| large | multi-agent | 6 | 83.33% | 507.1638s | 43.3333 |
+
+large case 明细：
+
+| Case | direct | multi-agent | 结论 |
+|---|---:|---:|---|
+| `ma_large_01_vip_tax` | 89.127s / 通过 | 363.608s / 通过 | multi-agent 约 4.08x |
+| `ma_large_02_shipping_fee` | 77.916s / 通过 | 242.825s / 通过 | multi-agent 约 3.12x |
+| `ma_large_03_payment_capture` | 37.336s / 通过 | 234.796s / 通过 | multi-agent 约 6.29x |
+| `ma_large_04_inventory_allocation` | 32.958s / 通过 | 188.166s / 通过 | multi-agent 约 5.71x |
+| `ma_large_05_reporting_refunds` | 25.528s / 通过 | 1800.000s / 超时失败 | multi-agent 超过 30 分钟未完成 |
+| `ma_large_06_profile_labels` | 24.440s / 通过 | 213.588s / 通过 | multi-agent 约 8.74x |
 
 ## 总体结论
 
@@ -152,7 +161,7 @@
 | 长期记忆 workflow | 中 | 小样本显示 workflow 记忆能显著改善模型流程选择 |
 | 恢复工具链 | 中 | 小样本显示 BatchRecoverContext 可按需恢复历史工具输出 |
 | 500+ Skill 路由 | 强 | 520 Skill / 100 query 正式评测全部命中目标 Skill |
-| 多智能体 | 中-强 | 24 个任务完整 A/B 显示准确率均为 100%，但 multi-agent 成本显著更高，适合复杂高风险任务而非普通确定性修复 |
+| 多智能体 | 中-强 | large 复测显示 multi-agent 成本显著更高且存在超时失败；当前实现能完成多数大规模跨层修复，但效率和稳定性仍不足，需要继续优化调度与上下文读取策略 |
 
 因此，当前测试结果可以支撑以下项目表述：
 

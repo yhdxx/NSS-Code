@@ -78,6 +78,28 @@ def generate_multi_agent_tasks() -> list[dict[str, Any]]:
             "test_command": "python3 -m pytest -q",
             "success_criteria": ["hidden_tests_pass", "no_unrelated_rewrite", "cross_module_behavior_preserved"],
         })
+    large_features = [
+        "vip_tax", "shipping_fee", "payment_capture", "inventory_allocation", "reporting_refunds", "profile_labels",
+    ]
+    for index, feature in enumerate(large_features, start=1):
+        rows.append({
+            "case_id": f"ma_large_{index:02d}_{feature}",
+            "category": "multi_agent",
+            "project_size": "large",
+            "expected_mode": "multi_agent",
+            "input_task": (
+                "在大规模 Python 项目中完成跨模块业务修复：先理解 domain/repository/service/api/test 调用链，"
+                f"修复 {feature} 场景，保持 public API 兼容，不重写无关模块，并运行全部测试。"
+            ),
+            "files": _large_project_files(feature),
+            "test_command": "python3 -m pytest -q",
+            "success_criteria": [
+                "hidden_tests_pass",
+                "no_unrelated_rewrite",
+                "cross_module_behavior_preserved",
+                "large_project_call_chain_understood",
+            ],
+        })
     return rows
 
 
@@ -97,6 +119,217 @@ def _medium_project_files(feature: str) -> dict[str, str]:
             "    assert labels() == ['Ada (admin)']\n"
         ),
     }
+
+
+def _large_project_files(feature: str) -> dict[str, str]:
+    base = {
+        "app/__init__.py": "",
+        "app/domain/__init__.py": "",
+        "app/domain/models.py": (
+            "from dataclasses import dataclass\n\n"
+            "@dataclass\n"
+            "class Customer:\n"
+            "    id: str\n"
+            "    name: str\n"
+            "    tier: str\n"
+            "    region: str\n\n"
+            "@dataclass\n"
+            "class OrderItem:\n"
+            "    sku: str\n"
+            "    qty: int\n"
+            "    price: float\n\n"
+            "@dataclass\n"
+            "class Payment:\n"
+            "    order_id: str\n"
+            "    amount: float\n"
+            "    status: str\n"
+        ),
+        "app/domain/policies.py": (
+            "def vip_discount(customer):\n"
+            "    return 0.10 if customer.tier == 'vip' else 0.0\n\n"
+            "def tax_rate(customer):\n"
+            "    return 0.10 if customer.region == 'domestic' else 0.0\n\n"
+            "def free_shipping_threshold(customer):\n"
+            "    return 100 if customer.tier == 'vip' else 200\n"
+        ),
+        "app/repositories/__init__.py": "",
+        "app/repositories/customers.py": (
+            "from app.domain.models import Customer\n\n"
+            "CUSTOMERS = {\n"
+            "    'c1': Customer(id='c1', name='Ada', tier='vip', region='domestic'),\n"
+            "    'c2': Customer(id='c2', name='Grace', tier='standard', region='domestic'),\n"
+            "}\n\n"
+            "def get_customer(customer_id):\n"
+            "    return CUSTOMERS[customer_id]\n"
+        ),
+        "app/repositories/inventory.py": (
+            "STOCK = {'sku-1': 5, 'sku-2': 0}\n\n"
+            "def available(sku):\n"
+            "    return STOCK.get(sku, 0)\n\n"
+            "def reserve(sku, qty):\n"
+            "    STOCK[sku] = STOCK.get(sku, 0)\n"
+            "    return STOCK[sku]\n"
+        ),
+        "app/repositories/orders.py": (
+            "from app.domain.models import OrderItem\n\n"
+            "ORDERS = {\n"
+            "    'o1': {'order_id': 'o1', 'customer_id': 'c1', 'items': [OrderItem('sku-1', 2, 100.0)]},\n"
+            "    'o2': {'order_id': 'o2', 'customer_id': 'c2', 'items': [OrderItem('sku-1', 1, 50.0)]},\n"
+            "}\n\n"
+            "def get_order(order_id):\n"
+            "    return ORDERS[order_id]\n"
+        ),
+        "app/repositories/payments.py": (
+            "PAYMENTS = [\n"
+            "    {'order_id': 'o1', 'amount': 198.0, 'status': 'captured'},\n"
+            "    {'order_id': 'o2', 'amount': 50.0, 'status': 'refunded'},\n"
+            "]\n\n"
+            "def capture(order_id, amount):\n"
+            "    PAYMENTS.append({'order_id': order_id, 'amount': amount, 'status': 'authorized'})\n"
+            "    return {'order_id': order_id, 'amount': amount, 'status': 'authorized'}\n\n"
+            "def list_payments():\n"
+            "    return list(PAYMENTS)\n"
+        ),
+        "app/repositories/shipments.py": (
+            "SHIPMENTS = {'o1': {'carrier': 'DHL', 'status': 'packed'}}\n\n"
+            "def get_shipment(order_id):\n"
+            "    return SHIPMENTS.get(order_id, {'carrier': 'manual', 'status': 'pending'})\n"
+        ),
+        "app/services/__init__.py": "",
+        "app/services/pricing.py": (
+            "from app.domain.policies import tax_rate, vip_discount\n\n"
+            "def subtotal(items):\n"
+            "    return sum(item.qty * item.price for item in items)\n\n"
+            "def checkout_total(customer, items):\n"
+            "    base = subtotal(items)\n"
+            "    taxed = base * (1 + tax_rate(customer))\n"
+            "    return round(taxed - base * vip_discount(customer), 2)\n"
+        ),
+        "app/services/shipping.py": (
+            "from app.domain.policies import free_shipping_threshold\n"
+            "from app.repositories.shipments import get_shipment\n\n"
+            "def shipping_fee(customer, subtotal):\n"
+            "    return 12.0\n\n"
+            "def shipment_status(order_id):\n"
+            "    return get_shipment(order_id)['status']\n"
+        ),
+        "app/services/payment.py": (
+            "from app.repositories.payments import capture\n\n"
+            "def capture_payment(order_id, amount):\n"
+            "    payment = capture(order_id, amount)\n"
+            "    return payment['status']\n"
+        ),
+        "app/services/fulfillment.py": (
+            "from app.repositories.inventory import available, reserve\n\n"
+            "def allocate(items):\n"
+            "    for item in items:\n"
+            "        if available(item.sku) < item.qty:\n"
+            "            return 'backordered'\n"
+            "    for item in items:\n"
+            "        reserve(item.sku, item.qty)\n"
+            "    return 'allocated'\n"
+        ),
+        "app/services/reporting.py": (
+            "from app.repositories.payments import list_payments\n\n"
+            "def net_revenue():\n"
+            "    return sum(payment['amount'] for payment in list_payments())\n"
+        ),
+        "app/services/profiles.py": (
+            "from app.repositories.customers import get_customer\n\n"
+            "def profile_label(customer_id):\n"
+            "    customer = get_customer(customer_id)\n"
+            "    return f'{customer.name} [{customer.tier}]'\n"
+        ),
+        "app/services/orders.py": (
+            "from app.repositories.customers import get_customer\n"
+            "from app.repositories.orders import get_order\n"
+            "from app.services.fulfillment import allocate\n"
+            "from app.services.payment import capture_payment\n"
+            "from app.services.pricing import checkout_total, subtotal\n"
+            "from app.services.shipping import shipping_fee, shipment_status\n\n"
+            "def order_summary(order_id):\n"
+            "    order = get_order(order_id)\n"
+            "    customer = get_customer(order['customer_id'])\n"
+            "    items = order['items']\n"
+            "    base = subtotal(items)\n"
+            "    return {\n"
+            "        'order_id': order_id,\n"
+            "        'total': checkout_total(customer, items),\n"
+            "        'shipping_fee': shipping_fee(customer, base),\n"
+            "        'shipment_status': shipment_status(order_id),\n"
+            "    }\n\n"
+            "def process_order(order_id):\n"
+            "    order = get_order(order_id)\n"
+            "    customer = get_customer(order['customer_id'])\n"
+            "    total = checkout_total(customer, order['items'])\n"
+            "    allocation = allocate(order['items'])\n"
+            "    payment_status = capture_payment(order_id, total)\n"
+            "    return {'allocation': allocation, 'payment_status': payment_status}\n"
+        ),
+        "app/api/__init__.py": "",
+        "app/api/orders.py": (
+            "from app.services.orders import order_summary, process_order\n\n"
+            "def get_order_summary(order_id):\n"
+            "    return order_summary(order_id)\n\n"
+            "def post_process_order(order_id):\n"
+            "    return process_order(order_id)\n"
+        ),
+        "app/api/reports.py": (
+            "from app.services.reporting import net_revenue\n\n"
+            "def get_revenue_report():\n"
+            "    return {'net_revenue': net_revenue()}\n"
+        ),
+        "app/api/profiles.py": (
+            "from app.services.profiles import profile_label\n\n"
+            "def get_profile(customer_id):\n"
+            "    return {'label': profile_label(customer_id)}\n"
+        ),
+        "tests/__init__.py": "",
+    }
+    tests = {
+        "vip_tax": (
+            "tests/test_vip_tax.py",
+            "from app.api.orders import get_order_summary\n\n"
+            "def test_vip_discount_applied_before_tax():\n"
+            "    assert get_order_summary('o1')['total'] == 198.0\n",
+        ),
+        "shipping_fee": (
+            "tests/test_shipping_fee.py",
+            "from app.api.orders import get_order_summary\n\n"
+            "def test_vip_order_above_threshold_has_free_shipping():\n"
+            "    assert get_order_summary('o1')['shipping_fee'] == 0.0\n",
+        ),
+        "payment_capture": (
+            "tests/test_payment_capture.py",
+            "from app.api.orders import post_process_order\n\n"
+            "def test_process_order_captures_payment():\n"
+            "    assert post_process_order('o1')['payment_status'] == 'captured'\n",
+        ),
+        "inventory_allocation": (
+            "tests/test_inventory_allocation.py",
+            "from app.api.orders import post_process_order\n"
+            "from app.repositories.inventory import STOCK\n\n"
+            "def test_allocation_reduces_stock():\n"
+            "    result = post_process_order('o1')\n"
+            "    assert result['allocation'] == 'allocated'\n"
+            "    assert STOCK['sku-1'] == 3\n",
+        ),
+        "reporting_refunds": (
+            "tests/test_reporting_refunds.py",
+            "from app.api.reports import get_revenue_report\n\n"
+            "def test_refunded_payments_are_excluded_from_net_revenue():\n"
+            "    assert get_revenue_report()['net_revenue'] == 198.0\n",
+        ),
+        "profile_labels": (
+            "tests/test_profile_labels.py",
+            "from app.api.profiles import get_profile\n\n"
+            "def test_profile_label_includes_region():\n"
+            "    assert get_profile('c1')['label'] == 'Ada [vip/domestic]'\n",
+        ),
+    }
+    test_path, test_content = tests[feature]
+    base[test_path] = test_content
+    return base
 
 
 def generate_context_virtualization_cases() -> list[dict[str, Any]]:
@@ -260,4 +493,3 @@ def main() -> None:
 
 if __name__ == "__main__":
     main()
-

@@ -390,8 +390,10 @@ async def _run_long_term_workflow_async(cases: list[dict[str, Any]]) -> list[dic
     return rows
 
 
-def run_multi_agent_ab(dataset_path: Path, *, limit: int | None = None) -> dict[str, Any]:
+def run_multi_agent_ab(dataset_path: Path, *, limit: int | None = None, project_size: str | None = None) -> dict[str, Any]:
     cases = read_jsonl(dataset_path)[:limit] if limit else read_jsonl(dataset_path)
+    if project_size:
+        cases = [case for case in cases if str(case.get("project_size", "")) == project_size]
     details_path = RESULTS_DIR / "multi_agent_ab_details.jsonl"
     details_path.parent.mkdir(parents=True, exist_ok=True)
     rows: list[dict[str, Any]] = []
@@ -658,7 +660,7 @@ def _summarize_multi_agent_ab(rows: list[dict[str, Any]]) -> dict[str, Any]:
             }
     summary = {
         "module": "multi_agent_ab",
-        "status": "passed",
+        "status": "passed" if all(bool(row.get("passed", False)) for row in rows) else "failed",
         "case_count": len({row.get("case_id") for row in rows}),
         "run_count": len(rows),
         "direct_accuracy": _mean(row.get("passed", False) for row in by_mode["direct"]),
@@ -709,7 +711,7 @@ def write_report() -> Path:
         "",
         "## 模块覆盖说明",
         "",
-        "- 多智能体：比较 direct_mode 与 multi_agent_mode 在小/中规模代码任务上的准确率、耗时、工具调用和 token。",
+        "- 多智能体：比较 direct_mode 与 multi_agent_mode 在小/中/大规模代码任务上的准确率、耗时、工具调用和 token。",
         "- 上下文虚拟化：比较 raw、virtualized、summary_baseline、recent_only 四种上下文策略对早期需求召回和成本的影响。",
         "- 长期记忆：重点验证 workflow_candidate 跨会话检索后是否减少重复工具调用并提高成功率。",
         "- Skill 路由：在 500+ name/description Skill 下测试目标 Skill 是否进入 Top-K 候选。",
@@ -881,6 +883,7 @@ def main() -> int:
     ma_parser = sub.add_parser("run-multi-agent-ab")
     ma_parser.add_argument("--dataset", default=str(DATASET_DIR / "multi_agent_tasks.jsonl"))
     ma_parser.add_argument("--limit", type=int, default=None)
+    ma_parser.add_argument("--project-size", choices=["small", "medium", "large"], default=None)
     sub.add_parser("report")
     args = parser.parse_args()
 
@@ -909,7 +912,7 @@ def main() -> int:
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
         return 0
     if args.command == "run-multi-agent-ab":
-        result = run_multi_agent_ab(Path(args.dataset), limit=args.limit)
+        result = run_multi_agent_ab(Path(args.dataset), limit=args.limit, project_size=args.project_size)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
         return 0
     if args.command == "report":
