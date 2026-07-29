@@ -448,16 +448,10 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
         session_id = runtime.get_current_session_id()
         assert session_id is not None
         restored = runtime.load_session(session_id)
-        with sqlite3.connect(tmp_path / "memory.sqlite3") as conn:
-            conn.row_factory = sqlite3.Row
-            model_context = conn.execute(
-                "SELECT * FROM session_model_contexts WHERE session_id = ? ORDER BY request_index",
-                (session_id,),
-            ).fetchone()
         await runtime.close()
-        return text, restored, model_context
+        return text, restored
 
-    text, restored, model_context = asyncio.run(scenario())
+    text, restored = asyncio.run(scenario())
     output = capsys.readouterr().out
 
     assert text == "done"
@@ -470,10 +464,6 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
     assert restored.token_usage.request_count == 1
     assert restored.token_usage.prompt_cache_hit_tokens == 70
     assert restored.token_usage.prompt_cache_miss_tokens == 30
-    assert model_context is not None
-    assert model_context["request_index"] == 1
-    assert model_context["prompt_hash"]
-    assert "<RUNTIME_CONTEXT>" in json.loads(model_context["model_messages_json"])[1]["content"]
 
 
 def test_ask_deepseek_runtime_context_uses_memory_context_mode(monkeypatch, tmp_path):

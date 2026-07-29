@@ -490,38 +490,6 @@ class MemoryRuntime:
         self.store.save_token_usage(record)
         return self.store.load_token_usage_summary(session_id)
 
-    def record_model_context(
-        self,
-        *,
-        session_id: str,
-        model_messages: list[dict[str, Any]],
-        tools: list[dict[str, Any]],
-        rendered_prompt: str,
-        prompt_hash: str,
-        tools_hash: str,
-        metadata: dict[str, Any] | None = None,
-    ) -> int:
-        self.store.ensure_session(
-            session_id=session_id,
-            model=self.model,
-            workspace_root=self.workspace_root,
-            workspace_label=self.workspace_label,
-            workspace_fingerprint=self.workspace_fingerprint,
-        )
-        request_index = self.store.next_model_context_request_index(session_id)
-        self.store.save_model_context(
-            context_id=uuid4().hex,
-            session_id=session_id,
-            request_index=request_index,
-            model_messages=copy.deepcopy(model_messages),
-            tools=copy.deepcopy(tools),
-            rendered_prompt=rendered_prompt,
-            prompt_hash=prompt_hash,
-            tools_hash=tools_hash,
-            metadata=metadata or {},
-        )
-        return request_index
-
     def load_token_usage_summary(self, session_id: str) -> TokenUsageSummary:
         return self.store.load_token_usage_summary(session_id)
 
