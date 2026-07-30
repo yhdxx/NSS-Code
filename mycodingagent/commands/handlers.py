@@ -11,8 +11,8 @@ from mycodingagent.terminal_ui.confirm import (
 )
 from mycodingagent.terminal_ui.history import render_conversation_history
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
-from multiAgent import MultiAgentStore
-from multiAgent.context import run_summary_for_main_context
+from mycodingagent.multi_agent import MultiAgentStore
+from mycodingagent.multi_agent.context import run_summary_for_main_context
 
 
 def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
@@ -166,7 +166,7 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
         print("多智能体运行缺少 registry 或 api_client，无法执行。", flush=True)
         return CommandResult()
 
-    from multiAgent.orchestrator import MultiAgentOrchestrator
+    from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
 
     orchestrator = MultiAgentOrchestrator(
         store=store,
@@ -174,6 +174,7 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
         api_client=context.api_client,
         memory_runtime=context.memory_runtime,
         model=client.MODEL,
+        cancel_event=context.cancel_event,
     )
 
     try:

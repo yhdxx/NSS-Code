@@ -48,6 +48,7 @@ from mycodingagent.llm_runtime.context import (
     is_rendered_runtime_prompt,
 )
 from mycodingagent.tool_runtime import create_default_registry
+from mycodingagent.tool_runtime.execution import ToolExecution
 from mycodingagent.tool_runtime.memory_lookup import (
     CommitWorkingContext,
     CommitWorkingContextParams,
@@ -101,7 +102,7 @@ class WorkspaceTrackerStub:
         return [], 0
 
 
-def test_workspace_changes_render_inside_current_user_runtime_context():
+def test_workspace_changes_render_as_separate_runtime_notice():
     tracker = WorkspaceTrackerStub(["app.py"], omitted=2)
 
     runtime_context = RuntimeContextBuilder(workspace_tracker=tracker).build()
@@ -112,12 +113,12 @@ def test_workspace_changes_render_inside_current_user_runtime_context():
     assert extract_user_request_from_rendered_prompt(rendered.content) == "work"
     assert runtime_context.workspace_changes.paths == ("app.py",)
     assert runtime_context.workspace_changes.omitted == 2
-    assert '"workspace_changes"' in rendered.runtime_context_json
-    assert '"app.py"' in rendered.runtime_context_json
+    assert '"workspace_changes"' not in rendered.runtime_context_json
+    assert '"app.py"' in rendered.runtime_notice_json
     payload = json.loads(rendered.runtime_context_json)
-    assert payload == {
-        "context_mode": "raw",
-        "workspace_changes": {"omitted": 2, "paths": ["app.py"]},
+    assert payload == {"context_mode": "raw"}
+    assert json.loads(rendered.runtime_notice_json) == {
+        "workspace_changes": {"omitted": 2, "paths": ["app.py"]}
     }
     assert "tool_outputs_virtualized" not in rendered.runtime_context_json
     assert '"context_budget": null' not in rendered.runtime_context_json
@@ -144,6 +145,13 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
         tools_seen = []
         messages_seen = []
         build_calls = 0
+        render_calls = 0
+        original_render = PromptRenderer.render_current_user_message
+
+        def counted_render(runtime_context, user_prompt):
+            nonlocal render_calls
+            render_calls += 1
+            return original_render(runtime_context, user_prompt)
 
         async def fake_build_round_tools(default_tools, core_tool_schemas):
             nonlocal build_calls
@@ -158,11 +166,12 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
             return "done", [], None
 
         async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
-            return "tool ok", False
+            return ToolExecution("tool ok")
 
         monkeypatch.setattr(agent_client, "build_round_tools", fake_build_round_tools)
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
         monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute_local_tool)
+        monkeypatch.setattr(PromptRenderer, "render_current_user_message", counted_render)
 
         history = [{"role": "system", "content": "fixed system"}]
         tracker = WorkspaceTrackerStub(["changed.py"])
@@ -176,15 +185,20 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
         )
 
         assert build_calls == 1
+        assert render_calls == len(messages_seen)
         assert len(tools_seen) == 2
         assert tools_seen[0] is tools_seen[1]
         assert messages_seen[0][1]["role"] == "user"
         assert is_rendered_runtime_prompt(messages_seen[0][1]["content"])
         assert extract_user_request_from_rendered_prompt(messages_seen[0][1]["content"]) == "do work"
-        assert "changed.py" in messages_seen[0][1]["content"]
-        assert messages_seen[1][-1]["role"] == "tool"
+        assert "changed.py" not in messages_seen[0][1]["content"]
+        assert messages_seen[0][-1]["role"] == "user"
+        assert "<RUNTIME_NOTICE>" in messages_seen[0][-1]["content"]
+        assert "changed.py" in messages_seen[0][-1]["content"]
+        assert messages_seen[1][-2]["role"] == "tool"
+        assert messages_seen[1][-1]["role"] == "user"
         assert messages_seen[1][1]["content"] == messages_seen[0][1]["content"]
-        assert "changed.py" in messages_seen[1][1]["content"]
+        assert "changed.py" in messages_seen[1][-1]["content"]
         assert not any(
             message.get("role") == "system"
             and (
@@ -342,10 +356,10 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
         async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
             tool_calls_seen.append(tool_name)
             if tool_name == "SearchRecoverableContext":
-                return '{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}', False
+                return ToolExecution('{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}')
             if tool_name == "BatchRecoverContext":
-                return "exact recovered evidence", False
-            return "unexpected", False
+                return ToolExecution("exact recovered evidence")
+            return ToolExecution("unexpected")
 
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
         monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute_local_tool)
@@ -1774,6 +1788,7 @@ def test_compression_report_contains_required_metrics(tmp_path):
 def test_reproducible_tool_classification():
     assert is_reproducible_tool("ReadFile", "content")
     assert is_reproducible_tool("Grep", "content")
+    assert is_reproducible_tool("ReadFile", '{"error": false, "content": "diagnostic only"}')
     assert not is_reproducible_tool("Bash", "content")
     assert not is_reproducible_tool("WriteFile", "content")
     assert not is_reproducible_tool("ReadFile", "Error: failed")

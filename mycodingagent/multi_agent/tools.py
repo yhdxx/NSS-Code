@@ -9,9 +9,9 @@ from pydantic import BaseModel, Field
 
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
-from multiAgent.models import AgentRole, RunStatus, StepStatus, executable_steps
-from multiAgent.store import MultiAgentStore
-from multiAgent.validators import validate_failed_steps, validate_plan_payload, validate_step_exists
+from mycodingagent.multi_agent.models import AgentRole, RunStatus, StepStatus, executable_steps
+from mycodingagent.multi_agent.store import MultiAgentStore
+from mycodingagent.multi_agent.validators import validate_failed_steps, validate_plan_payload, validate_step_exists
 
 
 class SubmitPlanParams(BaseModel):

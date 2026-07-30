@@ -36,7 +36,7 @@
 | 会话上下文 | `memory/` | 消息持久化、上下文虚拟化、检查点、恢复 |
 | 长期记忆 | `long_term_memory/` | 跨会话记忆抽取、查询、作用域管理 |
 | 能力路由 | `capability_discovery/`, `skill_runtime/`, `mcp_integration/` | Skill/MCP 能力发现与推荐 |
-| 多智能体 | `multiAgent/` | 显式 `/multiAgent` 任务编排 |
+| 多智能体 | `mycodingagent/multi_agent/` | 显式 `/multiAgent` 任务编排 |
 
 ---
 
@@ -821,7 +821,7 @@ app -> 组合根，可依赖所有运行模块
 llm_runtime -> 不直接依赖具体 Skill/MCP 实现，只通过 registry/runtime 参数协作
 memory -> 不依赖 tool_runtime 具体工具实现
 tool_runtime -> 适配 MCP/Skill/Memory，但基础工具保持独立
-multiAgent -> 使用自身 store/context/tools/file_coordination，与主模型 tool schema 解耦
+multi_agent -> 使用自身 store/context/tools/file_coordination，与主模型 tool schema 解耦
 skill_runtime -> 依赖 relevance，不依赖 llm_runtime
 capability_discovery -> 依赖抽象 capability source，不执行真实 MCP 调用
 ```

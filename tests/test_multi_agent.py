@@ -3,17 +3,17 @@ from __future__ import annotations
 import asyncio
 import json
 
-from multiAgent.context import (
+from mycodingagent.multi_agent.context import (
     build_or_resume_subagent_messages,
     build_role_context,
     load_system_prompt,
     run_summary_for_main_context,
 )
-from multiAgent.models import AgentRole, MultiAgentRun, RunStatus, StepStatus
-from multiAgent.orchestrator import MultiAgentOrchestrator
-from multiAgent.store import MultiAgentStore
-from multiAgent.tool_policy import schemas_for_role
-from multiAgent.tools import (
+from mycodingagent.multi_agent.models import AgentRole, MultiAgentRun, RunStatus, StepStatus
+from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
+from mycodingagent.multi_agent.store import MultiAgentStore
+from mycodingagent.multi_agent.tool_policy import schemas_for_role
+from mycodingagent.multi_agent.tools import (
     ApprovePlan,
     ApprovePlanParams,
     RejectExecution,
@@ -29,7 +29,7 @@ from multiAgent.tools import (
     SubmitSubAgentStep,
     SubmitSubAgentStepParams,
 )
-from multiAgent.validators import validate_plan_payload
+from mycodingagent.multi_agent.validators import validate_plan_payload
 from mycodingagent.llm_runtime.client import PendingToolCall
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
@@ -42,14 +42,14 @@ VALID_STEPS = [
         "title": "Create models",
         "goal": "Add data models.",
         "acceptance": "Models serialize correctly.",
-        "files": ["multiAgent/models.py"],
+        "files": ["mycodingagent/multi_agent/models.py"],
         "children": [
             {
                 "step_id": "1.1",
                 "title": "Plan node",
                 "goal": "Represent recursive plan steps.",
                 "acceptance": "PlanNode round-trips through dicts.",
-                "files": ["multiAgent/models.py"],
+                "files": ["mycodingagent/multi_agent/models.py"],
                 "children": [],
             }
         ],
@@ -484,8 +484,8 @@ def test_execute_round_limit_failure_is_diagnostic(tmp_path, monkeypatch):
             None,
         )
 
-    monkeypatch.setattr("multiAgent.orchestrator.agent_round_limit", lambda: 2)
-    monkeypatch.setattr("multiAgent.orchestrator.stream_one_round", fake_stream_one_round)
+    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.agent_round_limit", lambda: 2)
+    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.stream_one_round", fake_stream_one_round)
 
     orchestrator = MultiAgentOrchestrator(
         store=store,
@@ -618,7 +618,7 @@ def test_task_test_no_decision_gets_one_forced_retry_then_can_pass(tmp_path, mon
             None,
         )
 
-    monkeypatch.setattr("multiAgent.orchestrator.stream_one_round", fake_stream_one_round)
+    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.stream_one_round", fake_stream_one_round)
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=registry,
@@ -691,7 +691,7 @@ def test_task_test_no_decision_fails_with_diagnostic_after_retry(tmp_path, monke
             )
         return ("Still no decision.", [], None)
 
-    monkeypatch.setattr("multiAgent.orchestrator.stream_one_round", fake_stream_one_round)
+    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.stream_one_round", fake_stream_one_round)
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=registry,

@@ -176,8 +176,6 @@ def sanitize_message_for_model(message: dict[str, Any]) -> dict[str, Any]:
 def is_reproducible_tool(tool_name: str, output: str = "") -> bool:
     if output.startswith("Tool execution error:") or output.startswith("Error:"):
         return False
-    if '"error"' in output[:300]:
-        return False
     return tool_name in REPRODUCIBLE_TOOLS
 
 

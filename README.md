@@ -505,7 +505,7 @@ COMPLETED / FAILED
 
 `scheduling` 使用 `DispatchTasks` 批量派发任务。Runtime 根据 `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 并行推进，默认 5。
 
-文件协调由 `multiAgent/file_coordination.py` 管理：
+文件协调由 `mycodingagent/multi_agent/file_coordination.py` 管理：
 
 - 文件级写锁
 - 文件 revision 校验
@@ -549,7 +549,7 @@ mycodingagent/
 ├── tool_runtime/           # 工具实现和注册表
 └── workspace/              # 工作区身份和文件缓存
 
-multiAgent/                 # 多智能体编排、上下文、工具权限和文件协调
+mycodingagent/multi_agent/   # 多智能体编排、上下文、工具权限和文件协调
 skills/                     # Skill 插件资产
 tests/                      # 单元、集成和评测测试
 ```

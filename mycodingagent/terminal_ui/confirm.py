@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 from mycodingagent.memory import SessionListItem
+from mycodingagent.terminal_ui.interrupt import PromptCancelled, coordinated_input
 from mycodingagent.terminal_ui.session_selector import print_session_options
 
 
@@ -14,7 +15,12 @@ def confirm_delete_sessions(sessions: list[SessionListItem], *, include_all: boo
     print_session_options(sessions[:10], include_workspace=include_all)
     if len(sessions) > 10:
         print(f"  ... 另有 {len(sessions) - 10} 个会话未列出", flush=True)
-    answer = input(f"确认删除{scope}下全部会话？输入 y 确认，其它任意键取消：").strip().lower()
+    try:
+        answer = coordinated_input(
+            f"确认删除{scope}下全部会话？输入 y 确认，其它任意键取消："
+        ).strip().lower()
+    except PromptCancelled:
+        return False
     return answer in {"y", "yes"}
 
 
@@ -28,5 +34,10 @@ def confirm_cross_workspace_action(action: str, source_workspace: str, current_w
         print("分叉后会复制历史对话到新会话，并按当前工作目录重新检查文件状态。", flush=True)
     else:
         print("删除后该会话及其关联消息、工具输出、压缩快照会从本地移除。", flush=True)
-    answer = input(f"确认{action}？输入 y 确认，其它任意键取消：").strip().lower()
+    try:
+        answer = coordinated_input(
+            f"确认{action}？输入 y 确认，其它任意键取消："
+        ).strip().lower()
+    except PromptCancelled:
+        return False
     return answer in {"y", "yes"}

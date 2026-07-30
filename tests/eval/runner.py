@@ -416,9 +416,9 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
     os.environ.setdefault("MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED", "0")
 
     from openai import AsyncOpenAI
-    from multiAgent.context import run_summary_for_main_context
-    from multiAgent.orchestrator import MultiAgentOrchestrator
-    from multiAgent.store import MultiAgentStore
+    from mycodingagent.multi_agent.context import run_summary_for_main_context
+    from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
+    from mycodingagent.multi_agent.store import MultiAgentStore
     from mycodingagent.configuration import CONFIG
     from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore

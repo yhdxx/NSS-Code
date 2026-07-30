@@ -7,7 +7,7 @@ from time import time
 from typing import Any
 
 from mycodingagent.configuration import CONFIG
-from multiAgent.models import AgentRole, MultiAgentRun, executable_steps
+from mycodingagent.multi_agent.models import AgentRole, MultiAgentRun, executable_steps
 
 
 PROMPT_ROOT = Path(__file__).resolve().parent / "prompts"

@@ -141,9 +141,10 @@ def _no_sleep(monkeypatch) -> list[float]:
 
 
 def _run_stream(fake_client, tools=None):
-    return asyncio.run(
+    result = asyncio.run(
         client.stream_one_round(fake_client, "test-model", [{"role": "user", "content": "hi"}], tools or [])
     )
+    return result.text, result.tool_calls, result.usage
 
 
 # --- retry behaviour -------------------------------------------------------
@@ -252,35 +253,35 @@ def test_mid_stream_failure_does_not_propagate(monkeypatch):
 
 
 def test_execute_local_tool_reports_success():
-    output, is_error = asyncio.run(
+    execution = asyncio.run(
         client.execute_local_tool(_registry(), "EchoTool", '{"text":"hi"}')
     )
 
-    assert output == "ok"
-    assert is_error is False
+    assert execution.output == "ok"
+    assert execution.is_error is False
 
 
 def test_execute_local_tool_propagates_tool_is_error():
     registry = _registry(_EchoTool(output="Something broke", is_error=True))
 
-    output, is_error = asyncio.run(client.execute_local_tool(registry, "EchoTool", "{}"))
+    execution = asyncio.run(client.execute_local_tool(registry, "EchoTool", "{}"))
 
-    assert output == "Something broke"
-    assert is_error is True
+    assert execution.output == "Something broke"
+    assert execution.is_error is True
 
 
 def test_execute_local_tool_flags_unknown_tool():
-    output, is_error = asyncio.run(client.execute_local_tool(_registry(), "NoSuchTool", "{}"))
+    execution = asyncio.run(client.execute_local_tool(_registry(), "NoSuchTool", "{}"))
 
-    assert is_error is True
-    assert "unknown tool" in output
+    assert execution.is_error is True
+    assert "unknown tool" in execution.output
 
 
 def test_execute_local_tool_flags_invalid_json():
-    output, is_error = asyncio.run(client.execute_local_tool(_registry(), "EchoTool", "{not json"))
+    execution = asyncio.run(client.execute_local_tool(_registry(), "EchoTool", "{not json"))
 
-    assert is_error is True
-    assert "invalid JSON" in output
+    assert execution.is_error is True
+    assert "invalid JSON" in execution.output
 
 
 def test_successful_output_containing_error_word_is_not_a_failure():
@@ -288,10 +289,10 @@ def test_successful_output_containing_error_word_is_not_a_failure():
     payload = json.dumps({"status": "passed", "error": None, "detail": "all good"})
     registry = _registry(_EchoTool(output=payload, is_error=False))
 
-    output, is_error = asyncio.run(client.execute_local_tool(registry, "EchoTool", "{}"))
+    execution = asyncio.run(client.execute_local_tool(registry, "EchoTool", "{}"))
 
-    assert output == payload
-    assert is_error is False, 'a successful result must stay successful even when it contains "error"'
+    assert execution.output == payload
+    assert execution.is_error is False, 'a successful result must stay successful even when it contains "error"'
 
 
 # --- API failure must not discard completed work ---------------------------
@@ -311,7 +312,7 @@ def _run_ask_deepseek(monkeypatch, stream_outcomes: list, tool_output: tuple[str
 
     async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
         executed.append(tool_name)
-        return tool_output
+        return client.ToolExecution(tool_output[0], tool_output[1])
 
     monkeypatch.setattr(client, "build_round_tools", fake_build_round_tools)
     monkeypatch.setattr(client, "stream_one_round", fake_stream_one_round)

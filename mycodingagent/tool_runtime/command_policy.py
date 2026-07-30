@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import re
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Literal
+
+from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
 
 CommandRisk = Literal["normal", "dangerous"]
 
@@ -82,6 +84,7 @@ class CommandApprovalHook:
 
 @dataclass
 class CLICommandApprovalHook(CommandApprovalHook):
+    coordinator: TerminalInputCoordinator = field(default_factory=TerminalInputCoordinator)
     max_command_chars: int = 2000
 
     async def approve(self, request: CommandApprovalRequest) -> CommandApprovalDecision:
@@ -94,7 +97,12 @@ class CLICommandApprovalHook(CommandApprovalHook):
             print(f"Intent: {request.intent}", flush=True)
         print("Command:", flush=True)
         print(command_text, flush=True)
-        answer = input("Allow this command? [y/N]: ").strip().lower()
+        try:
+            answer = await self.coordinator.read_choice(
+                "Allow this command? [y/N]: ", allowed={"y", "yes"}
+            )
+        except PromptCancelled:
+            return CommandApprovalDecision(allowed=False, reason="user_cancelled")
         if answer in {"y", "yes"}:
             return CommandApprovalDecision(allowed=True, reason="user_allowed")
         return CommandApprovalDecision(allowed=False, reason="user_denied")

@@ -8,7 +8,7 @@ from typing import Any
 from mycodingagent.memory.budget import estimate_tokens
 
 
-FORMAT_VERSION = "runtime-context-v1"
+FORMAT_VERSION = "runtime-context-v2"
 
 
 @dataclass(frozen=True)
@@ -35,18 +35,25 @@ class RuntimeContext:
     long_term_memory: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
+        return {**self.stable_payload(), **self.notice_payload()}
+
+    def stable_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {"context_mode": self.context_mode}
+        if self.capabilities:
+            payload["capabilities"] = self.capabilities
+        if self.long_term_memory:
+            payload["long_term_memory"] = self.long_term_memory
+        return payload
+
+    def notice_payload(self) -> dict[str, Any]:
+        payload: dict[str, Any] = {}
         workspace_changes = workspace_changes_payload(self.workspace_changes)
         if workspace_changes:
             payload["workspace_changes"] = workspace_changes
         if self.context_budget is not None:
             payload["context_budget"] = asdict(self.context_budget)
-        if self.capabilities:
-            payload["capabilities"] = self.capabilities
         if self.task_snapshot:
             payload["task_snapshot"] = self.task_snapshot
-        if self.long_term_memory:
-            payload["long_term_memory"] = self.long_term_memory
         return payload
 
 
@@ -68,6 +75,8 @@ class RenderedPrompt:
     runtime_context_json: str
     runtime_context_hash: str
     runtime_context_tokens: int
+    runtime_notice_json: str
+    runtime_notice_tokens: int
     user_prompt_tokens: int
     total_tokens: int
     format_version: str = FORMAT_VERSION
@@ -79,25 +88,19 @@ class RuntimeContextBuilder:
         *,
         workspace_tracker: Any | None = None,
         context_mode: str = "raw",
-        context_budget: ContextBudgetState | None = None,
         capabilities: Any | None = None,
-        task_snapshot: str | None = None,
         long_term_memory: dict[str, Any] | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
-        self.context_budget = context_budget
         self.capabilities = capabilities
-        self.task_snapshot = task_snapshot
         self.long_term_memory = long_term_memory
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
             context_mode=self.context_mode,
             workspace_changes=self._workspace_changes(),
-            context_budget=self.context_budget,
             capabilities=self._capability_payload(),
-            task_snapshot=self.task_snapshot or None,
             long_term_memory=self.long_term_memory,
         )
 
@@ -125,7 +128,7 @@ class PromptRenderer:
     @staticmethod
     def render_current_user_message(runtime_context: RuntimeContext, user_prompt: str) -> RenderedPrompt:
         runtime_context_json = json.dumps(
-            runtime_context.to_payload(),
+            runtime_context.stable_payload(),
             ensure_ascii=False,
             sort_keys=True,
             indent=2,
@@ -140,6 +143,12 @@ class PromptRenderer:
         )
         runtime_context_hash = hashlib.sha256(runtime_context_json.encode("utf-8")).hexdigest()[:12]
         runtime_context_tokens = estimate_tokens(runtime_context_json)
+        notice_payload = runtime_context.notice_payload()
+        runtime_notice_json = (
+            json.dumps(notice_payload, ensure_ascii=False, sort_keys=True, indent=2)
+            if notice_payload
+            else ""
+        )
         user_prompt_tokens = estimate_tokens(user_prompt)
         return RenderedPrompt(
             role="user",
@@ -149,8 +158,10 @@ class PromptRenderer:
             runtime_context_json=runtime_context_json,
             runtime_context_hash=runtime_context_hash,
             runtime_context_tokens=runtime_context_tokens,
+            runtime_notice_json=runtime_notice_json,
+            runtime_notice_tokens=estimate_tokens(runtime_notice_json),
             user_prompt_tokens=user_prompt_tokens,
-            total_tokens=estimate_tokens(content),
+            total_tokens=estimate_tokens(content) + estimate_tokens(runtime_notice_json),
         )
 
 
@@ -163,9 +174,20 @@ def render_current_turn_for_model(
     model_messages = [dict(message) for message in messages]
     if not model_messages:
         return model_messages
-    for index in range(len(model_messages) - 1, -1, -1):
+    for index in range(current_turn_start, len(model_messages)):
         if model_messages[index].get("role") == "user":
             model_messages[index]["content"] = rendered_prompt.content
+            if rendered_prompt.runtime_notice_json:
+                model_messages.append(
+                    {
+                        "role": "user",
+                        "content": (
+                            "<RUNTIME_NOTICE>\n"
+                            f"{rendered_prompt.runtime_notice_json}\n"
+                            "</RUNTIME_NOTICE>"
+                        ),
+                    }
+                )
             return model_messages
     return model_messages
 

@@ -6,9 +6,9 @@ from typing import Any
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool
 
-from multiAgent.models import AgentRole
-from multiAgent.store import MultiAgentStore
-from multiAgent.tools import control_tools_for_role
+from mycodingagent.multi_agent.models import AgentRole
+from mycodingagent.multi_agent.store import MultiAgentStore
+from mycodingagent.multi_agent.tools import control_tools_for_role
 
 
 READ_TOOLS = {

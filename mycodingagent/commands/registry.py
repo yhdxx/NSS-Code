@@ -15,6 +15,7 @@ class CommandContext:
     api_client: Any = None
     multi_agent_store: Any = None
     long_term_memory_runtime: Any = None
+    cancel_event: Any = None
 
 
 @dataclass

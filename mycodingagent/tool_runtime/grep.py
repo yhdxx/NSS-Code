@@ -1,8 +1,10 @@
 from __future__ import annotations  # 启用未来版本语法特性。
 
+import asyncio
 import fnmatch
 import os
 import re  # 导入当前模块需要的依赖。
+from threading import Event
 from pathlib import Path  # 导入当前模块需要的依赖。
 
 from pydantic import BaseModel, Field  # 导入当前模块需要的依赖。
@@ -33,6 +35,13 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
 
 
     async def execute(self, params: Params) -> ToolResult:  # 定义异步函数，供事件循环调用。
+        stop = Event()
+        try:
+            return await asyncio.to_thread(self._search, params, stop)
+        finally:
+            stop.set()
+
+    def _search(self, params: Params, stop: Event) -> ToolResult:
         base, error = resolve_sandbox_path(params.path, self._sandbox_root)  # 保存配置值或中间计算结果。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
@@ -48,11 +57,15 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
 
         results: list[str] = []  # 保存配置值或中间计算结果。
         for file_path, rel in _iter_search_files(base, include_pattern, self._sandbox_root or base):  # 遍历集合中的元素。
+            if stop.is_set():
+                return ToolResult(output="Search interrupted.", is_error=True)
             try:  # 开始可能抛出异常的保护代码块。
                 text = file_path.read_text(encoding="utf-8", errors="ignore")  # 保存配置值或中间计算结果。
             except (OSError, UnicodeDecodeError):  # 捕获并处理指定异常。
                 continue  # 跳过本轮循环剩余逻辑。
             for line_num, line in enumerate(text.splitlines(), 1):  # 遍历集合中的元素。
+                if stop.is_set():
+                    return ToolResult(output="Search interrupted.", is_error=True)
                 if regex.search(line):  # 根据条件决定是否执行后续分支。
                     results.append(f"{rel}:{line_num}:{line}")  # 执行当前步骤的业务逻辑。
                     if len(results) >= MAX_GREP_MATCHES:

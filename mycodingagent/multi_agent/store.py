@@ -8,7 +8,7 @@ from typing import Any
 
 from mycodingagent.configuration import CONFIG
 
-from multiAgent.models import AgentRole, MultiAgentRun, RunStatus, TERMINAL_STATUSES
+from mycodingagent.multi_agent.models import MultiAgentRun, RunStatus, TERMINAL_STATUSES
 
 
 def default_multi_agent_db_path() -> Path:
@@ -93,20 +93,29 @@ class MultiAgentStore:
             ).fetchall()
         return [MultiAgentRun.from_dict(json.loads(row["payload"])) for row in rows]
 
-    def append_agent_message(self, run_id: str, role: AgentRole, message: dict[str, Any]) -> None:
-        run = self.load_run(run_id)
-        if run is None:
+    def set_agent_messages(self, run_id: str, message_key: str, messages: list[dict[str, Any]]) -> None:
+        """Update one subagent message stream without rewriting the full run payload."""
+        updated_at = time()
+        json_path = "$." + json.dumps(message_key, ensure_ascii=False)
+        messages_json = json.dumps(messages, ensure_ascii=False, sort_keys=True)
+        with self._connect() as conn:
+            cursor = conn.execute(
+                """
+                UPDATE multi_agent_runs
+                SET payload = json_set(
+                        payload,
+                        '$.subagent_messages',
+                        json_set(json_extract(payload, '$.subagent_messages'), ?, json(?)),
+                        '$.updated_at',
+                        ?
+                    ),
+                    updated_at = ?
+                WHERE run_id = ?
+                """,
+                (json_path, messages_json, updated_at, updated_at, run_id),
+            )
+        if cursor.rowcount == 0:
             raise ValueError(f"multi-agent run not found: {run_id}")
-        messages = run.subagent_messages.setdefault(role.value, [])
-        messages.append(message)
-        self.save_run(run)
-
-    def set_agent_messages(self, run_id: str, role: AgentRole, messages: list[dict[str, Any]]) -> None:
-        run = self.load_run(run_id)
-        if run is None:
-            raise ValueError(f"multi-agent run not found: {run_id}")
-        run.subagent_messages[role.value] = messages
-        self.save_run(run)
 
     def mark_failed(self, run: MultiAgentRun, error: str) -> MultiAgentRun:
         run.status = RunStatus.FAILED

@@ -33,9 +33,9 @@ pytest.importorskip("openai")
 
 from openai import AsyncOpenAI
 
-from multiAgent.context import run_summary_for_main_context
-from multiAgent.orchestrator import MultiAgentOrchestrator
-from multiAgent.store import MultiAgentStore
+from mycodingagent.multi_agent.context import run_summary_for_main_context
+from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
+from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.capability_discovery.router import CapabilityRouter
 from mycodingagent.llm_runtime import client as agent_client
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime

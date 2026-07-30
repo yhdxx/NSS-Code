@@ -19,6 +19,7 @@ from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
 
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.terminal_ui.input import read_user_prompt
+from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration import CONFIG  # 统一读取项目运行配置。
@@ -29,6 +30,7 @@ from mycodingagent.tool_runtime import create_default_registry  # 导入当前�
 from mycodingagent.tool_runtime.bash import ensure_docker_image, get_docker_image  # 启动时确保 Bash 工具使用的 Docker 镜像已在本地可用。
 from mycodingagent.tool_runtime.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
 from mycodingagent.tool_runtime.command_policy import CLICommandApprovalHook  # 高危 Bash 命令执行前征求用户同意。
+from mycodingagent.tool_runtime.write_policy import CLIWriteApprovalHook
 from mycodingagent.tool_runtime.file_state_cache import FileStateCache  # 共享文件读取状态，判断用户是否修改了模型已读文件。
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
@@ -37,7 +39,7 @@ from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.hooks import CLIApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
-from multiAgent import MultiAgentStore
+from mycodingagent.multi_agent import MultiAgentStore
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
 try:  # 开始可能抛出异常的保护代码块。
@@ -80,12 +82,16 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
-    command_approval_hook = CLICommandApprovalHook() if sys.stdin.isatty() else None  # 非交互环境无法征求用户同意，退化为不拦截。
+    terminal_input = TerminalInputCoordinator()
+    command_approval_hook = CLICommandApprovalHook(terminal_input) if sys.stdin.isatty() else None
+    write_approval_hook = CLIWriteApprovalHook(terminal_input) if sys.stdin.isatty() else None
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
         command_approval_hook=command_approval_hook,
+        write_approval_hook=write_approval_hook,
+        terminal_input_coordinator=terminal_input,
     )
     multi_agent_store = MultiAgentStore()
     long_term_memory_runtime = None
@@ -126,7 +132,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             registry,
             manager=mcp_manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=CLIApprovalHook(),
+            approval_hook=CLIApprovalHook(terminal_input),
         )
         print(f"MCP servers configured: {mcp_manager.server_count()}", flush=True)
     else:
@@ -191,20 +197,22 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 break  # 提前结束当前循环。
             if not prompt.strip():  # 根据条件决定是否执行后续分支。
                 continue  # 空输入重新提示
-            command_result = await command_registry.execute(
-                prompt,
-                CommandContext(
-                    memory_runtime=memory_runtime,
-                    skill_runtime=skill_runtime,
-                    messages=messages,
-                    file_state_cache=file_state_cache,
-                    workspace_tracker=workspace_tracker,
-                    registry=registry,
-                    api_client=api_client,
-                    multi_agent_store=multi_agent_store,
-                    long_term_memory_runtime=long_term_memory_runtime,
-                ),
-            )
+            async with InterruptWatcher(terminal_input) as command_watcher:
+                command_result = await command_registry.execute(
+                    prompt,
+                    CommandContext(
+                        memory_runtime=memory_runtime,
+                        skill_runtime=skill_runtime,
+                        messages=messages,
+                        file_state_cache=file_state_cache,
+                        workspace_tracker=workspace_tracker,
+                        registry=registry,
+                        api_client=api_client,
+                        multi_agent_store=multi_agent_store,
+                        long_term_memory_runtime=long_term_memory_runtime,
+                        cancel_event=command_watcher.triggered,
+                    ),
+                )
             if command_result.handled:
                 if command_result.messages is not None:
                     messages = command_result.messages
@@ -225,19 +233,21 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             # 携带历史消息进行对话，并获取更新后的消息列表
             # 注意：首次对话不传 messages（None），让 ask_deepseek 自动注入系统提示词 "H-Agent"
             try:  # 单轮对话内部的意外异常不应该终止整个 agent 进程；会话状态已在轮内持久化。
-                _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
-                    api_client,
-                    prompt,
-                    registry,
-                    tools,
-                    messages or None,
-                    skill_runtime=skill_runtime,
-                    core_tool_schemas=core_tool_schemas,
-                    workspace_tracker=workspace_tracker,
-                    memory_runtime=memory_runtime,
-                    capability_router=capability_router,
-                    long_term_memory_runtime=long_term_memory_runtime,
-                )  # 结束上方的多行结构。
+                async with InterruptWatcher(terminal_input) as turn_watcher:
+                    _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
+                        api_client,
+                        prompt,
+                        registry,
+                        tools,
+                        messages or None,
+                        skill_runtime=skill_runtime,
+                        core_tool_schemas=core_tool_schemas,
+                        workspace_tracker=workspace_tracker,
+                        memory_runtime=memory_runtime,
+                        capability_router=capability_router,
+                        long_term_memory_runtime=long_term_memory_runtime,
+                        cancel_event=turn_watcher.triggered,
+                    )  # 结束上方的多行结构。
             except (EOFError, KeyboardInterrupt):  # 用户主动中断时保持原有退出语义。
                 raise
             except Exception as exc:  # 其余异常打印后回到主循环，让用户可以继续对话或正常退出。

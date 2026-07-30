@@ -65,6 +65,8 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     workspace_tracker: Any = None,
     memory_runtime: MemoryRuntime | None = None,
     command_approval_hook: Any = None,
+    write_approval_hook: Any = None,
+    terminal_input_coordinator: Any = None,
 ) -> ToolRegistry:
     from mycodingagent.tool_runtime.ask_user import AskUser
     from mycodingagent.tool_runtime.bash import Bash  # 导入当前模块需要的依赖。
@@ -88,7 +90,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     sandbox_root = get_sandbox_root()  # 保存配置值或中间计算结果。
 
     registry = ToolRegistry()  # 保存配置值或中间计算结果。
-    registry.register(AskUser())
+    registry.register(AskUser(terminal_input_coordinator))
     registry.register(  # 执行当前步骤的业务逻辑。
         ReadFile(  # 执行当前步骤的业务逻辑。
             file_cache=file_cache,  # 保存配置值或中间计算结果。
@@ -103,6 +105,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             file_state_cache=file_state_cache,  # 保存配置值或中间计算结果。
             workspace_tracker=workspace_tracker,
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
+            approval_hook=write_approval_hook,
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。
     registry.register(  # 执行当前步骤的业务逻辑。
@@ -112,6 +115,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             file_state_cache=file_state_cache,  # 保存配置值或中间计算结果。
             workspace_tracker=workspace_tracker,
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
+            approval_hook=write_approval_hook,
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。
     registry.register(Bash(sandbox_root=sandbox_root, approval_hook=command_approval_hook))  # 注入审批钩子后，高危命令会先征求用户同意。

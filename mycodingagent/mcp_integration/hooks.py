@@ -1,9 +1,10 @@
 from __future__ import annotations
 
 import json
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 
 from mycodingagent.mcp_integration.policy import MCPApprovalDecision, MCPApprovalRequest
+from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
 
 USER_DENIED_MESSAGE = "用户拒绝你的工具调用"
 
@@ -15,6 +16,7 @@ class MCPToolApprovalHook:
 
 @dataclass
 class CLIApprovalHook(MCPToolApprovalHook):
+    coordinator: TerminalInputCoordinator = field(default_factory=TerminalInputCoordinator)
     max_argument_chars: int = 2000
 
     async def approve(self, request: MCPApprovalRequest) -> MCPApprovalDecision:
@@ -28,7 +30,12 @@ class CLIApprovalHook(MCPToolApprovalHook):
             args_text = args_text[: self.max_argument_chars] + "\n... <arguments truncated>"
         print("Arguments:", flush=True)
         print(args_text, flush=True)
-        answer = input("Allow this MCP tool call? [y/N]: ").strip().lower()
+        try:
+            answer = await self.coordinator.read_choice(
+                "Allow this MCP tool call? [y/N]: ", allowed={"y", "yes"}
+            )
+        except PromptCancelled:
+            answer = ""
         if answer in {"y", "yes"}:
             return MCPApprovalDecision(allowed=True, reason="user_allowed")
         return MCPApprovalDecision(allowed=False, reason="user_denied")

@@ -27,6 +27,16 @@ class RunStatus(str, Enum):
     EXECUTE_REVIEW = "execute_review"
     COMPLETED = "completed"
     FAILED = "failed"
+    PAUSED = "paused"
+
+
+class TaskStatus(str, Enum):
+    QUEUED = "queued"
+    RUNNING = "running"
+    TESTING = "testing"
+    PASSED = "passed"
+    NEEDS_FIX = "needs_fix"
+    FAILED = "failed"
 
 
 class StepStatus(str, Enum):
@@ -40,6 +50,13 @@ class StepStatus(str, Enum):
 
 
 TERMINAL_STATUSES = {RunStatus.COMPLETED, RunStatus.FAILED}
+
+ROLE_TERMINAL_STATUSES: dict[AgentRole, frozenset[TaskStatus]] = {
+    AgentRole.EXECUTE: frozenset(
+        {TaskStatus.TESTING, TaskStatus.PASSED, TaskStatus.NEEDS_FIX, TaskStatus.FAILED}
+    ),
+    AgentRole.TEST: frozenset({TaskStatus.PASSED, TaskStatus.NEEDS_FIX, TaskStatus.FAILED}),
+}
 
 
 @dataclass
@@ -84,6 +101,7 @@ class MultiAgentRun:
     source_request_ref: str
     source_request_preview: str
     status: RunStatus = RunStatus.PLANNING
+    resume_status: RunStatus | None = None
     title: str = ""
     plan_summary: str = ""
     submitted_plan: list[PlanNode] = field(default_factory=list)
@@ -131,6 +149,7 @@ class MultiAgentRun:
     def to_dict(self) -> dict[str, Any]:
         payload = asdict(self)
         payload["status"] = self.status.value
+        payload["resume_status"] = self.resume_status.value if self.resume_status is not None else None
         payload["submitted_plan"] = [node.to_dict() for node in self.submitted_plan]
         payload["approved_plan"] = [node.to_dict() for node in self.approved_plan]
         payload["step_status"] = {key: value.value for key, value in self.step_status.items()}
@@ -144,6 +163,11 @@ class MultiAgentRun:
             source_request_ref=str(payload.get("source_request_ref", "")),
             source_request_preview=str(payload.get("source_request_preview", "")),
             status=RunStatus(str(payload.get("status", RunStatus.PLANNING.value))),
+            resume_status=(
+                RunStatus(str(payload["resume_status"]))
+                if payload.get("resume_status")
+                else None
+            ),
             title=str(payload.get("title", "")),
             plan_summary=str(payload.get("plan_summary", "")),
             submitted_plan=[

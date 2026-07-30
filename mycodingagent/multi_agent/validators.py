@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from typing import Any
 
-from multiAgent.models import PlanNode, executable_steps, flatten_plan
+from mycodingagent.multi_agent.models import PlanNode, executable_steps, flatten_plan
 
 
 @dataclass(frozen=True)

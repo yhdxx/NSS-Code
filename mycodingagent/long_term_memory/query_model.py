@@ -8,12 +8,14 @@ from uuid import uuid4
 from openai import AsyncOpenAI
 
 from mycodingagent.configuration import CONFIG
-from mycodingagent.llm_runtime.client import PendingToolCall, format_openai_tools, stream_one_round
+from mycodingagent.llm_runtime.client import format_openai_tools
+from mycodingagent.llm_runtime.streaming import assistant_message, normalize_stream_result, stream_one_round
 from mycodingagent.long_term_memory.models import LongTermMemoryContext, LongTermMemoryItem, MemoryScope, MemoryType
 from mycodingagent.long_term_memory.tools import SearchWorkspaceProjectFacts, SubmitLongTermMemoryQueryResult
+from mycodingagent.tool_runtime.execution import ToolExecution, execute_tool, parse_tool_arguments_object
 
 
-PROMPT_PATH = Path(__file__).resolve().parents[2] / "multiAgent" / "prompts" / "long_term_memory_query" / "SYSTEM.md"
+PROMPT_PATH = Path(__file__).resolve().parents[1] / "multi_agent" / "prompts" / "long_term_memory_query" / "SYSTEM.md"
 
 
 class LongTermMemoryQueryModel:
@@ -61,27 +63,40 @@ class LongTermMemoryQueryModel:
         tools = format_openai_tools([_openai_schema(tool) for tool in tool_objects])
         available_items = list(items)
         for _ in range(3):
-            assistant_text, tool_calls, _usage = await stream_one_round(
-                self.api_client,
-                self.model,
-                messages,
-                tools,
-                display=False,
-                output_label="long_term_memory_query",
+            stream_result = normalize_stream_result(
+                await stream_one_round(
+                    self.api_client,
+                    self.model,
+                    messages,
+                    tools,
+                    display=False,
+                    output_label="long_term_memory_query",
+                )
             )
-            messages.append(_assistant_message(assistant_text, tool_calls))
+            tool_calls = stream_result.tool_calls
+            messages.append(assistant_message(stream_result.text, tool_calls))
             if not tool_calls:
                 continue
             for index, call in enumerate(tool_calls):
                 call_id = call.tool_id or f"ltm_query_call_{index}"
                 if call.tool_name == submit_tool.name:
-                    output = await _execute_submit_tool(submit_tool, call)
+                    execution = await _execute_model_tool(submit_tool, call.arguments)
                 elif search_tool is not None and call.tool_name == search_tool.name:
-                    output = await _execute_search_tool(search_tool, call)
-                    available_items.extend(_items_from_project_fact_search_output(output))
+                    execution = await _execute_model_tool(search_tool, call.arguments)
+                    available_items.extend(_items_from_project_fact_search_output(execution.output))
                 else:
-                    output = f"Error: query model may only call allowed long-term memory query tools."
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": output})
+                    execution = ToolExecution(
+                        "Error: query model may only call allowed long-term memory query tools.",
+                        is_error=True,
+                    )
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": execution.output,
+                        "metadata": {"is_error": execution.is_error},
+                    }
+                )
             if collector.get("payload") is not None:
                 return _context_from_selection(
                     version_id=version_id,
@@ -200,22 +215,9 @@ def _item_for_query(item: LongTermMemoryItem) -> dict[str, Any]:
     return payload
 
 
-async def _execute_submit_tool(tool: SubmitLongTermMemoryQueryResult, call: PendingToolCall) -> str:
-    try:
-        params = tool.params_model.model_validate_json(call.arguments or "{}")
-        result = await tool.execute(params)
-    except Exception as exc:
-        return f"Tool execution error: {exc}"
-    return result.output
-
-
-async def _execute_search_tool(tool: SearchWorkspaceProjectFacts, call: PendingToolCall) -> str:
-    try:
-        params = tool.params_model.model_validate_json(call.arguments or "{}")
-        result = await tool.execute(params)
-    except Exception as exc:
-        return f"Tool execution error: {exc}"
-    return result.output
+async def _execute_model_tool(tool: Any, raw_args: str) -> ToolExecution:
+    args, error = parse_tool_arguments_object(raw_args)
+    return ToolExecution(error, is_error=True) if error else await execute_tool(tool, args)
 
 
 def _items_from_project_fact_search_output(output: str) -> list[LongTermMemoryItem]:
@@ -250,22 +252,6 @@ def _items_from_project_fact_search_output(output: str) -> list[LongTermMemoryIt
                 )
             )
     return items
-
-
-def _assistant_message(assistant_text: str, tool_calls: list[PendingToolCall]) -> dict[str, Any]:
-    message: dict[str, Any] = {"role": "assistant"}
-    if assistant_text or not tool_calls:
-        message["content"] = assistant_text
-    if tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": call.tool_id or f"tool_call_{index}",
-                "type": "function",
-                "function": {"name": call.tool_name, "arguments": call.arguments},
-            }
-            for index, call in enumerate(tool_calls)
-        ]
-    return message
 
 
 def _read_prompt(path: Path) -> str:

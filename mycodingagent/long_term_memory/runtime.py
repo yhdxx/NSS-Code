@@ -537,6 +537,10 @@ def _extract_used_memory_uids(messages: list[dict[str, Any]]) -> set[str]:
 
 
 def _confirm_skill_promotion(memory_uid: str) -> str:
+    from mycodingagent.terminal_ui.interrupt import coordinated_input
+
     print(f"检测到长期流程候选已成功复用：{memory_uid}", flush=True)
-    answer = input("是否将该流程标记为可沉淀 Skill？输入 y 确认，其它任意键跳过：").strip().lower()
+    answer = coordinated_input(
+        "是否将该流程标记为可沉淀 Skill？输入 y 确认，其它任意键跳过："
+    ).strip().lower()
     return "approved_for_skill" if answer in {"y", "yes"} else "declined"

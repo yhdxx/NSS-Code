@@ -79,23 +79,6 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         if shutil.which("docker") is None:  # 先检查宿主环境是否能找到 Docker，避免进入子进程后才得到不清晰的失败信息。
             return ToolResult(output="Error: docker executable not found", is_error=True)  # Docker 不可用时直接返回工具错误，agent 可据此向用户说明环境问题。
 
-        if self._approval_hook is not None:  # 只有注入了审批钩子的交互式会话才会拦截高危命令。
-            risk, reason = classify_command(params.command)  # 判断命令是否属于难以撤销或越界的高危操作。
-            if risk == "dangerous":
-                decision = await self._approval_hook.approve(
-                    CommandApprovalRequest(
-                        command=params.command,
-                        risk=risk,
-                        reason=reason,
-                        intent=str(getattr(params, "intent", "") or ""),
-                    )
-                )
-                if not decision.allowed:  # 明确区分"用户拒绝"和"工具故障"，避免模型把拒绝当成环境问题反复重试。
-                    return ToolResult(
-                        output=f"{USER_DENIED_COMMAND_MESSAGE}：{reason}",
-                        is_error=True,
-                    )
-
         timeout = min(params.timeout, MAX_TIMEOUT)  # 对调用方提供的超时时间做硬上限保护，防止长时间占用 Docker 资源。
         image = get_docker_image()  # 使用和启动预拉取一致的镜像名，确保每次 Bash 调用都进入同一个镜像族。
         docker_error = await self._check_docker_daemon()  # 在真正执行命令前确认 Docker daemon 可访问，优先暴露权限/服务状态问题。
@@ -104,6 +87,21 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         image_error = await self._check_image_available(image)  # 确认镜像已经存在本地，避免 `docker run` 自动拉取时卡到命令超时。
         if image_error:  # 镜像不存在或无法检查时，给出可执行的修复提示。
             return ToolResult(output=image_error, is_error=True)  # 返回工具错误，让模型或用户先处理镜像配置。
+        if self._approval_hook is not None:
+            risk, reason = classify_command(params.command)
+            decision = await self._approval_hook.approve(
+                CommandApprovalRequest(
+                    command=params.command,
+                    risk=risk,
+                    reason=reason or "Every interactive Bash call requires approval.",
+                    intent=str(getattr(params, "intent", "") or ""),
+                )
+            )
+            if not decision.allowed:
+                return ToolResult(
+                    output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or 'user_denied'}",
+                    is_error=True,
+                )
         network = CONFIG.docker.network  # 默认关闭容器网络；需要联网时必须由外部环境显式打开。
         cpus = CONFIG.docker.cpus  # 默认限制为 2 个 CPU，避免编译或测试命令压满宿主机。
         memory = CONFIG.docker.memory  # 默认限制为 1GB 内存，降低失控命令影响整个 agent 进程的风险。
@@ -140,6 +138,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
             params.command,  # 模型或调用方传入的原始命令字符串，只在容器内由 Bash 解释。
         ]  # Docker CLI 的完整 argv，后续直接交给 asyncio 子进程执行。
 
+        proc: asyncio.subprocess.Process | None = None
         try:  # 子进程启动、等待和输出收集都放在保护块中，统一转换为工具错误输出。
             proc = await asyncio.create_subprocess_exec(  # 异步启动 Docker CLI，不阻塞 agent 主事件循环。
                 *command,  # 将 Docker argv 逐项传入，保持参数边界清晰。
@@ -148,9 +147,16 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                 env=docker_subprocess_env(),
             )  # 子进程对象保存了 PID、returncode 和 communicate 等控制接口。
             stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)  # 等待容器命令结束，并在超时时主动中断等待。
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            await self._force_remove_container(container_name)
+            raise
         except asyncio.TimeoutError:  # 命令超过允许时间仍未结束时进入清理路径。
-            proc.kill()  # 先终止宿主侧 docker run 进程，避免本地子进程继续占用事件循环资源。
-            await proc.wait()  # 等待 docker run 进程退出，回收子进程状态。
+            if proc is not None and proc.returncode is None:
+                proc.kill()  # 先终止宿主侧 docker run 进程，避免本地子进程继续占用事件循环资源。
+                await proc.wait()  # 等待 docker run 进程退出，回收子进程状态。
             await self._force_remove_container(container_name)  # 再按容器名强制删除容器，处理 Docker 侧仍在运行的情况。
             return ToolResult(output=f"Error: command timed out after {timeout}s", is_error=True)  # 把超时作为工具错误返回，便于模型调整命令。
         except FileNotFoundError:  # 即使前面检查过 docker，也保留竞态兜底，例如 PATH 被修改或二进制被移除。

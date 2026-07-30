@@ -6,11 +6,13 @@ from typing import Any
 
 from openai import AsyncOpenAI
 
-from mycodingagent.llm_runtime.client import PendingToolCall, format_openai_tools, stream_one_round
+from mycodingagent.llm_runtime.client import format_openai_tools
+from mycodingagent.llm_runtime.streaming import assistant_message, normalize_stream_result, stream_one_round
 from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch
+from mycodingagent.tool_runtime.execution import ToolExecution, execute_tool, parse_tool_arguments_object
 
 
-PROMPT_PATH = Path(__file__).resolve().parents[2] / "multiAgent" / "prompts" / "long_term_memory_storage" / "SYSTEM.md"
+PROMPT_PATH = Path(__file__).resolve().parents[1] / "multi_agent" / "prompts" / "long_term_memory_storage" / "SYSTEM.md"
 
 
 class LongTermMemoryStorageModel:
@@ -28,52 +30,44 @@ class LongTermMemoryStorageModel:
         ]
         tools = format_openai_tools([_openai_schema(submit_tool)])
         for _ in range(3):
-            assistant_text, tool_calls, _usage = await stream_one_round(
-                self.api_client,
-                self.model,
-                messages,
-                tools,
-                display=False,
-                output_label="long_term_memory_storage",
+            stream_result = normalize_stream_result(
+                await stream_one_round(
+                    self.api_client,
+                    self.model,
+                    messages,
+                    tools,
+                    display=False,
+                    output_label="long_term_memory_storage",
+                )
             )
-            messages.append(_assistant_message(assistant_text, tool_calls))
+            tool_calls = stream_result.tool_calls
+            messages.append(assistant_message(stream_result.text, tool_calls))
             if not tool_calls:
                 continue
             for index, call in enumerate(tool_calls):
                 call_id = call.tool_id or f"ltm_storage_call_{index}"
                 if call.tool_name != submit_tool.name:
-                    output = f"Error: storage model may only call {submit_tool.name}."
+                    execution = ToolExecution(
+                        f"Error: storage model may only call {submit_tool.name}.", is_error=True
+                    )
                 else:
-                    output = await _execute_submit_tool(submit_tool, call)
-                messages.append({"role": "tool", "tool_call_id": call_id, "content": output})
+                    execution = await _execute_submit_tool(submit_tool, call.arguments)
+                messages.append(
+                    {
+                        "role": "tool",
+                        "tool_call_id": call_id,
+                        "content": execution.output,
+                        "metadata": {"is_error": execution.is_error},
+                    }
+                )
             if collector.get("payload") is not None:
                 return dict(collector["payload"])
         raise ValueError("storage model did not submit a valid long-term memory patch")
 
 
-async def _execute_submit_tool(tool: SubmitLongTermMemoryPatch, call: PendingToolCall) -> str:
-    try:
-        params = tool.params_model.model_validate_json(call.arguments or "{}")
-        result = await tool.execute(params)
-    except Exception as exc:
-        return f"Tool execution error: {exc}"
-    return result.output
-
-
-def _assistant_message(assistant_text: str, tool_calls: list[PendingToolCall]) -> dict[str, Any]:
-    message: dict[str, Any] = {"role": "assistant"}
-    if assistant_text or not tool_calls:
-        message["content"] = assistant_text
-    if tool_calls:
-        message["tool_calls"] = [
-            {
-                "id": call.tool_id or f"tool_call_{index}",
-                "type": "function",
-                "function": {"name": call.tool_name, "arguments": call.arguments},
-            }
-            for index, call in enumerate(tool_calls)
-        ]
-    return message
+async def _execute_submit_tool(tool: SubmitLongTermMemoryPatch, raw_args: str) -> ToolExecution:
+    args, error = parse_tool_arguments_object(raw_args)
+    return ToolExecution(error, is_error=True) if error else await execute_tool(tool, args)
 
 
 def _read_prompt(path: Path) -> str:
