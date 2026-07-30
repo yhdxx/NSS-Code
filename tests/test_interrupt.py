@@ -1,10 +1,125 @@
 from __future__ import annotations
 
 import asyncio
+import os
+import pty
+import select
+import termios
+import time
 
 from mycodingagent.llm_runtime import client as agent_client
 from mycodingagent.llm_runtime.streaming import PendingToolCall, StreamRoundResult
+from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
 from mycodingagent.tool_runtime.execution import ToolExecution
+
+
+class _TtyStream:
+    encoding = "utf-8"
+
+    def __init__(self, fd: int) -> None:
+        self._fd = fd
+
+    def fileno(self) -> int:
+        return self._fd
+
+    def isatty(self) -> bool:
+        return os.isatty(self._fd)
+
+
+def _open_configured_pty() -> tuple[int, int]:
+    master_fd, slave_fd = pty.openpty()
+    attrs = termios.tcgetattr(slave_fd)
+    attrs[1] |= termios.OPOST
+    if hasattr(termios, "ONLCR"):
+        attrs[1] |= termios.ONLCR
+    termios.tcsetattr(slave_fd, termios.TCSANOW, attrs)
+    return master_fd, slave_fd
+
+
+def _read_pty_until(master_fd: int, expected: bytes, timeout: float = 1.0) -> bytes:
+    deadline = time.monotonic() + timeout
+    chunks: list[bytes] = []
+    while time.monotonic() < deadline:
+        ready, _, _ = select.select([master_fd], [], [], max(0.0, deadline - time.monotonic()))
+        if not ready:
+            break
+        chunks.append(os.read(master_fd, 4096))
+        data = b"".join(chunks)
+        if expected in data:
+            return data
+    return b"".join(chunks)
+
+
+def test_interrupt_watcher_keeps_output_processing_and_restores_terminal():
+    async def scenario():
+        master_fd, slave_fd = _open_configured_pty()
+        original_attrs = termios.tcgetattr(slave_fd)
+        coordinator = TerminalInputCoordinator(_TtyStream(slave_fd))
+        cancel_event = asyncio.Event()
+        try:
+            coordinator.start_interrupt_watch(cancel_event)
+            active_attrs = termios.tcgetattr(slave_fd)
+
+            assert active_attrs[1] & termios.OPOST
+            assert active_attrs[1] == original_attrs[1]
+
+            expected = b"hello\r\nworld\r\n" if hasattr(termios, "ONLCR") else b"hello\nworld\n"
+            output_fd = os.dup(slave_fd)
+            with os.fdopen(output_fd, "w", encoding="utf-8", buffering=1) as output:
+                print("hello", file=output)
+                print("world", file=output)
+                output.flush()
+
+            assert expected in _read_pty_until(master_fd, expected)
+        finally:
+            coordinator.stop_interrupt_watch()
+            restored_attrs = termios.tcgetattr(slave_fd)
+            os.close(master_fd)
+            os.close(slave_fd)
+
+        assert restored_attrs == original_attrs
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_watcher_restores_terminal_after_exception():
+    async def scenario():
+        master_fd, slave_fd = _open_configured_pty()
+        original_attrs = termios.tcgetattr(slave_fd)
+        coordinator = TerminalInputCoordinator(_TtyStream(slave_fd))
+        try:
+            try:
+                async with InterruptWatcher(coordinator):
+                    raise RuntimeError("boom")
+            except RuntimeError:
+                pass
+
+            assert termios.tcgetattr(slave_fd) == original_attrs
+        finally:
+            coordinator.stop_interrupt_watch()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_interrupt_watcher_cbreak_mode_still_reads_ctrl_c_and_escape():
+    async def scenario(data: bytes, reason: str):
+        master_fd, slave_fd = _open_configured_pty()
+        coordinator = TerminalInputCoordinator(_TtyStream(slave_fd))
+        cancel_event = asyncio.Event()
+        try:
+            coordinator.start_interrupt_watch(cancel_event)
+            os.write(master_fd, data)
+            await asyncio.wait_for(cancel_event.wait(), timeout=1.0)
+            assert coordinator.reason == reason
+        finally:
+            coordinator.stop_interrupt_watch()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario(b"\x03", "sigint"))
+    asyncio.run(scenario(b"\x1b", "esc"))
 
 
 def test_interruption_between_tools_keeps_protocol_pairs(monkeypatch):

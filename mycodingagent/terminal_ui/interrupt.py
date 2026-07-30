@@ -52,10 +52,7 @@ class TerminalInputCoordinator:
             return
         self._loop = asyncio.get_running_loop()
         self._fd = self.stream.fileno()
-        self._old_settings = termios.tcgetattr(self.stream)
-        tty.setraw(self._fd)
-        self._loop.add_reader(self._fd, self._on_interrupt_input)
-        self._active = True
+        self._activate_reader()
         self._context_token = _CURRENT_COORDINATOR.set(self)
 
     def stop_interrupt_watch(self) -> None:
@@ -101,12 +98,14 @@ class TerminalInputCoordinator:
             self._escape_timer = None
 
     def _deactivate_reader(self) -> None:
-        if self._active and self._loop is not None and self._fd is not None:
-            self._loop.remove_reader(self._fd)
-        self._active = False
-        if self._old_settings is not None:
-            termios.tcsetattr(self.stream, termios.TCSADRAIN, self._old_settings)
-        self._old_settings = None
+        try:
+            if self._active and self._loop is not None and self._fd is not None:
+                self._loop.remove_reader(self._fd)
+        finally:
+            self._active = False
+            if self._old_settings is not None and self._fd is not None:
+                termios.tcsetattr(self._fd, termios.TCSADRAIN, self._old_settings)
+            self._old_settings = None
 
     def _pause_interrupt_watch(self) -> bool:
         was_active = self._active
@@ -117,9 +116,20 @@ class TerminalInputCoordinator:
         if not should_resume or not self.is_tty or self._cancel_event is None:
             return
         assert self._loop is not None and self._fd is not None
-        self._old_settings = termios.tcgetattr(self.stream)
-        tty.setraw(self._fd)
-        self._loop.add_reader(self._fd, self._on_interrupt_input)
+        self._activate_reader()
+
+    def _activate_reader(self) -> None:
+        assert self._loop is not None and self._fd is not None
+        old_settings = termios.tcgetattr(self._fd)
+        try:
+            enable_cbreak_interrupt_mode(self._fd)
+            self._loop.add_reader(self._fd, self._on_interrupt_input)
+        except BaseException:
+            termios.tcsetattr(self._fd, termios.TCSADRAIN, old_settings)
+            self._old_settings = None
+            self._active = False
+            raise
+        self._old_settings = old_settings
         self._active = True
 
     async def read_text(self, prompt: str) -> str:
@@ -171,13 +181,16 @@ class TerminalInputCoordinator:
                     sys.stdout.write(char)
                     sys.stdout.flush()
 
+        reader_added = False
         try:
-            tty.setraw(fd)
+            enable_cbreak_interrupt_mode(fd)
             loop.add_reader(fd, on_input)
+            reader_added = True
             return await future
         finally:
-            loop.remove_reader(fd)
-            termios.tcsetattr(self.stream, termios.TCSADRAIN, old_settings)
+            if reader_added:
+                loop.remove_reader(fd)
+            termios.tcsetattr(fd, termios.TCSADRAIN, old_settings)
             sys.stdout.write("\n")
             sys.stdout.flush()
 
@@ -213,3 +226,10 @@ def coordinated_input(prompt: str) -> str:
         return input(prompt)
     with coordinator.paused_for_blocking_input():
         return input(prompt)
+
+
+def enable_cbreak_interrupt_mode(fd: int) -> None:
+    tty.setcbreak(fd)
+    attrs = termios.tcgetattr(fd)
+    attrs[3] &= ~termios.ISIG
+    termios.tcsetattr(fd, termios.TCSADRAIN, attrs)
