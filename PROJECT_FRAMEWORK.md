@@ -210,17 +210,18 @@ ToolRegistry
 
 核心工具长期注册在 `ToolRegistry`。
 
-### 5.2 动态工具来源
+### 5.2 本轮工具来源
 
-每轮请求调用 `build_round_tools()`：
+每轮请求调用 `build_round_tools(default_tools, core_tool_schemas)`，返回的是**固定**的核心 schema：
 
 ```text
-核心工具 schemas
-  + Capability Router 推荐
-  + Skill Runtime 路由出的 Skill tools
-  + MCP 固定 discovery/execution tools
+核心工具 schemas（含 Skill 固定入口和 MCP 固定 discovery/execution tools）
   -> 本轮 OpenAI tool schema
 ```
+
+Skill **不再**逐个注册动态 function schema，统一通过 `invoke_skill` 按名称调用；
+Capability Router 的推荐只作为文本进入 Runtime Context，不参与 tool schema 构造。
+因此本轮 schema 在整轮工具循环内保持同一对象，既避免膨胀也利于 prompt 缓存。
 
 多智能体委托工具不再注册给主模型。多智能体只能通过用户显式 `/multiAgent` 命令启动。
 
@@ -243,7 +244,27 @@ stream_one_round()
   -> 发送 messages + tools
   -> 流式打印 assistant 文本
   -> 聚合 tool_call delta
+  -> 失败且可重试：清空本次累积分片，指数退避后重发
   -> 返回 assistant_text, tool_calls, usage
+```
+
+重试覆盖请求创建**和**流式迭代两个阶段：
+
+| 失败类型 | 处理 |
+|---|---|
+| 连接失败 / 超时 | 重试（默认 3 次，退避 1s/2s/4s） |
+| 429、5xx | 重试 |
+| 4xx（鉴权、参数错误） | 立即失败，重试无意义 |
+
+重试次数与退避基准由 `MYCODINGAGENT_API_MAX_RETRIES` 和 `MYCODINGAGENT_API_RETRY_BASE_DELAY` 控制。
+
+重试耗尽后按本轮是否已有工具结果分流：
+
+```text
+已执行过工具
+  -> 保留用户消息和全部工具结果 + 追加中断说明（用户可说"继续"）
+没有任何进展
+  -> 回滚 messages[turn_start:]
 ```
 
 ### 6.2 有工具调用时
@@ -253,9 +274,9 @@ assistant tool_calls
   -> 追加 assistant message
   -> 遍历 tool_calls
   -> execute_local_tool()
-  -> 得到 ToolResult
+  -> 得到 (output, is_error)
   -> 保存完整工具输出
-  -> 生成模型可见 tool message
+  -> 生成模型可见 tool message（metadata 含 is_error）
   -> 再次调用模型
 ```
 
@@ -265,6 +286,10 @@ assistant tool_calls
 - 长输出存 SQLite，返回首尾预览和 `context_id`。
 - 虚拟化后历史工具输出只保留 metadata。
 - 需要完整内容时调用 `BatchRecoverContext`。
+
+失败判定只依据 `ToolResult.is_error`，并写入 metadata 的 `is_error` 字段，
+使冷历史虚拟化后仍保留错误状态。不再用输出文本中是否含 `error` 字样猜测失败。
+同一工具 + 同一参数在一轮内重复失败时，才追加“不要重复重试”提示。
 
 ### 6.3 无工具调用时
 
@@ -314,6 +339,21 @@ Bash(command)
 ```
 
 在多智能体 execute 中，Bash 额外需要 `declared_write_files`，Runtime 会用前后快照发现未声明写入并回滚。
+
+高危命令在进入容器前先经过审批（`tool_runtime/command_policy.py`）：
+
+```text
+classify_command(command)
+  -> normal：直接执行
+  -> dangerous：CommandApprovalHook 请求确认
+     -> 允许：正常执行
+     -> 拒绝：返回"用户拒绝执行该命令"（is_error=True）
+```
+
+判定范围限定为难以撤销或越界的操作（`rm -rf`、`git push --force`、`git reset --hard`、
+`sudo`、`chmod -R`、管道执行下载脚本、裸设备写入、工作区外绝对路径操作）。
+审批钩子仅在交互式终端由 `app/main.py` 注入；`approval_hook=None` 时不拦截，
+保证非交互场景和既有测试行为不变。
 
 ### 7.3 MCP 工具
 
@@ -802,8 +842,16 @@ capability_discovery -> 依赖抽象 capability source，不执行真实 MCP 调
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/test_memory_runtime.py tests/test_multi_agent.py
 ```
 
+改动主循环、工具执行或命令审批时补跑：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_llm_runtime_client.py tests/test_command_policy.py
+```
+
 更完整回归可继续运行：
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest -q
 ```
+
+当前基线：`257 passed`。

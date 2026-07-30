@@ -64,6 +64,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     file_state_cache: Any = None,
     workspace_tracker: Any = None,
     memory_runtime: MemoryRuntime | None = None,
+    command_approval_hook: Any = None,
 ) -> ToolRegistry:
     from mycodingagent.tool_runtime.ask_user import AskUser
     from mycodingagent.tool_runtime.bash import Bash  # 导入当前模块需要的依赖。
@@ -113,7 +114,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。
-    registry.register(Bash(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
+    registry.register(Bash(sandbox_root=sandbox_root, approval_hook=command_approval_hook))  # 注入审批钩子后，高危命令会先征求用户同意。
     registry.register(Glob(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
     registry.register(Grep(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
     if memory_runtime is not None:

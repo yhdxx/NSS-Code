@@ -121,7 +121,7 @@ def _dedupe_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
 @dataclass(frozen=True)
 class ApiConfig:
     deepseek_api_key: str = field(
-        default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", "sk-075f2aa02c094f4d9729c9619b77c438")
+        default_factory=lambda: os.getenv("DEEPSEEK_API_KEY", "")  # 密钥只能来自环境变量，不在仓库中保留任何默认值。
     )
     base_url: str = field(default_factory=lambda: os.getenv("DEEPSEEK_BASE_URL", "https://api.deepseek.com"))
     model: str = field(default_factory=lambda: os.getenv("DEEPSEEK_MODEL", "deepseek-v4-pro"))
@@ -134,6 +134,10 @@ class ClientConfig:
         default_factory=lambda: _env_int("MYCODINGAGENT_MAX_DISPLAY_STRING_CHARS", 12000)
     )
     max_tool_output_chars: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MAX_TOOL_OUTPUT_CHARS", 12000))
+    api_max_retries: int = field(default_factory=lambda: max(0, _env_int("MYCODINGAGENT_API_MAX_RETRIES", 3)))
+    api_retry_base_delay: float = field(
+        default_factory=lambda: max(0.0, _env_float("MYCODINGAGENT_API_RETRY_BASE_DELAY", 1.0))
+    )
     multiline_argument_fields: frozenset[str] = frozenset({"command", "content", "old_string", "new_string"})
     debug: bool = field(default_factory=lambda: _env_bool("DEBUG", _env_bool("MYCODINGAGENT_DEBUG", False)))
     step_token: bool = field(default_factory=lambda: _env_bool("STEP_TOKEN", True))

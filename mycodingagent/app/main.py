@@ -12,6 +12,7 @@ for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_P
     os.environ.pop(env_key, None)  # 执行当前步骤的业务逻辑。
 
 import asyncio  # 导入当前模块需要的依赖。
+import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
 import pyfiglet  # 导入当前模块需要的依赖。
 
 from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
@@ -27,6 +28,7 @@ from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的
 from mycodingagent.tool_runtime import create_default_registry  # 导入当前模块需要的依赖。
 from mycodingagent.tool_runtime.bash import ensure_docker_image, get_docker_image  # 启动时确保 Bash 工具使用的 Docker 镜像已在本地可用。
 from mycodingagent.tool_runtime.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
+from mycodingagent.tool_runtime.command_policy import CLICommandApprovalHook  # 高危 Bash 命令执行前征求用户同意。
 from mycodingagent.tool_runtime.file_state_cache import FileStateCache  # 共享文件读取状态，判断用户是否修改了模型已读文件。
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
@@ -49,6 +51,15 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     ascii_art = pyfiglet.figlet_format("MyCodingAgent")  # 保存配置值或中间计算结果。
     print(ascii_art)  # 执行当前步骤的业务逻辑。
 
+    if not CONFIG.api.deepseek_api_key.strip():  # 缺少密钥时后续每次模型调用都会失败，提前给出可执行的指引。
+        print(
+            "未检测到 API 密钥。请设置环境变量后重新启动：\n"
+            "    export DEEPSEEK_API_KEY=<你的密钥>\n"
+            "如需切换服务地址或模型，可同时设置 DEEPSEEK_BASE_URL 和 DEEPSEEK_MODEL。",
+            flush=True,
+        )
+        return  # 密钥缺失属于配置问题，直接退出比进入对话后反复报错更清晰。
+
     docker_image = get_docker_image()  # 读取 Bash 工具后续执行命令时会使用的统一 Docker 镜像。
     print(f"检查 Bash Docker 镜像：{docker_image}", flush=True)  # 启动阶段明确告诉用户正在准备命令执行环境。
     image_result = await ensure_docker_image(docker_image)  # 如果镜像不存在，会在这里执行 docker pull。
@@ -69,10 +80,12 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
+    command_approval_hook = CLICommandApprovalHook() if sys.stdin.isatty() else None  # 非交互环境无法征求用户同意，退化为不拦截。
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
+        command_approval_hook=command_approval_hook,
     )
     multi_agent_store = MultiAgentStore()
     long_term_memory_runtime = None
@@ -211,19 +224,29 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
 
             # 携带历史消息进行对话，并获取更新后的消息列表
             # 注意：首次对话不传 messages（None），让 ask_deepseek 自动注入系统提示词 "H-Agent"
-            _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
-                api_client,
-                prompt,
-                registry,
-                tools,
-                messages or None,
-                skill_runtime=skill_runtime,
-                core_tool_schemas=core_tool_schemas,
-                workspace_tracker=workspace_tracker,
-                memory_runtime=memory_runtime,
-                capability_router=capability_router,
-                long_term_memory_runtime=long_term_memory_runtime,
-            )  # 结束上方的多行结构。
+            try:  # 单轮对话内部的意外异常不应该终止整个 agent 进程；会话状态已在轮内持久化。
+                _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
+                    api_client,
+                    prompt,
+                    registry,
+                    tools,
+                    messages or None,
+                    skill_runtime=skill_runtime,
+                    core_tool_schemas=core_tool_schemas,
+                    workspace_tracker=workspace_tracker,
+                    memory_runtime=memory_runtime,
+                    capability_router=capability_router,
+                    long_term_memory_runtime=long_term_memory_runtime,
+                )  # 结束上方的多行结构。
+            except (EOFError, KeyboardInterrupt):  # 用户主动中断时保持原有退出语义。
+                raise
+            except Exception as exc:  # 其余异常打印后回到主循环，让用户可以继续对话或正常退出。
+                print(f"\n本轮执行出错：{type(exc).__name__}: {exc}", flush=True)
+                if CONFIG.client.debug:
+                    import traceback
+
+                    traceback.print_exc()
+                continue
             if memory_runtime is not None:
                 rollover = await memory_runtime.on_turn_completed(
                     messages=messages,

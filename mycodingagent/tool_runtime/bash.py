@@ -10,6 +10,12 @@ from pydantic import BaseModel, Field  # 定义并校验 Bash 工具对外暴露
 
 from mycodingagent.configuration import CONFIG  # 统一读取 Docker 镜像、资源限制和超时配置。
 from mycodingagent.tool_runtime.base import Tool, ToolResult, get_sandbox_root  # 复用统一工具基类、返回结构和沙箱根目录解析逻辑。
+from mycodingagent.tool_runtime.command_policy import (  # 高危命令分类与用户审批；沙箱之外再加一层不可逆操作保护。
+    USER_DENIED_COMMAND_MESSAGE,
+    CommandApprovalHook,
+    CommandApprovalRequest,
+    classify_command,
+)
 
 MAX_TIMEOUT = CONFIG.docker.max_timeout  # 单次命令允许的最大运行秒数；即使调用方传入更大 timeout，也会被截断到该上限。
 DEFAULT_DOCKER_IMAGE = CONFIG.docker.image  # 默认执行镜像，提供基础 Python/Bash 环境，同时保持镜像体积较小。
@@ -48,6 +54,7 @@ class Params(BaseModel):  # Bash 工具的入参模型，会被工具注册表�
         default=CONFIG.docker.default_timeout,
         description=f"Timeout in seconds (max {MAX_TIMEOUT})",
     )  # 调用方期望的超时时间；实际执行时会再受 MAX_TIMEOUT 限制。
+    intent: str = Field(default="", description="Short intent for this command")  # 基类 schema 会强制要求 intent；这里显式声明，避免校验时被丢弃。
 
 
 class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器运行，和文件读写工具一样受沙箱目录约束。
@@ -59,13 +66,35 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
     params_model = Params  # 指定参数校验模型；客户端执行工具前会用它校验模型生成的 JSON 参数。
     category = "command"  # 标记为命令类工具，区别于 ReadFile/Glob/Grep 这类只读工具和 WriteFile/EditFile 写工具。
 
-    def __init__(self, sandbox_root: Path | None = None) -> None:  # 创建工具实例时确定要挂载进容器的宿主机工作区。
+    def __init__(
+        self,
+        sandbox_root: Path | None = None,
+        approval_hook: CommandApprovalHook | None = None,
+    ) -> None:  # 创建工具实例时确定要挂载进容器的宿主机工作区。
         self._sandbox_root = sandbox_root or get_sandbox_root()  # 未显式传入时，使用统一沙箱根目录解析逻辑，通常是启动 agent 的当前目录。
+        self._approval_hook = approval_hook  # 为 None 时不做审批，保持非交互场景和既有测试行为不变。
 
 
     async def execute(self, params: Params) -> ToolResult:  # 执行一次 Bash 工具调用，并把 stdout/stderr 封装成 ToolResult 返回给模型。
         if shutil.which("docker") is None:  # 先检查宿主环境是否能找到 Docker，避免进入子进程后才得到不清晰的失败信息。
             return ToolResult(output="Error: docker executable not found", is_error=True)  # Docker 不可用时直接返回工具错误，agent 可据此向用户说明环境问题。
+
+        if self._approval_hook is not None:  # 只有注入了审批钩子的交互式会话才会拦截高危命令。
+            risk, reason = classify_command(params.command)  # 判断命令是否属于难以撤销或越界的高危操作。
+            if risk == "dangerous":
+                decision = await self._approval_hook.approve(
+                    CommandApprovalRequest(
+                        command=params.command,
+                        risk=risk,
+                        reason=reason,
+                        intent=str(getattr(params, "intent", "") or ""),
+                    )
+                )
+                if not decision.allowed:  # 明确区分"用户拒绝"和"工具故障"，避免模型把拒绝当成环境问题反复重试。
+                    return ToolResult(
+                        output=f"{USER_DENIED_COMMAND_MESSAGE}：{reason}",
+                        is_error=True,
+                    )
 
         timeout = min(params.timeout, MAX_TIMEOUT)  # 对调用方提供的超时时间做硬上限保护，防止长时间占用 Docker 资源。
         image = get_docker_image()  # 使用和启动预拉取一致的镜像名，确保每次 Bash 调用都进入同一个镜像族。

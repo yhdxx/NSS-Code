@@ -156,15 +156,19 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 
 ### 5.1 Tool schema 构造
 
-本轮工具列表由核心工具、MCP 工具适配器、Skill 路由结果共同组成：
+本轮工具列表是一组**固定**的 schema，不随用户请求动态增减：
 
 ```text
-核心工具
-  + MCP discovery/execution tools
-  + Skill Runtime 动态暴露的 Skill tools
+核心工具（文件读写、Glob/Grep、Bash、ask_user）
+  + MCP 固定 discovery/execution tools
+  + Skill 固定入口（search_tool / Get_all_tool / invoke_skill 等）
   + 上下文恢复工具
   -> OpenAI function calling tools
 ```
+
+Skill **不再**为每个 Skill 注册独立 function schema，而是统一通过 `invoke_skill` 单入口按名称调用；
+Capability Router 的推荐结果只作为文本进入 Runtime Context，不改变 tool schema。
+这样 Skill 和 MCP server 数量增长都不会让工具列表膨胀，也让整轮的 schema 保持稳定、利于 prompt 缓存命中。
 
 多智能体委托工具不再暴露给主模型。多智能体只能由用户显式输入 `/multiAgent` 触发。
 
@@ -176,6 +180,11 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 2. 流式打印 assistant 文本。
 3. 聚合 function calling 分片。
 4. 返回 assistant 文本、tool_calls 和 token usage。
+
+请求创建和流式迭代整体处于重试保护中：连接失败、超时和 429/5xx 会按指数退避重试
+（`MYCODINGAGENT_API_MAX_RETRIES`，默认 3 次；`MYCODINGAGENT_API_RETRY_BASE_DELAY`，默认 1 秒）。
+4xx 属于请求本身的问题，不重试。每次重试都会丢弃本次已累积的文本和工具调用分片，
+避免拼接出重复正文或半截 JSON 参数。
 
 ### 5.3 工具执行
 
@@ -190,6 +199,19 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 7. 再次调用模型，让模型基于工具结果继续推理。
 
 工具调用必须包含短 `intent` 字段。上下文虚拟化后，历史工具输出优先使用 `intent` 作为可读摘要。
+
+工具是否失败以 `ToolResult.is_error` 为唯一依据，并写入 tool metadata 的 `is_error`，
+使冷历史在只保留 metadata 后仍能表达调用成败。Runtime 不再根据输出文本里是否出现 `error`
+字样猜测失败——否则读取一个含 `error` 字段的正常 JSON 文件会被误判。
+
+### 5.4 API 失败与轮次保护
+
+如果重试耗尽仍然失败：
+
+- 本轮**已经执行过工具**：保留用户消息和全部工具结果，追加一条说明，用户可直接说“继续”接着做。
+- 本轮**没有任何进展**：回滚到发起请求前的干净状态。
+
+单轮内部的意外异常由主循环兜底捕获，打印后回到输入提示，不会终止整个 agent 进程。
 
 ---
 
@@ -219,6 +241,22 @@ WriteFile/EditFile
 - 限制 CPU、内存和超时
 - 容器执行后自动删除
 - 禁止越界访问宿主机路径
+
+沙箱之外还有一层高危命令审批（`tool_runtime/command_policy.py`）：
+
+```text
+Bash(command)
+  -> classify_command() 判定风险
+  -> normal：直接执行
+  -> dangerous：请求用户确认，拒绝则返回"用户拒绝执行该命令"
+```
+
+判定标准是“难以撤销”或“影响范围超出工作区”，例如 `rm -rf`、`git push --force`、
+`git reset --hard`、`sudo`、`chmod -R`、下载后直接管道执行、写裸设备、指向工作区外的绝对路径操作。
+普通读写命令（`ls`、`pytest`、`git status`、`git push` 到普通分支等）不触发确认——
+误报会训练用户盲目点同意，比不做拦截更糟。
+
+审批钩子由 `app/main.py` 仅在交互式终端注入；非交互环境（脚本、测试、CI）不拦截，保持既有行为。
 
 ### 6.3 MCP 权限控制
 
@@ -526,8 +564,14 @@ tests/                      # 单元、集成和评测测试
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/test_memory_runtime.py tests/test_multi_agent.py
 ```
 
-最近一次相关回归结果：
+主循环、API 重试和命令审批：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_llm_runtime_client.py tests/test_command_policy.py
+```
+
+最近一次全量回归结果：
 
 ```text
-113 passed
+257 passed
 ```

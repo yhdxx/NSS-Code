@@ -33,6 +33,9 @@ MODEL = CONFIG.api.model  # 模型名称；允许通过环境变量切换模型�
 MAX_TOOL_ROUNDS = CONFIG.client.max_tool_rounds  # 单次用户请求最多允许模型连续调用工具的轮数，用于防止无限循环。
 MAX_DISPLAY_STRING_CHARS = CONFIG.client.max_display_string_chars  # 终端展示超长字符串参数时的最大字符数，避免 WriteFile 内容刷屏。
 MAX_TOOL_OUTPUT_CHARS = CONFIG.client.max_tool_output_chars
+API_MAX_RETRIES = CONFIG.client.api_max_retries  # 网络抖动时重试次数；0 表示不重试。
+API_RETRY_BASE_DELAY = CONFIG.client.api_retry_base_delay  # 指数退避基准秒数，第 n 次退避 base * 2**n。
+RETRYABLE_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504})  # 服务端瞬时故障和限流；4xx 参数/鉴权错误重试无意义。
 MULTILINE_ARGUMENT_FIELDS = CONFIG.client.multiline_argument_fields  # 这些字段通常包含代码、命令或长文本，打印工具调用时优先按多行展示。
 DEBUG = CONFIG.client.debug
 STEP_TOKEN = CONFIG.client.step_token
@@ -467,17 +470,17 @@ async def execute_local_tool(
     tool_name: str,
     raw_args: str,
     skill_runtime: Any | None = None,
-) -> str:  # 根据模型请求的工具名和参数，在本地执行对应工具。
+) -> tuple[str, bool]:  # 根据模型请求的工具名和参数，在本地执行对应工具，返回 `(输出文本, 是否失败)`。
     # `raw_args` 的来源是 assistant_message["tool_calls"][i]["function"]["arguments"]。  # 说明工具执行参数从消息历史中的哪里来。
     # 标准结构示例：{"file_path": "a.py", "content": "..."}。  # 说明执行前会把 JSON 字符串还原成 dict。
     try:  # 解析工具参数 JSON；模型生成非法 JSON 时工具不能执行。
         args = json.loads(raw_args) if raw_args else {}  # 有参数时解析成 dict，无参数时使用空 dict。
     except json.JSONDecodeError as exc:  # 捕获 JSON 解析失败，避免整个 agent 崩溃。
-        return f"Tool execution error: invalid JSON arguments: {exc}"  # 把错误作为 tool 输出返回给模型，让模型有机会修正参数。
+        return f"Tool execution error: invalid JSON arguments: {exc}", True  # 把错误作为 tool 输出返回给模型，让模型有机会修正参数。
 
     tool = registry.get(tool_name)  # 从工具注册表按名称查找本地工具对象。
     if tool is None:  # 如果模型调用了不存在的工具名，不能执行。
-        return f"Error: unknown tool {tool_name}"  # 返回明确错误，帮助模型或开发者定位工具名问题。
+        return f"Error: unknown tool {tool_name}", True  # 返回明确错误，帮助模型或开发者定位工具名问题。
 
     try:  # 参数校验和工具执行都可能失败，因此统一捕获异常转成字符串输出。
         params = tool.params_model.model_validate(args)  # 使用工具自己的 Pydantic 参数模型校验和转换参数。
@@ -486,9 +489,27 @@ async def execute_local_tool(
             print(notice, flush=True)
         result = await tool.execute(params)  # 调用工具的异步执行方法，得到 ToolResult。
     except Exception as exc:  # 捕获参数校验、文件 IO、Docker/Bash 等执行阶段异常。
-        return f"Tool execution error: {exc}"  # 将异常信息作为工具输出返回给模型。
+        return f"Tool execution error: {exc}", True  # 将异常信息作为工具输出返回给模型。
 
-    return result.output  # 只把工具输出文本返回给模型；`is_error` 当前没有写入消息结构。
+    return result.output, bool(result.is_error)  # 工具自己声明的 `is_error` 是权威失败信号，直接向上传递。
+
+
+def is_retryable_api_error(exc: Exception) -> bool:  # 判断一次 API 失败是否值得重试。
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):  # 连接失败和超时通常是瞬时网络问题。
+        return True
+    status_code = getattr(exc, "status_code", None)  # APIStatusError 及其子类携带 HTTP 状态码。
+    if status_code is None:
+        response = getattr(exc, "response", None)  # 部分异常把状态码放在 response 上。
+        status_code = getattr(response, "status_code", None)
+    if isinstance(status_code, int):
+        return status_code in RETRYABLE_STATUS_CODES  # 只重试限流和服务端故障；4xx 说明请求本身有问题。
+    return False  # 状态码未知时不重试，避免对确定性失败反复消耗配额。
+
+
+def api_error_message(exc: Exception) -> str:  # 把 API 异常转成模型和用户都能读懂的错误文本。
+    if isinstance(exc, (APIConnectionError, APITimeoutError)):
+        return f"Error: API connection failed: {exc}"
+    return f"Error: API request failed: {exc}"
 
 
 async def stream_one_round(  # 向模型发起一轮流式请求，并收集正文和工具调用。
@@ -503,59 +524,75 @@ async def stream_one_round(  # 向模型发起一轮流式请求，并收集正�
     # `messages` 典型结构：  # 说明传给模型的上下文消息数组。
     # [{"role": "system", "content": "..."}, {"role": "user", "content": "..."}]  # 初始请求只包含系统提示和用户问题。
     # 工具调用后会追加 assistant tool_calls 消息和 role=tool 的工具结果消息。  # 后续循环依赖这些消息继续推理。
-    try:
-        request: dict[str, Any] = {
-            "model": model,
-            "messages": messages,
-            "stream": True,
-        }
-        if tools:
-            request["tools"] = tools
-        stream = await client.chat.completions.create(**request)  # 发起流式 Chat Completions 请求。
-    except (APIConnectionError, APITimeoutError) as exc:
-        error = f"Error: API connection failed: {exc}"
-        if display:
-            print(f"{output_label}：{error}", flush=True)
-        return error, [], None
-    except APIError as exc:
-        error = f"Error: API request failed: {exc}"
-        if display:
-            print(f"{output_label}：{error}", flush=True)
-        return error, [], None
+    request: dict[str, Any] = {
+        "model": model,
+        "messages": messages,
+        "stream": True,
+    }
+    if tools:
+        request["tools"] = tools
 
     content_parts: list[str] = []  # 收集模型普通文本 delta，最终拼成完整 assistant 文本。
     pending_tool_calls: dict[int, PendingToolCall] = {}  # 按 tool_call.index 聚合流式工具调用分片。
     last_usage = None  # 流式最后一个 chunk 携带 usage 统计（prompt_tokens / completion_tokens / cache 命中/未命中）。
 
-    if display:
-        print(f"{output_label}：", end="", flush=True)  # 在终端打印模型输出前缀，`end=""` 让后续流式文本接在同一行。
-    async for chunk in stream:  # 异步迭代服务端不断返回的增量 chunk。
-        if not chunk.choices:  # 某些兼容接口可能返回无 choices 的心跳/空 chunk。
-            continue  # 跳过空 chunk，继续等待下一段有效内容。
-
-        delta = chunk.choices[0].delta  # 取第一个候选的增量内容；本项目没有请求多候选输出。
-        text = getattr(delta, "content", None)  # 普通文本增量在 `delta.content` 中；不存在时为 None。
-        if text:  # 只有本 chunk 含有文本时才打印和收集。
+    # 请求创建和流式迭代都可能因网络中断失败，因此整体放进重试循环：
+    # 只在流式迭代**中途**失败时才需要丢弃已累积的分片，否则重试会产生重复文本或半截 JSON 参数。
+    for attempt in range(API_MAX_RETRIES + 1):
+        content_parts = []  # 每次尝试都从干净状态开始，避免跨尝试拼接出错乱输出。
+        pending_tool_calls = {}
+        last_usage = None
+        printed_any_text = False  # 记录本次尝试是否已经向终端输出过正文，决定重试提示前是否需要换行。
+        try:
+            stream = await client.chat.completions.create(**request)  # 发起流式 Chat Completions 请求。
             if display:
-                print(text, end="", flush=True)  # 立即把文本打印到终端，实现边生成边显示。
-            content_parts.append(text)  # 同时保存文本片段，函数结束时拼成完整 assistant_text。
+                print(f"{output_label}：", end="", flush=True)  # 在终端打印模型输出前缀，`end=""` 让后续流式文本接在同一行。
+            async for chunk in stream:  # 异步迭代服务端不断返回的增量 chunk。
+                if not chunk.choices:  # 某些兼容接口可能返回无 choices 的心跳/空 chunk。
+                    continue  # 跳过空 chunk，继续等待下一段有效内容。
 
-        tool_deltas = getattr(delta, "tool_calls", None) or []  # 工具调用增量在 `delta.tool_calls` 中；缺失时按空列表处理。
-        for tool_delta in tool_deltas:  # 一个 chunk 里可能同时携带多个工具调用的增量。
-            state = pending_tool_calls.setdefault(tool_delta.index, PendingToolCall())  # 用 index 找到或创建对应工具调用的聚合状态。
-            if tool_delta.id:  # 工具调用 ID 通常只在某个早期 chunk 中出现。
-                state.tool_id = tool_delta.id  # 保存 ID，后续 `role=tool` 消息需要引用它。
+                delta = chunk.choices[0].delta  # 取第一个候选的增量内容；本项目没有请求多候选输出。
+                text = getattr(delta, "content", None)  # 普通文本增量在 `delta.content` 中；不存在时为 None。
+                if text:  # 只有本 chunk 含有文本时才打印和收集。
+                    if display:
+                        print(text, end="", flush=True)  # 立即把文本打印到终端，实现边生成边显示。
+                        printed_any_text = True
+                    content_parts.append(text)  # 同时保存文本片段，函数结束时拼成完整 assistant_text。
 
-            function_delta = getattr(tool_delta, "function", None)  # 函数工具调用的增量信息在 `tool_delta.function` 中。
-            if function_delta is None:  # 如果当前增量没有 function 字段，就没有可拼接内容。
-                continue  # 跳过该工具调用增量。
-            if function_delta.name:  # 函数名也可能分片返回，但多数情况下只出现一次。
-                state.tool_name = function_delta.name  # 保存工具名，例如 `WriteFile`。
-            if function_delta.arguments:  # 参数 JSON 会经常被拆成多个字符串片段流式返回。
-                state.arguments += function_delta.arguments  # 追加参数片段，直到最终形成完整 JSON 字符串。
+                tool_deltas = getattr(delta, "tool_calls", None) or []  # 工具调用增量在 `delta.tool_calls` 中；缺失时按空列表处理。
+                for tool_delta in tool_deltas:  # 一个 chunk 里可能同时携带多个工具调用的增量。
+                    state = pending_tool_calls.setdefault(tool_delta.index, PendingToolCall())  # 用 index 找到或创建对应工具调用的聚合状态。
+                    if tool_delta.id:  # 工具调用 ID 通常只在某个早期 chunk 中出现。
+                        state.tool_id = tool_delta.id  # 保存 ID，后续 `role=tool` 消息需要引用它。
 
-        if hasattr(chunk, "usage") and chunk.usage:  # 流式最后一个 chunk 通常携带 usage 统计信息。
-            last_usage = chunk.usage  # 保留最后一帧的 usage，函数结束时返回。
+                    function_delta = getattr(tool_delta, "function", None)  # 函数工具调用的增量信息在 `tool_delta.function` 中。
+                    if function_delta is None:  # 如果当前增量没有 function 字段，就没有可拼接内容。
+                        continue  # 跳过该工具调用增量。
+                    if function_delta.name:  # 函数名也可能分片返回，但多数情况下只出现一次。
+                        state.tool_name = function_delta.name  # 保存工具名，例如 `WriteFile`。
+                    if function_delta.arguments:  # 参数 JSON 会经常被拆成多个字符串片段流式返回。
+                        state.arguments += function_delta.arguments  # 追加参数片段，直到最终形成完整 JSON 字符串。
+
+                if hasattr(chunk, "usage") and chunk.usage:  # 流式最后一个 chunk 通常携带 usage 统计信息。
+                    last_usage = chunk.usage  # 保留最后一帧的 usage，函数结束时返回。
+            break  # 本次尝试完整读完整个流，跳出重试循环。
+        except (APIConnectionError, APITimeoutError, APIError) as exc:
+            if not is_retryable_api_error(exc) or attempt >= API_MAX_RETRIES:
+                error = api_error_message(exc)
+                if display:
+                    if printed_any_text:
+                        print()  # 已经输出过正文时先换行，避免错误信息接在模型半截输出后面。
+                    print(f"{output_label}：{error}", flush=True)
+                return error, [], None
+            delay = API_RETRY_BASE_DELAY * (2 ** attempt)  # 指数退避，避免瞬时故障时连续打满请求。
+            if display:
+                if printed_any_text:
+                    print()  # 已打印的部分文本无法撤回，换行后给出明确的重试提示。
+                print(
+                    f"[连接中断，{delay:.1f}s 后重试 {attempt + 1}/{API_MAX_RETRIES}] {exc}",
+                    flush=True,
+                )
+            await asyncio.sleep(delay)
 
     if display and content_parts:  # 如果本轮模型输出过普通文本，需要补一个换行结束终端显示。
         print()  # 打印换行，避免后面的“工具调用”标题接在模型正文后。
@@ -797,16 +834,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     ).build()
     rendered_prompt = PromptRenderer.render_current_user_message(base_runtime_context, prompt)
     round_messages = list(messages)
-    if capability_router is None:
-        current_tools = await build_round_tools(prompt, tools, skill_runtime, core_tool_schemas)
-    else:
-        current_tools = await build_round_tools(
-            prompt,
-            tools,
-            skill_runtime,
-            core_tool_schemas,
-            capability_router=capability_router,
-        )
+    current_tools = await build_round_tools(tools, core_tool_schemas)  # 本轮工具列表在整轮内保持稳定，利于 prompt 缓存命中。
     seen_tool_failures: set[tuple[str, str]] = set()
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
@@ -900,7 +928,22 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             if STEP_TOKEN:
                 print_token_block(f"[Token] {' '.join(parts)}")
         if assistant_text.startswith("Error: API ") and not tool_calls:
-            del messages[turn_start:]
+            # `turn_start` 指向用户消息追加之前的位置。本轮如果已经执行过工具，
+            # 这些工具结果是真实的工作进展，不能因为一次 API 失败被整体丢弃。
+            has_progress = len(messages) > turn_start + 1
+            if has_progress:
+                messages.append(
+                    {
+                        "role": "assistant",
+                        "content": (
+                            f"{assistant_text}\n\n"
+                            "本轮已完成的工具调用结果已保留在上下文中。可以直接说“继续”接着未完成的部分，"
+                            "不需要从头重来。"
+                        ),
+                    }
+                )
+            else:
+                del messages[turn_start:]  # 本轮除用户消息外没有任何进展，回滚到干净状态。
             save_session_state(sync=True)
             print_turn_token_summary()
             record_long_term_turn_usage(False)
@@ -941,13 +984,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
 
         for index, tool_call in enumerate(tool_calls):  # 逐个执行模型请求的本地工具调用。
             tool_call_id = tool_call.tool_id or f"tool_call_{index}"  # 计算工具调用 ID，必须和上面的 assistant tool_calls 对象一致。
-            tool_output = await execute_local_tool(registry, tool_call.tool_name, tool_call.arguments, skill_runtime)  # 执行本地工具并得到输出文本。
+            tool_output, tool_failed = await execute_local_tool(registry, tool_call.tool_name, tool_call.arguments, skill_runtime)  # 执行本地工具并得到输出文本和失败标记。
             failure_key = (tool_call.tool_name, tool_call.arguments.strip())
-            if (
-                tool_output.startswith("Tool execution error:")
-                or tool_output.startswith("Error:")
-                or '"error"' in tool_output[:300]
-            ):
+            if tool_failed:  # 只信任工具自己声明的 `is_error`，不再根据输出文本里是否出现 "error" 猜测失败。
                 if failure_key in seen_tool_failures:
                     tool_output += (
                         "\nRepeated tool failure with the same tool and arguments in this user turn. "
@@ -959,6 +998,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             output_id = ""
             skill_related_tool = is_skill_related_tool(tool_call.tool_name)
             metadata = tool_call_metadata(tool_call.tool_name, tool_call.arguments, tool_output)
+            metadata["is_error"] = tool_failed  # 冷历史只保留 metadata，失败状态必须随之保留，否则模型无法判断历史调用成败。
             if memory_runtime is not None and session_id and not skill_related_tool:
                 output_id = memory_runtime.save_tool_output(
                     session_id=session_id,
@@ -1066,35 +1106,10 @@ def truncate_tool_output(output: str) -> str:
     return output[:MAX_TOOL_OUTPUT_CHARS] + f"\n... <tool output truncated {remaining} chars>"
 
 
-def build_turn_temporary_system_messages(workspace_tracker: Any | None) -> list[dict[str, Any]]:
-    return []
-
-
-def with_workspace_change_notice(messages: list[dict[str, Any]], workspace_tracker: Any | None) -> list[dict[str, Any]]:
-    return list(messages)
-
-
-def with_turn_temporary_system_messages(
-    messages: list[dict[str, Any]],
-    temporary_system_messages: list[dict[str, Any]],
-) -> list[dict[str, Any]]:
-    if not temporary_system_messages:
-        return list(messages)
-    insert_at = 1 if messages and messages[0].get("role") == "system" else 0
-    return [*messages[:insert_at], *temporary_system_messages, *messages[insert_at:]]
-
-
-def workspace_change_notice_content(workspace_tracker: Any | None) -> str:
-    return ""
-
-
 async def build_round_tools(
-    prompt: str,
     default_tools: list[dict[str, Any]],
-    skill_runtime: Any | None,
     core_tool_schemas: list[dict[str, Any]] | None,
-    capability_router: Any | None = None,
-) -> list[dict[str, Any]]:
+) -> list[dict[str, Any]]:  # 本轮 tool schema 固定为核心工具；Skill 通过 invoke_skill 单入口调用，不再逐个动态注册。
     if core_tool_schemas is None:
         return default_tools
     return format_openai_tools(core_tool_schemas)

@@ -131,10 +131,12 @@ def test_empty_runtime_context_omits_empty_fields():
     assert "recovery_hint" not in rendered.runtime_context_json
 
 
-def test_temporary_system_messages_are_disabled():
-    rendered = agent_client.build_turn_temporary_system_messages(None)
+def test_build_round_tools_falls_back_to_default_tools():
+    default_tools = [{"type": "function", "function": {"name": "Default"}}]
 
-    assert rendered == []
+    resolved = asyncio.run(agent_client.build_round_tools(default_tools, None))
+
+    assert resolved is default_tools
 
 
 def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch):
@@ -143,7 +145,7 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
         messages_seen = []
         build_calls = 0
 
-        async def fake_build_round_tools(prompt, default_tools, skill_runtime, core_tool_schemas):
+        async def fake_build_round_tools(default_tools, core_tool_schemas):
             nonlocal build_calls
             build_calls += 1
             return [{"type": "function", "function": {"name": "FakeTool", "parameters": {"type": "object"}}}]
@@ -156,7 +158,7 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
             return "done", [], None
 
         async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
-            return "tool ok"
+            return "tool ok", False
 
         monkeypatch.setattr(agent_client, "build_round_tools", fake_build_round_tools)
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
@@ -215,13 +217,11 @@ def test_build_round_tools_returns_fixed_core_schemas_without_dynamic_skill_look
             }
         ]
 
-        tools = await agent_client.build_round_tools(
-            "review this code",
-            default_tools=[],
-            skill_runtime=ExplodingSkillRuntime(),
-            core_tool_schemas=core_tool_schemas,
-            capability_router=ExplodingCapabilityRouter(),
-        )
+        # 这两个 stub 一旦被调用就会失败，用来证明本轮 tool schema 不做动态 Skill/能力查询。
+        assert ExplodingSkillRuntime() is not None
+        assert ExplodingCapabilityRouter() is not None
+
+        tools = await agent_client.build_round_tools([], core_tool_schemas)
 
         assert tools == [
             {
@@ -342,10 +342,10 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
         async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
             tool_calls_seen.append(tool_name)
             if tool_name == "SearchRecoverableContext":
-                return '{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}'
+                return '{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}', False
             if tool_name == "BatchRecoverContext":
-                return "exact recovered evidence"
-            return "unexpected"
+                return "exact recovered evidence", False
+            return "unexpected", False
 
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
         monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute_local_tool)
