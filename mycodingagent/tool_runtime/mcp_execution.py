@@ -34,10 +34,10 @@ class GetPromptParams(BaseModel):
 
 
 class CallMCPToolTool(Tool):
-    name = "call_tool"
+    name = "call_mcp_tool"
     description = (
-        "调用已配置 MCP Server 中的一个工具，并提供简短 intent。只读工具可以直接执行；"
-        "写入、危险或未知工具需要用户批准。"
+        "调用已配置 MCP Server 中的一个工具，并提供简短 intent。调用前必须先通过 list_mcp_tools 或 search_mcp_tools "
+        "实际查看该工具的名称、描述和参数元数据；只读工具可以直接执行，写入、危险或未知工具需要用户批准。"
     )
     params_model = CallToolParams
     category = "command"
@@ -58,11 +58,17 @@ class CallMCPToolTool(Tool):
         intent = _compact_intent(params.intent)
         if not intent:
             return ToolResult(output="MCP 工具调用需要提供简短 intent。", is_error=True)
+        cached_metadata = self._manager.cached_tool_payload(params.server, params.tool)
+        if not self._manager.discovery_gate.allows(params.server, params.tool, cached_metadata):
+            return _discovery_required_result(params.server, params.tool)
         config = self._manager.server_configs.get(params.server)
         try:
             live_metadata = await self._manager.live_tool_metadata(params.server, params.tool)
         except Exception:
             live_metadata = {}
+        current_metadata = self._manager.cached_tool_payload(params.server, params.tool)
+        if not self._manager.discovery_gate.allows(params.server, params.tool, current_metadata):
+            return _discovery_required_result(params.server, params.tool, metadata_changed=True)
         risk = self._policy.classify(
             server_config=config,
             tool_name=params.tool,
@@ -93,7 +99,7 @@ class CallMCPToolTool(Tool):
 
 
 class ReadMCPResourceTool(Tool):
-    name = "read_resource"
+    name = "read_mcp_resource"
     description = "根据 URI 从已配置的 Server 读取一个 MCP 资源，并提供简短 intent。"
     params_model = ReadResourceParams
     category = "read"
@@ -118,7 +124,7 @@ class ReadMCPResourceTool(Tool):
 
 
 class GetMCPPromptTool(Tool):
-    name = "get_prompt"
+    name = "get_mcp_prompt"
     description = "根据名称从已配置的 Server 获取一个 MCP Prompt，并提供简短 intent。"
     params_model = GetPromptParams
     category = "read"
@@ -159,6 +165,27 @@ def _compact_intent(value: str) -> str:
     if len(text) <= MAX_INTENT_CHARS:
         return text
     return text[:MAX_INTENT_CHARS]
+
+
+def _discovery_required_result(server: str, tool: str, *, metadata_changed: bool = False) -> ToolResult:
+    message = (
+        "MCP 工具元数据已变化，必须重新查看名称、描述和参数元数据。"
+        if metadata_changed
+        else "调用 MCP 工具前必须先查看该工具的名称、描述和参数元数据。"
+    )
+    return _json_result(
+        {
+            "error": message,
+            "error_code": "mcp_tool_metadata_changed" if metadata_changed else "mcp_tool_not_discovered",
+            "server": server,
+            "tool": tool,
+            "required_discovery": [
+                {"tool": "search_mcp_tools", "arguments": {"server": server, "query": tool}},
+                {"tool": "list_mcp_tools", "arguments": {"server": server}},
+            ],
+        },
+        is_error=True,
+    )
 
 
 def _json_result(payload: dict[str, Any], *, is_error: bool = False) -> ToolResult:

@@ -9,6 +9,7 @@ from contextlib import AsyncExitStack
 
 from mycodingagent.mcp_integration.cache import MCPMetadataCache
 from mycodingagent.mcp_integration.config import MCPConfigLoader, MCPServerConfig
+from mycodingagent.mcp_integration.discovery_gate import MCPDiscoveryGate
 from mycodingagent.mcp_integration.execution import normalize_mcp_result
 from mycodingagent.mcp_integration.models import MCPExecutionResult, MCPItemSummary, MCPServerSummary
 from mycodingagent.mcp_integration.hooks import MCPServerLaunchHook, MCPServerLaunchRequest
@@ -28,6 +29,7 @@ class MCPClientManager:
         self.config_loader = config_loader or MCPConfigLoader()
         self.metadata_cache = metadata_cache or MCPMetadataCache()
         self.launch_hook = launch_hook
+        self.discovery_gate = MCPDiscoveryGate()
         self.server_configs: dict[str, MCPServerConfig] = {}
         self._sessions: dict[str, Any] = {}
         self._session_contexts: dict[str, Any] = {}
@@ -42,6 +44,7 @@ class MCPClientManager:
     def reload_config(self) -> None:
         self.server_configs = self.config_loader.load()
         self.metadata_cache.sync_configs(self.server_configs)
+        self.discovery_gate.clear()
         self._states = {name: self._states.get(name, "configured") for name in self.server_configs}
 
     async def close(self) -> None:
@@ -67,6 +70,7 @@ class MCPClientManager:
     async def refresh_server(self, server: str) -> MCPServerSummary | None:
         if server not in self.server_configs:
             return None
+        self.discovery_gate.invalidate_server(server)
         try:
             self._states[server] = "connecting"
             await self._ensure_session(server)
@@ -304,6 +308,13 @@ class MCPClientManager:
         self.metadata_cache.update_discovery(server, tools=tools, connected=True, error="")
         item = next((candidate for candidate in tools if candidate.name == tool), None)
         return dict(item.metadata) if item is not None else {}
+
+    def cached_tool_payload(self, server: str, tool: str) -> dict[str, Any] | None:
+        entry = self.metadata_cache.get(server)
+        if entry is None:
+            return None
+        item = next((candidate for candidate in entry.tools if candidate.name == tool), None)
+        return item.to_payload() if item is not None else None
 
     def _unavailable_result(self, server: str, *, operation: str, name: str) -> MCPExecutionResult | None:
         entry = self.metadata_cache.get(server)

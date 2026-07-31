@@ -305,11 +305,14 @@ Bash(command)
 
 MCP 工具执行分为 discovery 和 execution：
 
-1. `list_*` / `search_*` / `read_resource` / `get_prompt` 为只读路径。
-2. `call_tool` 结合显式配置、实时 annotation 和工具名进行风险分类。
-3. 只读工具自动放行。
-4. 写入、危险、未知工具会触发 approval hook。
-5. 用户拒绝时返回明确拒绝结果给模型。
+1. `list_mcp_tools` / `search_mcp_tools` 将本次分页中实际返回给模型的工具名称、描述和参数 schema 记录为已查看。
+2. `call_mcp_tool` 首先执行 discovery gate；只知道 Server/工具名称、查看了其他分页或 metadata 已变化都不能通过。
+3. 门禁通过后，`call_mcp_tool` 才结合显式配置、实时 annotation 和工具名进行风险分类。
+4. 只读工具自动放行；写入、危险、未知工具触发 approval hook。
+5. 门禁失败返回 `required_discovery`，用户拒绝返回明确拒绝结果；两者都不会连接或执行目标工具。
+
+已查看状态在当前 `MCPClientManager` 生命周期内保留；MCP 配置重载、Server discovery 刷新或工具 metadata
+指纹变化后失效，模型必须重新查看。`read_mcp_resource` 和 `get_mcp_prompt` 保持各自的只读 discovery/execution 路径。
 
 ### 6.4 Rewind 与执行恢复
 
@@ -419,13 +422,13 @@ MCP server 暴露 `available` 状态：
 
 固定工具 schema：
 
-- `list_servers` / `search_servers`
-- `list_tools` / `search_tools`
-- `list_resources` / `search_resources`
-- `list_prompts` / `search_prompts`
-- `call_tool`
-- `read_resource`
-- `get_prompt`
+- `list_mcp_servers` / `search_mcp_servers`
+- `list_mcp_tools` / `search_mcp_tools`
+- `list_mcp_resources` / `search_mcp_resources`
+- `list_mcp_prompts` / `search_mcp_prompts`
+- `call_mcp_tool`
+- `read_mcp_resource`
+- `get_mcp_prompt`
 
 新增 MCP server 不会增加新的 tool schema，避免工具列表膨胀。
 

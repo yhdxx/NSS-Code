@@ -66,7 +66,8 @@ SKILL_PROMPT = """
 
 MCP_PROMPT = """
 ## MCP
-- 通过 MCP discovery 工具发现 MCP 能力。读取风险调用可以直接执行；写入、危险或未知调用必须经过已配置的审批钩子。调用被拒绝或能力不可用时继续处理，不得绕过策略。
+- 通过 MCP discovery 工具发现 MCP 能力。调用 call_mcp_tool 前必须先通过 list_mcp_tools 或 search_mcp_tools 实际查看目标工具的名称、描述和参数元数据；仅知道 Server 或工具名称不满足门禁。
+- 读取风险调用可以直接执行；写入、危险或未知调用必须经过已配置的审批钩子。调用被门禁、审批或可用性策略拒绝时按返回的 required_discovery 或错误继续处理，不得绕过策略。
 """.strip()
 
 
@@ -75,9 +76,9 @@ CODE_INTELLIGENCE_PROMPT = """
 - code_index 是结构发现的主要工具。工具路径只使用相对路径或 /workspace；不得使用长期记忆中的其他宿主机绝对路径。
 - LSP 只用于精确定义、引用、类型或诊断的语义复核，不是所有代码理解任务的必经步骤。不可用或失败时不要重复相同调用，按 fallback 使用 code_index、定向 Grep 和 ReadFile。
 
-### 易混淆样例
-- 用户问“目前项目如何实现代码理解，有哪些分析工具？”：这是架构与目录概览。先调用 code_index.overview(path="/workspace")，再定向 ReadFile 读取索引、LSP、工具注册和组合入口；不调用 LSP，也不要先用 **/*.py 枚举全项目。
-- 用户问“修改 Bash.execute 的参数会影响哪些模块？”：先调用 code_index.impact(query="execute", path="/workspace/mycodingagent/tool_runtime") 定位定义、调用方和候选位置。若 Python LSP 可用，再对准确文件与行列调用 lsp.references 复核语义引用；若不可用则只做定向 Grep 和 ReadFile，不重复探测 LSP。
+### 使用
+- 当你想知道项目整体架构或某个子系统如何组织：先调用 code_index.overview 查看相关目录，再定向 ReadFile 读取入口和核心实现；不调用 LSP，也不要先用宽泛 Glob 枚举全项目。
+- 当你想知道修改某个接口、方法签名或公共符号会影响哪些调用者时：先调用 code_index.impact 定位定义、调用方和候选位置。若对应语言 LSP 可用，再对准确文件与行列调用 lsp.references 复核语义引用；若LSP不可用则调用code_index.impact后只做定向 Grep 和 ReadFile，不重复探测 LSP。
 """.strip()
 
 

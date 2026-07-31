@@ -164,11 +164,20 @@ def test_system_prompt_prioritizes_code_intelligence_for_impact_analysis():
 def test_system_prompt_contrasts_when_lsp_is_and_is_not_needed():
     prompt = build_system_prompt(PromptFeatures(code_intelligence_enabled=True))
 
-    assert "目前项目如何实现代码理解" in prompt
+    assert "项目整体架构或某个子系统如何组织" in prompt
     assert "不调用 LSP" in prompt
-    assert "修改 Bash.execute 的参数" in prompt
+    assert "修改某个接口、方法签名或公共符号" in prompt
     assert "lsp.references" in prompt
-    assert "若不可用则只做定向 Grep 和 ReadFile" in prompt
+    assert "若LSP不可用" in prompt
+    assert "code_index.impact后只做定向 Grep 和 ReadFile" in prompt
+
+
+def test_system_prompt_requires_mcp_tool_discovery_before_execution():
+    prompt = build_system_prompt(PromptFeatures(mcp_enabled=True))
+
+    assert "call_mcp_tool 前必须先通过 list_mcp_tools 或 search_mcp_tools" in prompt
+    assert "名称、描述和参数元数据" in prompt
+    assert "仅知道 Server 或工具名称不满足门禁" in prompt
 
 
 def test_system_prompt_includes_only_enabled_capability_modules():

@@ -33,7 +33,7 @@ class CapabilityResult:
     mcp_available_count: int = 0
     discovery_tools_available: bool = False
     note: str = (
-        "能力推荐不是限制。需要时使用 list_servers 或 search_servers 发现未列出的 MCP Server。"
+        "能力推荐不是限制。需要时使用 list_mcp_servers 或 search_mcp_servers 发现未列出的 MCP Server。"
     )
 
     def to_runtime_payload(self) -> dict[str, Any]:

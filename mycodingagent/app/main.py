@@ -157,17 +157,17 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     else:
         capability_router = CapabilityRouter(skill_runtime=skill_runtime, mcp_manager=None)
     discovery_tool_names = {
-        "list_servers",
-        "search_servers",
-        "list_tools",
-        "search_tools",
-        "list_resources",
-        "search_resources",
-        "list_prompts",
-        "search_prompts",
-        "call_tool",
-        "read_resource",
-        "get_prompt",
+        "list_mcp_servers",
+        "search_mcp_servers",
+        "list_mcp_tools",
+        "search_mcp_tools",
+        "list_mcp_resources",
+        "search_mcp_resources",
+        "list_mcp_prompts",
+        "search_mcp_prompts",
+        "call_mcp_tool",
+        "read_mcp_resource",
+        "get_mcp_prompt",
     }
     skill_management_tool_names = {
         "search_tool",

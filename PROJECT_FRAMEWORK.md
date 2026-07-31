@@ -358,7 +358,7 @@ analyze_command(command)
 ### 7.3 MCP 工具
 
 ```text
-call_tool(server, tool)
+call_mcp_tool(server, tool)
   -> 实时刷新 schema/annotation
   -> 按显式配置、annotation 和工具名分类风险
   -> read 自动放行
@@ -452,16 +452,16 @@ server 初始 available=true
 
 固定 discovery 工具：
 
-- `list_servers` / `search_servers`
-- `list_tools` / `search_tools`
-- `list_resources` / `search_resources`
-- `list_prompts` / `search_prompts`
+- `list_mcp_servers` / `search_mcp_servers`
+- `list_mcp_tools` / `search_mcp_tools`
+- `list_mcp_resources` / `search_mcp_resources`
+- `list_mcp_prompts` / `search_mcp_prompts`
 
 固定 execution 工具：
 
-- `call_tool`
-- `read_resource`
-- `get_prompt`
+- `call_mcp_tool`
+- `read_mcp_resource`
+- `get_mcp_prompt`
 
 ---
 

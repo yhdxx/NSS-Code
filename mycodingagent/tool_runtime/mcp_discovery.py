@@ -53,6 +53,8 @@ class _ServerItemsTool(Tool):
             "server": result.get("server", {}),
             **_paginate(result.get(self.item_key, []), offset=params.offset, limit=params.limit, item_key=self.item_key),
         }
+        if self.item_key == "tools":
+            self._manager.discovery_gate.record_tools(params.server, payload["tools"])
         return _json_result(payload)
 
 
@@ -71,14 +73,17 @@ class _ServerItemSearchTool(_ServerItemsTool):
             "server": result.get("server", {}),
             **_paginate(matches, offset=params.offset, limit=params.limit, item_key=self.item_key),
         }
+        if self.item_key == "tools":
+            self._manager.discovery_gate.record_tools(params.server, payload["tools"])
         return _json_result(payload)
 
 
 class ListServersTool(Tool):
-    name = "list_servers"
+    name = "list_mcp_servers"
     description = (
         "列出已配置的 MCP Server、元数据和可用状态。本操作不会连接 Server，也不能证明当前已连接。"
-        "available=true 表示 Server 可用或尚未发生失败；使用 list_tools、list_resources 或 list_prompts 探测 discovery。"
+        "available=true 表示 Server 可用或尚未发生失败；使用 list_mcp_tools、list_mcp_resources "
+        "或 list_mcp_prompts 探测 discovery。"
         "支持 offset/limit 分页。"
     )
     params_model = PaginationParams
@@ -95,7 +100,7 @@ class ListServersTool(Tool):
 
 
 class SearchServersTool(Tool):
-    name = "search_servers"
+    name = "search_mcp_servers"
     description = (
         "按名称、描述、标签、别名、缩写、同义词和多语言关键词搜索已配置的 MCP Server。"
         "支持 offset/limit 分页。"
@@ -125,42 +130,48 @@ class SearchServersTool(Tool):
 
 
 class ListToolsTool(_ServerItemsTool):
-    name = "list_tools"
-    description = "列出一个 MCP Server 暴露的工具，不会执行工具。支持 offset/limit 分页。"
+    name = "list_mcp_tools"
+    description = (
+        "列出一个 MCP Server 暴露的工具、描述和参数元数据，不会执行工具。只有本次实际返回的工具才满足 "
+        "call_mcp_tool 的调用前发现门禁；支持 offset/limit 分页。"
+    )
     item_key = "tools"
     list_method = "list_tools"
 
 
 class SearchToolsTool(_ServerItemSearchTool):
-    name = "search_tools"
-    description = "搜索一个 MCP Server 暴露的工具摘要，不会执行工具。支持 offset/limit 分页。"
+    name = "search_mcp_tools"
+    description = (
+        "按名称或描述搜索一个 MCP Server 暴露的工具元数据，不会执行工具。只有本次实际返回的工具才满足 "
+        "call_mcp_tool 的调用前发现门禁；支持 offset/limit 分页。"
+    )
     item_key = "tools"
     list_method = "list_tools"
 
 
 class ListResourcesTool(_ServerItemsTool):
-    name = "list_resources"
+    name = "list_mcp_resources"
     description = "列出一个 MCP Server 暴露的资源摘要，不会读取资源内容。支持 offset/limit 分页。"
     item_key = "resources"
     list_method = "list_resources"
 
 
 class SearchResourcesTool(_ServerItemSearchTool):
-    name = "search_resources"
+    name = "search_mcp_resources"
     description = "搜索一个 MCP Server 暴露的资源摘要，不会读取资源内容。支持 offset/limit 分页。"
     item_key = "resources"
     list_method = "list_resources"
 
 
 class ListPromptsTool(_ServerItemsTool):
-    name = "list_prompts"
+    name = "list_mcp_prompts"
     description = "列出一个 MCP Server 暴露的 Prompt 摘要，不会读取 Prompt 内容。支持 offset/limit 分页。"
     item_key = "prompts"
     list_method = "list_prompts"
 
 
 class SearchPromptsTool(_ServerItemSearchTool):
-    name = "search_prompts"
+    name = "search_mcp_prompts"
     description = "搜索一个 MCP Server 暴露的 Prompt 摘要，不会读取 Prompt 内容。支持 offset/limit 分页。"
     item_key = "prompts"
     list_method = "list_prompts"

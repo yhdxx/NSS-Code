@@ -73,7 +73,8 @@ These are enforced by `tests/test_architecture_boundaries.py` or by design, and 
   `mycodingagent.app.main`; the boundary test asserts a list of legacy root modules (`client.py`, `config.py`, …)
   stays deleted.
 - **Adding an MCP server must not grow the model's tool schema.** MCP is exposed via a fixed set of discovery/execution
-  tools (`list_*`/`search_*`/`call_tool`/`read_resource`/`get_prompt`) enumerated in `app/main.py`.
+  tools (`list_mcp_*`/`search_mcp_*`/`call_mcp_tool`/`read_mcp_resource`/`get_mcp_prompt`) enumerated in `app/main.py`.
+  Do not register legacy aliases: MCP names must remain visibly distinct from Skill discovery tools such as `search_tool`.
 - **Multi-agent is user-triggered only.** No delegation tool is registered for the main model; `/multiAgent` is the
   only entry. Read-only subagent roles must not receive write tools.
 - **Every tool call carries a short `intent`.** `Tool.get_schema()` in `tool_runtime/base.py` injects `intent` into

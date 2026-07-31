@@ -15,6 +15,7 @@ from mycodingagent.llm_runtime.context import PromptRenderer, RuntimeContextBuil
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
+from mycodingagent.tool_runtime.skill_tools import SearchSkillTool
 from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
 
 
@@ -229,9 +230,30 @@ def test_discovery_tool_schema_is_stable_when_servers_change(tmp_path):
     later_names = [schema["name"] for schema in registry.get_all_schemas("openai")]
 
     assert initial_names == later_names
-    assert "list_tools" in initial_names
-    assert "search_servers" in initial_names
+    assert "list_mcp_tools" in initial_names
+    assert "search_mcp_servers" in initial_names
+    assert "search_tools" not in initial_names
     assert len(initial_names) == 8
+
+
+def test_skill_and_mcp_search_tool_names_are_unambiguous(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    registry = ToolRegistry()
+    registry.register(SearchSkillTool(object()))
+    register_mcp_discovery_tools(
+        registry,
+        manager=manager,
+        router=CapabilityRouter(mcp_manager=manager),
+    )
+
+    names = {schema["name"] for schema in registry.get_all_schemas("openai")}
+
+    assert "search_tool" in names
+    assert "search_mcp_tools" in names
+    assert "search_tools" not in names
 
 
 def test_mcp_metadata_cache_invalidates_when_server_config_changes(tmp_path):
@@ -354,7 +376,7 @@ def test_mcp_execution_does_not_probe_unavailable_server(tmp_path):
     assert result.content_text == "MCP Server 不可用：temporary failure"
 
 
-def test_search_tools_uses_cached_discovery_metadata(tmp_path):
+def test_search_mcp_tools_uses_cached_discovery_metadata(tmp_path):
     config = tmp_path / "mcp.json"
     config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
     manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
@@ -368,7 +390,7 @@ def test_search_tools_uses_cached_discovery_metadata(tmp_path):
     registry = ToolRegistry()
     router = CapabilityRouter(mcp_manager=manager)
     register_mcp_discovery_tools(registry, manager=manager, router=router)
-    tool = registry.get("search_tools")
+    tool = registry.get("search_mcp_tools")
     result = asyncio.run(tool.execute(tool.params_model(server="github", query="pull request")))
     payload = json.loads(result.output)
 
@@ -377,6 +399,9 @@ def test_search_tools_uses_cached_discovery_metadata(tmp_path):
     assert payload["limit"] == 20
     assert payload["has_more"] is False
     assert payload["tools"][0]["name"] == "create_pull_request"
+    assert manager.discovery_gate.allows(
+        "github", "create_pull_request", manager.cached_tool_payload("github", "create_pull_request")
+    )
 
 
 def test_mcp_discovery_tools_use_offset_limit_pagination(tmp_path):
@@ -397,7 +422,7 @@ def test_mcp_discovery_tools_use_offset_limit_pagination(tmp_path):
     registry = ToolRegistry()
     router = CapabilityRouter(mcp_manager=manager)
     register_mcp_discovery_tools(registry, manager=manager, router=router)
-    tool = registry.get("list_tools")
+    tool = registry.get("list_mcp_tools")
     result = asyncio.run(tool.execute(tool.params_model(server="github", offset=1, limit=1)))
     payload = json.loads(result.output)
 
@@ -408,6 +433,12 @@ def test_mcp_discovery_tools_use_offset_limit_pagination(tmp_path):
     assert payload["has_more"] is True
     assert payload["next_offset"] == 2
     assert [item["name"] for item in payload["tools"]] == ["b_read_tool"]
+    assert manager.discovery_gate.allows(
+        "github", "b_read_tool", manager.cached_tool_payload("github", "b_read_tool")
+    )
+    assert not manager.discovery_gate.allows(
+        "github", "a_read_tool", manager.cached_tool_payload("github", "a_read_tool")
+    )
 
 
 def test_mcp_client_discovers_real_stdio_server_metadata(tmp_path):
@@ -508,15 +539,22 @@ if __name__ == "__main__":
 
     async def scenario():
         await manager.initialize()
+        register_mcp_discovery_tools(
+            registry,
+            manager=manager,
+            router=CapabilityRouter(mcp_manager=manager),
+        )
         register_mcp_execution_tools(
             registry,
             manager=manager,
             policy=MCPToolPermissionPolicy(),
             approval_hook=FailOnApprovalHook(),
         )
-        call_tool = registry.get("call_tool")
-        read_resource = registry.get("read_resource")
-        get_prompt = registry.get("get_prompt")
+        call_tool = registry.get("call_mcp_tool")
+        list_tools = registry.get("list_mcp_tools")
+        read_resource = registry.get("read_mcp_resource")
+        get_prompt = registry.get("get_mcp_prompt")
+        await list_tools.execute(list_tools.params_model(server="fake"))
         call_result = await call_tool.execute(
             call_tool.params_model(server="fake", tool="get_status", arguments={}, intent="检查 fake 状态")
         )
@@ -600,7 +638,17 @@ def test_mcp_write_tool_requires_approval_and_returns_user_denied(tmp_path):
     config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
     manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
     asyncio.run(manager.initialize())
+    manager.metadata_cache.update_discovery(
+        "github",
+        tools=[MCPItemSummary(name="create_issue", description="Create an issue")],
+        connected=True,
+    )
     registry = ToolRegistry()
+    register_mcp_discovery_tools(
+        registry,
+        manager=manager,
+        router=CapabilityRouter(mcp_manager=manager),
+    )
     register_mcp_execution_tools(
         registry,
         manager=manager,
@@ -608,9 +656,11 @@ def test_mcp_write_tool_requires_approval_and_returns_user_denied(tmp_path):
         approval_hook=DenyHook(),
     )
 
-    tool = registry.get("call_tool")
-    result = asyncio.run(
-        tool.execute(
+    async def scenario():
+        list_tools = registry.get("list_mcp_tools")
+        await list_tools.execute(list_tools.params_model(server="github"))
+        tool = registry.get("call_mcp_tool")
+        return await tool.execute(
             tool.params_model(
                 server="github",
                 tool="create_issue",
@@ -618,7 +668,99 @@ def test_mcp_write_tool_requires_approval_and_returns_user_denied(tmp_path):
                 intent="尝试创建 issue",
             )
         )
-    )
+
+    result = asyncio.run(scenario())
 
     assert result.is_error is True
     assert result.output == USER_DENIED_MESSAGE
+
+
+def test_mcp_tool_call_requires_model_visible_discovery(tmp_path):
+    class FailOnApprovalHook(MCPToolApprovalHook):
+        async def approve(self, request):
+            raise AssertionError("发现门禁失败时不应进入审批")
+
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    manager.metadata_cache.update_discovery(
+        "github",
+        tools=[MCPItemSummary(name="get_status", description="Read status")],
+        connected=True,
+    )
+    registry = ToolRegistry()
+    register_mcp_execution_tools(
+        registry,
+        manager=manager,
+        policy=MCPToolPermissionPolicy(),
+        approval_hook=FailOnApprovalHook(),
+    )
+    tool = registry.get("call_mcp_tool")
+
+    result = asyncio.run(
+        tool.execute(
+            tool.params_model(server="github", tool="get_status", arguments={}, intent="读取状态")
+        )
+    )
+    payload = json.loads(result.output)
+
+    assert result.is_error is True
+    assert payload["error_code"] == "mcp_tool_not_discovered"
+    assert payload["required_discovery"][0]["tool"] == "search_mcp_tools"
+    assert payload["required_discovery"][0]["arguments"] == {"server": "github", "query": "get_status"}
+
+
+def test_mcp_discovery_gate_invalidates_changed_metadata_and_config_reload(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    original = MCPItemSummary(name="get_status", description="Read status").to_payload()
+    changed = MCPItemSummary(name="get_status", description="Read detailed status").to_payload()
+
+    manager.discovery_gate.record_tools("github", [original])
+
+    assert manager.discovery_gate.allows("github", "get_status", original)
+    assert not manager.discovery_gate.allows("github", "get_status", changed)
+
+    manager.reload_config()
+
+    assert not manager.discovery_gate.allows("github", "get_status", original)
+
+
+def test_mcp_tool_call_requires_rediscovery_when_live_metadata_changes(tmp_path, monkeypatch):
+    class FailOnApprovalHook(MCPToolApprovalHook):
+        async def approve(self, request):
+            raise AssertionError("metadata 变化时不应进入审批")
+
+    config = tmp_path / "mcp.json"
+    config.write_text(json.dumps({"servers": {"github": {"command": "gh-mcp"}}}), encoding="utf-8")
+    manager = MCPClientManager(config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json"))
+    asyncio.run(manager.initialize())
+    original = MCPItemSummary(name="get_status", description="Read status")
+    changed = MCPItemSummary(name="get_status", description="Read detailed status")
+    manager.metadata_cache.update_discovery("github", tools=[original], connected=True)
+    manager.discovery_gate.record_tools("github", [original.to_payload()])
+
+    async def change_live_metadata(server, tool):
+        manager.metadata_cache.update_discovery("github", tools=[changed], connected=True)
+        return dict(changed.metadata)
+
+    monkeypatch.setattr(manager, "live_tool_metadata", change_live_metadata)
+    registry = ToolRegistry()
+    register_mcp_execution_tools(
+        registry,
+        manager=manager,
+        policy=MCPToolPermissionPolicy(),
+        approval_hook=FailOnApprovalHook(),
+    )
+    tool = registry.get("call_mcp_tool")
+
+    result = asyncio.run(
+        tool.execute(tool.params_model(server="github", tool="get_status", arguments={}, intent="读取状态"))
+    )
+    payload = json.loads(result.output)
+
+    assert result.is_error is True
+    assert payload["error_code"] == "mcp_tool_metadata_changed"
