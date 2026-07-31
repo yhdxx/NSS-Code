@@ -228,6 +228,7 @@ WriteFile/EditFile
   -> 检查路径是否在工作区内
   -> 检查目标文件是否已读
   -> 检查文件自读取后是否被外部修改
+  -> 保存本回合首次写入前的内容寻址快照
   -> 通过后才写入
 ```
 
@@ -242,19 +243,18 @@ WriteFile/EditFile
 - 容器执行后自动删除
 - 禁止越界访问宿主机路径
 
-沙箱之外还有一层高危命令审批（`tool_runtime/command_policy.py`）：
+沙箱之外还有一层基于 tree-sitter Bash AST 的命令审批（`tool_runtime/command_policy.py`）：
 
 ```text
 Bash(command)
-  -> classify_command() 判定风险
-  -> normal：直接执行
-  -> dangerous：请求用户确认，拒绝则返回"用户拒绝执行该命令"
+  -> analyze_command() 解析命令、管道、重定向和嵌套语法
+  -> read：直接执行
+  -> write/network/process/dangerous/unknown：请求用户确认
 ```
 
 判定标准是“难以撤销”或“影响范围超出工作区”，例如 `rm -rf`、`git push --force`、
 `git reset --hard`、`sudo`、`chmod -R`、下载后直接管道执行、写裸设备、指向工作区外的绝对路径操作。
-普通读写命令（`ls`、`pytest`、`git status`、`git push` 到普通分支等）不触发确认——
-误报会训练用户盲目点同意，比不做拦截更糟。
+动态命令目标、解析失败和无法静态判断副作用的进程一律 fail-closed。
 
 审批钩子由 `app/main.py` 仅在交互式终端注入；非交互环境（脚本、测试、CI）不拦截，保持既有行为。
 
@@ -263,10 +263,17 @@ Bash(command)
 MCP 工具执行分为 discovery 和 execution：
 
 1. `list_*` / `search_*` / `read_resource` / `get_prompt` 为只读路径。
-2. `call_tool` 根据工具名和配置进行风险分类。
+2. `call_tool` 结合显式配置、实时 annotation 和工具名进行风险分类。
 3. 只读工具自动放行。
 4. 写入、危险、未知工具会触发 approval hook。
 5. 用户拒绝时返回明确拒绝结果给模型。
+
+### 6.4 Rewind 与执行恢复
+
+- 每个用户回合建立工作区 checkpoint，`/rewind` 可恢复 `code`、`conversation` 或 `both`。
+- 恢复前校验当前文件 hash，外部修改不会被静默覆盖。
+- Bash 和远程 MCP 副作用不属于文件 rewind；高自治任务可用 `/multiAgent --worktree <task>` 隔离。
+- 所有工具执行记录 `running/succeeded/failed/interrupted`，重启时不会自动重放未完成变更。
 
 ---
 
@@ -330,11 +337,11 @@ MCP 配置加载顺序：
 
 Runtime 对已配置 server 执行：
 
-1. stdio 连接。
+1. stdio 或 Streamable HTTP 连接。
 2. `tools/list`。
 3. `resources/list`。
 4. `prompts/list`。
-5. 写入 metadata cache。
+5. 写入 SQLite metadata cache，配置指纹变化时失效。
 
 ### 8.2 可用性维护
 
@@ -344,6 +351,13 @@ MCP server 暴露 `available` 状态：
 - 连接、discovery 或 execution 失败后标记为不可用。
 - 用户或模型主动探测成功后恢复可用。
 - Runtime 每隔 `RECONNECT_MCP_SERVER_STEP` 个用户轮异步重连不可用 server。
+- 连接失败进入指数 backoff，调用和启动均有独立超时。
+- stdio server 可配置 `sandbox: true` 进入 Docker，工作区读写和网络需显式开放。
+
+### 8.4 代码理解
+
+`code_index` 使用 tree-sitter 为 Python、Go、TypeScript、JavaScript、Rust 和 Java 建立增量符号/调用索引。
+`lsp` 按需启动对应 language server，提供 definition、references、hover 和 diagnostics；未安装时结构化降级。
 
 ### 8.3 执行接口
 
@@ -537,6 +551,7 @@ COMPLETED / FAILED
 mycodingagent/
 ├── app/                    # 应用启动、依赖组装、资源生命周期
 ├── capability_discovery/   # Skill/MCP 能力推荐
+├── code_intelligence/      # 六语言符号索引与 LSP 进程
 ├── commands/               # CLI 命令
 ├── configuration/          # 配置
 ├── llm_runtime/            # 模型调用和工具循环
@@ -568,10 +583,4 @@ PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_llm_runtime_client.py tests/test_command_policy.py
-```
-
-最近一次全量回归结果：
-
-```text
-257 passed
 ```

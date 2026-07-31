@@ -468,6 +468,8 @@ async def execute_local_tool(
     raw_args: str,
     skill_runtime: Any | None = None,
     cancel_event: asyncio.Event | None = None,
+    execution_recorder: Any | None = None,
+    session_id: str = "",
 ) -> ToolExecution:
     args, error = parse_tool_arguments_object(raw_args)
     if error:
@@ -481,7 +483,14 @@ async def execute_local_tool(
         if notice:
             print(notice, flush=True)
 
-    return await execute_tool(tool, args, on_notice=show_notice, cancel_event=cancel_event)
+    return await execute_tool(
+        tool,
+        args,
+        on_notice=show_notice,
+        cancel_event=cancel_event,
+        execution_recorder=execution_recorder,
+        session_id=session_id,
+    )
 
 
 
@@ -635,6 +644,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     session_id = ""
     if memory_runtime is not None and CONFIG.memory.enabled:
         session_id = memory_runtime.start_session(MODEL)
+        memory_runtime.begin_workspace_checkpoint(prompt=prompt, message_index=turn_start)
 
     def current_context_mode() -> str:
         if memory_runtime is None or not session_id:
@@ -874,12 +884,26 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
 
         for index, tool_call in enumerate(tool_calls):  # 逐个执行模型请求的本地工具调用。
             tool_call_id = tool_call.tool_id or f"tool_call_{index}"  # 计算工具调用 ID，必须和上面的 assistant tool_calls 对象一致。
-            if cancel_event is not None and cancel_event.is_set():
+            registry_get = getattr(registry, "get", None)
+            selected_tool = registry_get(tool_call.tool_name) if callable(registry_get) else None
+            is_mutation = selected_tool is not None and not selected_tool.is_read_only
+            blocked = failure_tracker.preflight(
+                tool_call.tool_name,
+                tool_call.arguments,
+                is_mutation=is_mutation,
+            )
+            if blocked is not None:
+                execution = blocked
+            elif cancel_event is not None and cancel_event.is_set():
                 execution = ToolExecution("因用户中断，本工具调用未执行。", is_error=True)
             else:
                 execution_kwargs = (
                     {"cancel_event": cancel_event} if cancel_event is not None else {}
                 )
+                if memory_runtime is not None and hasattr(memory_runtime, "start_execution_record"):
+                    execution_kwargs.update(
+                        {"execution_recorder": memory_runtime, "session_id": session_id}
+                    )
                 execution = await execute_local_tool(
                     registry,
                     tool_call.tool_name,
@@ -887,7 +911,12 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     skill_runtime,
                     **execution_kwargs,
                 )
-            execution = failure_tracker.annotate(tool_call.tool_name, tool_call.arguments, execution)
+            execution = failure_tracker.annotate(
+                tool_call.tool_name,
+                tool_call.arguments,
+                execution,
+                is_mutation=is_mutation,
+            )
             tool_output, tool_failed = execution.output, execution.is_error
             output_id = ""
             skill_related_tool = is_skill_related_tool(tool_call.tool_name)

@@ -28,6 +28,15 @@ def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
     registry.register(
         CommandSpec(
+            name="/rewind",
+            aliases=("rewind", "回退"),
+            description="恢复某个用户回合前的代码、会话或两者",
+            usage="[checkpoint_id|latest] [code|conversation|both] [--force]",
+            handler=handle_rewind_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/resume",
             aliases=("resume", "恢复会话"),
             description="恢复历史会话；默认仅显示当前工作目录会话",
@@ -123,6 +132,7 @@ def build_command_registry() -> CommandRegistry:
                 (" status", "列出最近未完成的多智能体任务"),
                 (" resume <run_id>", "从持久化状态恢复指定任务"),
                 (" inspect <run_id>", "查看任务摘要"),
+                (" --worktree <task>", "在临时 Git worktree 中执行，成功后交付补丁"),
             ),
             examples=(
                 "/multiAgent 按上一轮计划修改代码",
@@ -137,9 +147,61 @@ def build_command_registry() -> CommandRegistry:
     return registry
 
 
+async def handle_rewind_command(context: CommandContext, arguments: str) -> CommandResult:
+    memory_runtime = context.memory_runtime
+    if memory_runtime is None:
+        print("记忆模块未启用，无法回退。", flush=True)
+        return CommandResult()
+    parts = [part for part in arguments.split() if part]
+    force = "--force" in parts
+    parts = [part for part in parts if part != "--force"]
+    checkpoints = memory_runtime.list_workspace_checkpoints()
+    if not checkpoints:
+        print("当前会话没有可用的工作区 checkpoint。", flush=True)
+        return CommandResult()
+    if not parts:
+        for checkpoint in checkpoints[-10:]:
+            print(
+                f"{checkpoint.checkpoint_id} | turn {checkpoint.turn_index} | {checkpoint.prompt[:80]}",
+                flush=True,
+            )
+        return CommandResult()
+    checkpoint_id = checkpoints[-1].checkpoint_id if parts[0] == "latest" else parts[0]
+    scope = parts[1] if len(parts) > 1 else "both"
+    if scope not in {"code", "conversation", "both"}:
+        print("scope 必须是 code、conversation 或 both。", flush=True)
+        return CommandResult()
+    selected = next((item for item in checkpoints if item.checkpoint_id == checkpoint_id), None)
+    if selected is None:
+        print(f"未找到 checkpoint：{checkpoint_id}", flush=True)
+        return CommandResult()
+
+    updated_messages = context.messages
+    if scope in {"code", "both"}:
+        result = memory_runtime.rewind_workspace(checkpoint_id, force=force)
+        if result.conflicts:
+            print("检测到外部修改，未覆盖：" + "、".join(result.conflicts), flush=True)
+            print("确认覆盖时使用 --force。", flush=True)
+            return CommandResult()
+        if result.errors:
+            print("回退失败：" + "; ".join(result.errors), flush=True)
+            return CommandResult()
+        print(f"已恢复 {len(result.restored)} 个文件。", flush=True)
+    if scope in {"conversation", "both"}:
+        updated_messages = context.messages[: selected.message_index]
+        session_id = memory_runtime.get_current_session_id()
+        if session_id:
+            memory_runtime.save_messages_now(session_id, updated_messages)
+        print("已恢复会话。", flush=True)
+    return CommandResult(messages=updated_messages)
+
+
 async def handle_multi_agent_command(context: CommandContext, arguments: str) -> CommandResult:
     store = context.multi_agent_store or MultiAgentStore()
     argument = arguments.strip()
+    use_worktree = argument.startswith("--worktree ")
+    if use_worktree:
+        argument = argument[len("--worktree ") :].strip()
     if not argument or argument in {"--help", "-h", "help"}:
         print(build_command_registry().match("/multiAgent")[0].help_text(), flush=True)
         return CommandResult()
@@ -167,6 +229,18 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
         return CommandResult()
 
     from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
+    from mycodingagent.multi_agent.models import RunStatus
+    from mycodingagent.multi_agent.worktree import WorktreeManager
+
+    worktree_manager = None
+    worktree_handle = None
+    if use_worktree:
+        worktree_manager = WorktreeManager(CONFIG.sandbox.root, store.path.parent)
+        try:
+            worktree_handle = await worktree_manager.create()
+        except ValueError as exc:
+            print(str(exc), flush=True)
+            return CommandResult()
 
     orchestrator = MultiAgentOrchestrator(
         store=store,
@@ -175,6 +249,7 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
         memory_runtime=context.memory_runtime,
         model=client.MODEL,
         cancel_event=context.cancel_event,
+        workspace_root=worktree_handle.path if worktree_handle is not None else None,
     )
 
     try:
@@ -183,11 +258,26 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
             run = await orchestrator.resume(run_id=run_id, main_messages=context.messages)
             user_content = f"/multiAgent resume {run_id}"
         else:
-            run = await orchestrator.start(task=argument, main_messages=context.messages)
+            if worktree_handle is None:
+                run = await orchestrator.start(task=argument, main_messages=context.messages)
+            else:
+                with context.registry.retarget_sandbox(worktree_handle.path):
+                    run = await orchestrator.start(task=argument, main_messages=context.messages)
             user_content = f"/multiAgent {argument}"
     except ValueError as exc:
         print(str(exc), flush=True)
         return CommandResult()
+
+    if worktree_manager is not None and worktree_handle is not None:
+        if run.status == RunStatus.COMPLETED:
+            delivery = await worktree_manager.deliver(worktree_handle)
+            if delivery.delivered:
+                print("已将 worktree 变更交付到当前工作区。", flush=True)
+            else:
+                print(f"worktree 交付未完成：{delivery.error}", flush=True)
+                print(f"已保留：{delivery.preserved_path}", flush=True)
+        else:
+            print(f"任务未完成，worktree 已保留：{worktree_handle.path}", flush=True)
 
     result_message = orchestrator.result_message(run)
     updated_messages = [

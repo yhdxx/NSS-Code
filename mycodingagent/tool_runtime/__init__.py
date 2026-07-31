@@ -1,6 +1,8 @@
 from __future__ import annotations  # 启用未来版本语法特性。
 
 from typing import TYPE_CHECKING, Any  # 导入当前模块需要的依赖。
+from contextlib import contextmanager
+from pathlib import Path
 
 from mycodingagent.tool_runtime.base import Tool, get_sandbox_root  # 导入当前模块需要的依赖。
 
@@ -57,6 +59,27 @@ class ToolRegistry:  # 定义用于封装相关状态和行为的类。
                 schemas.append(base)  # 执行当前步骤的业务逻辑。
         return schemas  # 返回当前函数的处理结果。
 
+    @contextmanager
+    def retarget_sandbox(self, root: Path):
+        """Temporarily point filesystem tools at an isolated worktree."""
+        saved: list[tuple[Any, str, Any]] = []
+        disabled_before = set(self._disabled)
+        for tool in self._tools.values():
+            if hasattr(tool, "_sandbox_root"):
+                saved.append((tool, "_sandbox_root", getattr(tool, "_sandbox_root")))
+                setattr(tool, "_sandbox_root", root)
+            if hasattr(tool, "_checkpoint_hook"):
+                saved.append((tool, "_checkpoint_hook", getattr(tool, "_checkpoint_hook")))
+                setattr(tool, "_checkpoint_hook", None)
+        self.disable("code_index")
+        self.disable("lsp")
+        try:
+            yield
+        finally:
+            for target, attribute, value in reversed(saved):
+                setattr(target, attribute, value)
+            self._disabled = disabled_before
+
 
 def create_default_registry(  # 定义函数，封装可复用逻辑。
     file_cache: FileCache | None = None,
@@ -67,6 +90,8 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     command_approval_hook: Any = None,
     write_approval_hook: Any = None,
     terminal_input_coordinator: Any = None,
+    code_index_service: Any = None,
+    lsp_service: Any = None,
 ) -> ToolRegistry:
     from mycodingagent.tool_runtime.ask_user import AskUser
     from mycodingagent.tool_runtime.bash import Bash  # 导入当前模块需要的依赖。
@@ -106,6 +131,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             workspace_tracker=workspace_tracker,
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
             approval_hook=write_approval_hook,
+            checkpoint_hook=memory_runtime,
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。
     registry.register(  # 执行当前步骤的业务逻辑。
@@ -116,11 +142,20 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             workspace_tracker=workspace_tracker,
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
             approval_hook=write_approval_hook,
+            checkpoint_hook=memory_runtime,
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。
     registry.register(Bash(sandbox_root=sandbox_root, approval_hook=command_approval_hook))  # 注入审批钩子后，高危命令会先征求用户同意。
     registry.register(Glob(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
     registry.register(Grep(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
+    if code_index_service is not None:
+        from mycodingagent.tool_runtime.code_intelligence import CodeIndexTool
+
+        registry.register(CodeIndexTool(code_index_service))
+    if lsp_service is not None:
+        from mycodingagent.tool_runtime.code_intelligence import LSPTool
+
+        registry.register(LSPTool(lsp_service))
     if memory_runtime is not None:
         registry.register(CommitWorkingContext(memory_runtime))
         registry.register(BatchRecoverContext(memory_runtime))

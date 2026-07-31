@@ -28,7 +28,13 @@ class MCPApprovalDecision:
 
 
 class MCPToolPermissionPolicy:
-    def classify(self, *, server_config: MCPServerConfig | None, tool_name: str) -> MCPToolRisk:
+    def classify(
+        self,
+        *,
+        server_config: MCPServerConfig | None,
+        tool_name: str,
+        tool_metadata: dict | None = None,
+    ) -> MCPToolRisk:
         normalized = tool_name.strip().lower()
         permissions = server_config.permissions if server_config is not None else None
         if permissions is not None:
@@ -38,6 +44,14 @@ class MCPToolPermissionPolicy:
                 return "write"
             if _matches(normalized, permissions.read_tools):
                 return "read"
+        annotations = (tool_metadata or {}).get("annotations", {})
+        if isinstance(annotations, dict):
+            if annotations.get("destructiveHint") is True:
+                return "dangerous"
+            if annotations.get("readOnlyHint") is True:
+                return "read"
+            if annotations.get("readOnlyHint") is False:
+                return "write"
         if normalized.startswith(DANGEROUS_PREFIXES) or any(f"_{item}" in normalized for item in DANGEROUS_PREFIXES):
             return "dangerous"
         if normalized.startswith(WRITE_PREFIXES) or any(f"_{item}" in normalized for item in WRITE_PREFIXES):

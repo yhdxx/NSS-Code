@@ -73,6 +73,8 @@ threadpoolctl==3.6.0
 tokenizers==0.22.2
 torch==2.12.1
 tqdm==4.68.3
+tree-sitter==0.25.2
+tree-sitter-language-pack==0.13.0
 transformers==5.12.1
 triton==3.7.1
 typer==0.25.1

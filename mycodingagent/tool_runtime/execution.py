@@ -2,11 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import inspect
+import hashlib
 import json
 from dataclasses import dataclass
 from typing import Any, Callable
+from uuid import uuid4
 
 from mycodingagent.tool_runtime.base import Tool
+from mycodingagent.memory.models import ExecutionRecord
 
 
 @dataclass(frozen=True)
@@ -31,7 +34,26 @@ async def execute_tool(
     *,
     on_notice: Callable[[], Any] | None = None,
     cancel_event: asyncio.Event | None = None,
+    execution_recorder: Any | None = None,
+    session_id: str = "",
 ) -> ToolExecution:
+    execution_id = uuid4().hex
+    risk = _tool_risk(tool)
+    sanitized = _sanitize_args(args)
+    args_json = json.dumps(sanitized, ensure_ascii=False, sort_keys=True, default=str)
+    if execution_recorder is not None and session_id:
+        execution_recorder.start_execution_record(
+            ExecutionRecord(
+                execution_id=execution_id,
+                session_id=session_id,
+                tool_name=tool.name,
+                risk=risk,
+                status="running",
+                args_hash=hashlib.sha256(args_json.encode("utf-8")).hexdigest(),
+                args_preview=args_json[:1000],
+                effects_json=json.dumps(_tool_effects(tool, args), ensure_ascii=False),
+            )
+        )
     try:
         params = tool.params_model.model_validate(args)
         if on_notice is not None:
@@ -44,20 +66,63 @@ async def execute_tool(
         elif cancel_event.is_set():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            return ToolExecution("Tool skipped because the user interrupted this turn.", is_error=True)
+            execution = ToolExecution("Tool skipped because the user interrupted this turn.", is_error=True)
+            _finish_record(execution_recorder, execution_id, "interrupted", execution.output)
+            return execution
         else:
             cancel_task = asyncio.create_task(cancel_event.wait())
             done, _pending = await asyncio.wait({task, cancel_task}, return_when=asyncio.FIRST_COMPLETED)
             if cancel_task in done:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                return ToolExecution("Tool interrupted by the user.", is_error=True)
+                execution = ToolExecution("Tool interrupted by the user.", is_error=True)
+                _finish_record(execution_recorder, execution_id, "interrupted", execution.output)
+                return execution
             cancel_task.cancel()
             await asyncio.gather(cancel_task, return_exceptions=True)
             result = task.result()
     except Exception as exc:
-        return ToolExecution(f"Tool execution error: {exc}", is_error=True)
-    return ToolExecution(str(result.output), is_error=bool(result.is_error))
+        execution = ToolExecution(f"Tool execution error: {exc}", is_error=True)
+        _finish_record(execution_recorder, execution_id, "failed", execution.output)
+        return execution
+    execution = ToolExecution(str(result.output), is_error=bool(result.is_error))
+    _finish_record(
+        execution_recorder,
+        execution_id,
+        "failed" if execution.is_error else "succeeded",
+        execution.output if execution.is_error else "",
+    )
+    return execution
+
+
+def _finish_record(recorder: Any | None, execution_id: str, status: str, error: str = "") -> None:
+    if recorder is not None:
+        recorder.finish_execution_record(execution_id, status=status, error=error)
+
+
+def _tool_risk(tool: Tool) -> str:
+    return {"read": "read", "write": "write", "command": "process"}.get(tool.category, "unknown")
+
+
+def _tool_effects(tool: Tool, args: dict[str, Any]) -> list[dict[str, Any]]:
+    effects: list[dict[str, Any]] = []
+    if isinstance(args.get("file_path"), str):
+        effects.append({"kind": "file", "path": args["file_path"], "reversible": tool.category == "write"})
+    if tool.category == "command":
+        effects.append({"kind": "external", "reversible": False})
+    return effects
+
+
+def _sanitize_args(value: Any, key: str = "") -> Any:
+    if key.lower() in {"token", "password", "secret", "authorization", "api_key", "headers", "env"}:
+        return "<redacted>"
+    if isinstance(value, dict):
+        return {str(item_key): _sanitize_args(item_value, str(item_key)) for item_key, item_value in value.items()}
+    if isinstance(value, list):
+        return [_sanitize_args(item) for item in value]
+    if isinstance(value, str) and len(value) > 2000:
+        return value[:2000] + "...<truncated>"
+    return value
 
 
 class RepeatedFailureTracker:
@@ -67,16 +132,45 @@ class RepeatedFailureTracker:
     )
 
     def __init__(self) -> None:
-        self._seen: set[tuple[str, str]] = set()
+        self._failures: dict[tuple[str, str], int] = {}
+        self._consecutive_mutation_failures = 0
 
-    def annotate(self, tool_name: str, raw_args: str, execution: ToolExecution) -> ToolExecution:
+    def preflight(self, tool_name: str, raw_args: str, *, is_mutation: bool = False) -> ToolExecution | None:
+        key = self._key(tool_name, raw_args)
+        if self._failures.get(key, 0) >= 2:
+            return ToolExecution(
+                "Tool execution blocked after two identical failures. Change the arguments or use diagnostics.",
+                is_error=True,
+            )
+        if is_mutation and self._consecutive_mutation_failures >= 3:
+            return ToolExecution(
+                "Mutation gate is closed after three consecutive write failures. Use read-only diagnostics or ask the user before continuing.",
+                is_error=True,
+            )
+        return None
+
+    def annotate(
+        self,
+        tool_name: str,
+        raw_args: str,
+        execution: ToolExecution,
+        *,
+        is_mutation: bool = False,
+    ) -> ToolExecution:
         if not execution.is_error:
+            if is_mutation:
+                self._consecutive_mutation_failures = 0
             return execution
-        args, parse_error = parse_tool_arguments_object(raw_args)
-        canonical = raw_args.strip() if parse_error else json.dumps(args, ensure_ascii=False, sort_keys=True)
-        key = (tool_name, canonical)
-        repeated = key in self._seen
-        self._seen.add(key)
-        if not repeated:
+        key = self._key(tool_name, raw_args)
+        self._failures[key] = self._failures.get(key, 0) + 1
+        if is_mutation:
+            self._consecutive_mutation_failures += 1
+        if self._failures[key] < 2:
             return execution
         return ToolExecution(execution.output + self.NOTICE, is_error=True)
+
+    @staticmethod
+    def _key(tool_name: str, raw_args: str) -> tuple[str, str]:
+        args, parse_error = parse_tool_arguments_object(raw_args)
+        canonical = raw_args.strip() if parse_error else json.dumps(args, ensure_ascii=False, sort_keys=True)
+        return tool_name, canonical

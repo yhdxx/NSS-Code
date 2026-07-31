@@ -205,6 +205,40 @@ class CheckpointRecord:
     created_at: float = field(default_factory=time)
 
 
+@dataclass(frozen=True)
+class WorkspaceCheckpoint:
+    checkpoint_id: str
+    session_id: str
+    turn_index: int
+    message_index: int
+    prompt: str
+    created_at: float = field(default_factory=time)
+
+
+@dataclass(frozen=True)
+class WorkspaceFileSnapshot:
+    checkpoint_id: str
+    path: str
+    existed: bool
+    before_hash: str = ""
+    after_hash: str = ""
+
+
+@dataclass(frozen=True)
+class ExecutionRecord:
+    execution_id: str
+    session_id: str
+    tool_name: str
+    risk: str
+    status: str
+    args_hash: str
+    args_preview: str
+    effects_json: str = "[]"
+    error: str = ""
+    started_at: float = field(default_factory=time)
+    finished_at: float | None = None
+
+
 @dataclass
 class HistoricalSessionRef:
     session_id: str

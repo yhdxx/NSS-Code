@@ -14,6 +14,7 @@ from mycodingagent.memory.models import (
     ConversationSnapshot,
     HistoricalTurn,
     HistoricalSessionRef,
+    ExecutionRecord,
     SessionListItem,
     SessionState,
     SnapshotDelta,
@@ -21,6 +22,8 @@ from mycodingagent.memory.models import (
     TokenUsageSummary,
     ToolInvocationMetadata,
     ToolOutputRecord,
+    WorkspaceCheckpoint,
+    WorkspaceFileSnapshot,
 )
 
 
@@ -230,6 +233,59 @@ class SQLiteMemoryStore:
             )
             conn.execute(
                 """
+                CREATE TABLE IF NOT EXISTS workspace_checkpoints (
+                    checkpoint_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    turn_index INTEGER NOT NULL,
+                    message_index INTEGER NOT NULL,
+                    prompt TEXT NOT NULL,
+                    created_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_checkpoint_files (
+                    checkpoint_id TEXT NOT NULL,
+                    path TEXT NOT NULL,
+                    existed INTEGER NOT NULL,
+                    before_hash TEXT NOT NULL DEFAULT '',
+                    after_hash TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (checkpoint_id, path)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS workspace_snapshot_blobs (
+                    content_hash TEXT PRIMARY KEY,
+                    content BLOB NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS execution_records (
+                    execution_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    tool_name TEXT NOT NULL,
+                    risk TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    args_hash TEXT NOT NULL,
+                    args_preview TEXT NOT NULL,
+                    effects_json TEXT NOT NULL DEFAULT '[]',
+                    error TEXT NOT NULL DEFAULT '',
+                    started_at REAL NOT NULL,
+                    finished_at REAL
+                )
+                """
+            )
+            conn.execute(
+                "UPDATE execution_records SET status = 'interrupted', finished_at = ? WHERE status = 'running'",
+                (time(),),
+            )
+            conn.execute(
+                """
                 CREATE TABLE IF NOT EXISTS historical_session_refs (
                     session_id TEXT PRIMARY KEY,
                     snapshot_id TEXT NOT NULL,
@@ -273,6 +329,13 @@ class SQLiteMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_conversation_snapshots_session ON conversation_snapshots(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_snapshot_deltas_session ON snapshot_deltas(session_id)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_checkpoint_records_session ON checkpoint_records(session_id)")
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_workspace_checkpoints_session "
+                "ON workspace_checkpoints(session_id, turn_index)"
+            )
+            conn.execute(
+                "CREATE INDEX IF NOT EXISTS idx_execution_records_session ON execution_records(session_id, started_at)"
+            )
             conn.execute("CREATE INDEX IF NOT EXISTS idx_token_usage_session ON session_token_usage(session_id, request_index)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_root ON sessions(workspace_root)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_fingerprint ON sessions(workspace_fingerprint)")
@@ -945,8 +1008,18 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM conversation_snapshots WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM snapshot_deltas WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM checkpoint_records WHERE session_id = ?", (session_id,))
+            checkpoint_rows = conn.execute(
+                "SELECT checkpoint_id FROM workspace_checkpoints WHERE session_id = ?", (session_id,)
+            ).fetchall()
+            for checkpoint_row in checkpoint_rows:
+                conn.execute(
+                    "DELETE FROM workspace_checkpoint_files WHERE checkpoint_id = ?",
+                    (checkpoint_row["checkpoint_id"],),
+                )
+            conn.execute("DELETE FROM workspace_checkpoints WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM execution_records WHERE session_id = ?", (session_id,))
             return cursor.rowcount > 0
 
     def delete_expired_sessions(self, *, max_age_seconds: float) -> int:
@@ -969,8 +1042,18 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM conversation_snapshots WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM snapshot_deltas WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM checkpoint_records WHERE session_id = ?", (session_id,))
+                checkpoint_rows = conn.execute(
+                    "SELECT checkpoint_id FROM workspace_checkpoints WHERE session_id = ?", (session_id,)
+                ).fetchall()
+                for checkpoint_row in checkpoint_rows:
+                    conn.execute(
+                        "DELETE FROM workspace_checkpoint_files WHERE checkpoint_id = ?",
+                        (checkpoint_row["checkpoint_id"],),
+                    )
+                conn.execute("DELETE FROM workspace_checkpoints WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM execution_records WHERE session_id = ?", (session_id,))
             return len(session_ids)
 
     def load_session(self, session_id: str) -> SessionState | None:
@@ -1092,6 +1175,159 @@ class SQLiteMemoryStore:
                     record.usage_ratio,
                     record.created_at,
                 ),
+            )
+
+    def save_workspace_checkpoint(self, checkpoint: WorkspaceCheckpoint) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT OR REPLACE INTO workspace_checkpoints(
+                    checkpoint_id, session_id, turn_index, message_index, prompt, created_at
+                ) VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    checkpoint.checkpoint_id,
+                    checkpoint.session_id,
+                    checkpoint.turn_index,
+                    checkpoint.message_index,
+                    checkpoint.prompt,
+                    checkpoint.created_at,
+                ),
+            )
+
+    def start_execution(self, record: ExecutionRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO execution_records(
+                    execution_id, session_id, tool_name, risk, status, args_hash,
+                    args_preview, effects_json, error, started_at, finished_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """,
+                (
+                    record.execution_id,
+                    record.session_id,
+                    record.tool_name,
+                    record.risk,
+                    record.status,
+                    record.args_hash,
+                    record.args_preview,
+                    record.effects_json,
+                    record.error,
+                    record.started_at,
+                    record.finished_at,
+                ),
+            )
+
+    def finish_execution(self, execution_id: str, *, status: str, error: str = "") -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE execution_records SET status = ?, error = ?, finished_at = ? WHERE execution_id = ?",
+                (status, error[:2000], time(), execution_id),
+            )
+
+    def list_executions(self, session_id: str) -> list[ExecutionRecord]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT * FROM execution_records WHERE session_id = ? ORDER BY started_at", (session_id,)
+            ).fetchall()
+        return [ExecutionRecord(**dict(row)) for row in rows]
+
+    def save_workspace_file_snapshot(self, snapshot: WorkspaceFileSnapshot, content: bytes | None) -> None:
+        with self._connect() as conn:
+            if snapshot.before_hash and content is not None:
+                conn.execute(
+                    "INSERT OR IGNORE INTO workspace_snapshot_blobs(content_hash, content) VALUES (?, ?)",
+                    (snapshot.before_hash, content),
+                )
+            conn.execute(
+                """
+                INSERT OR IGNORE INTO workspace_checkpoint_files(
+                    checkpoint_id, path, existed, before_hash, after_hash
+                ) VALUES (?, ?, ?, ?, ?)
+                """,
+                (
+                    snapshot.checkpoint_id,
+                    snapshot.path,
+                    int(snapshot.existed),
+                    snapshot.before_hash,
+                    snapshot.after_hash,
+                ),
+            )
+
+    def update_workspace_file_after_hash(self, checkpoint_id: str, path: str, after_hash: str) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE workspace_checkpoint_files SET after_hash = ? WHERE checkpoint_id = ? AND path = ?",
+                (after_hash, checkpoint_id, path),
+            )
+
+    def list_workspace_checkpoints(self, session_id: str) -> list[WorkspaceCheckpoint]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                """
+                SELECT checkpoint_id, session_id, turn_index, message_index, prompt, created_at
+                FROM workspace_checkpoints WHERE session_id = ? ORDER BY turn_index, created_at
+                """,
+                (session_id,),
+            ).fetchall()
+        return [WorkspaceCheckpoint(**dict(row)) for row in rows]
+
+    def load_workspace_snapshots_from(
+        self, session_id: str, checkpoint_id: str
+    ) -> tuple[WorkspaceCheckpoint | None, list[WorkspaceFileSnapshot]]:
+        with self._connect() as conn:
+            anchor = conn.execute(
+                "SELECT * FROM workspace_checkpoints WHERE session_id = ? AND checkpoint_id = ?",
+                (session_id, checkpoint_id),
+            ).fetchone()
+            if anchor is None:
+                return None, []
+            checkpoint = WorkspaceCheckpoint(**dict(anchor))
+            rows = conn.execute(
+                """
+                SELECT f.checkpoint_id, f.path, f.existed, f.before_hash, f.after_hash
+                FROM workspace_checkpoint_files f
+                JOIN workspace_checkpoints c ON c.checkpoint_id = f.checkpoint_id
+                WHERE c.session_id = ? AND c.turn_index >= ?
+                ORDER BY c.turn_index, c.created_at
+                """,
+                (session_id, checkpoint.turn_index),
+            ).fetchall()
+        snapshots = [
+            WorkspaceFileSnapshot(
+                checkpoint_id=row["checkpoint_id"],
+                path=row["path"],
+                existed=bool(row["existed"]),
+                before_hash=row["before_hash"],
+                after_hash=row["after_hash"],
+            )
+            for row in rows
+        ]
+        return checkpoint, snapshots
+
+    def load_workspace_blob(self, content_hash: str) -> bytes | None:
+        if not content_hash:
+            return None
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT content FROM workspace_snapshot_blobs WHERE content_hash = ?", (content_hash,)
+            ).fetchone()
+        return bytes(row["content"]) if row is not None else None
+
+    def truncate_workspace_checkpoints(self, session_id: str, from_turn: int) -> None:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT checkpoint_id FROM workspace_checkpoints WHERE session_id = ? AND turn_index >= ?",
+                (session_id, from_turn),
+            ).fetchall()
+            for row in rows:
+                conn.execute(
+                    "DELETE FROM workspace_checkpoint_files WHERE checkpoint_id = ?", (row["checkpoint_id"],)
+                )
+            conn.execute(
+                "DELETE FROM workspace_checkpoints WHERE session_id = ? AND turn_index >= ?",
+                (session_id, from_turn),
             )
 
     def mark_session_historical(

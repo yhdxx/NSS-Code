@@ -122,6 +122,42 @@ def test_mcp_config_loader_merges_user_project_and_env(tmp_path, monkeypatch):
     assert servers["notion"].keywords == ("文档",)
 
 
+def test_mcp_config_supports_streamable_http_and_fail_closed_defaults(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "remote": {
+                        "transport": "streamable_http",
+                        "url": "https://example.test/mcp",
+                        "headers": {"Authorization": "Bearer secret"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    server = MCPConfigLoader(project_path=config, user_path=tmp_path / "missing").load()["remote"]
+
+    assert server.transport == "streamable_http"
+    assert server.url.endswith("/mcp")
+    assert server.permissions.readonly_by_default is False
+
+
+def test_mcp_annotation_overrides_name_heuristic_and_unknown_is_closed():
+    policy = MCPToolPermissionPolicy()
+
+    assert policy.classify(
+        server_config=None,
+        tool_name="get_and_delete",
+        tool_metadata={"annotations": {"destructiveHint": True}},
+    ) == "dangerous"
+    assert policy.classify(server_config=None, tool_name="custom_action") == "unknown"
+    assert policy.requires_approval("unknown") is True
+
+
 def test_capability_router_recommends_mcp_server_by_alias_and_keyword(tmp_path):
     config = tmp_path / "mcp.json"
     config.write_text(

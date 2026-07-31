@@ -278,6 +278,9 @@ class SandboxConfig:
     root: Path = field(default_factory=lambda: Path(os.getenv("MYCODINGAGENT_SANDBOX_ROOT", os.getcwd())))
     docker_workspace_alias: Path = Path("/workspace")
     max_output_chars: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MAX_OUTPUT_CHARS", 10000))
+    workspace_lease_enabled: bool = field(
+        default_factory=lambda: _env_bool("MYCODINGAGENT_WORKSPACE_LEASE_ENABLED", True)
+    )
     skip_dirs: frozenset[str] = frozenset({
         ".git",
         ".venv",

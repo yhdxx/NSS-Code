@@ -3,12 +3,16 @@ from __future__ import annotations
 import asyncio
 import contextlib
 import os
+import time
 from typing import Any
+from contextlib import AsyncExitStack
 
 from mycodingagent.mcp_integration.cache import MCPMetadataCache
 from mycodingagent.mcp_integration.config import MCPConfigLoader, MCPServerConfig
 from mycodingagent.mcp_integration.execution import normalize_mcp_result
 from mycodingagent.mcp_integration.models import MCPExecutionResult, MCPItemSummary, MCPServerSummary
+from mycodingagent.mcp_integration.hooks import MCPServerLaunchHook, MCPServerLaunchRequest
+from mycodingagent.configuration import CONFIG
 
 
 class MCPClientManager:
@@ -19,13 +23,18 @@ class MCPClientManager:
         *,
         config_loader: MCPConfigLoader | None = None,
         metadata_cache: MCPMetadataCache | None = None,
+        launch_hook: MCPServerLaunchHook | None = None,
     ) -> None:
         self.config_loader = config_loader or MCPConfigLoader()
         self.metadata_cache = metadata_cache or MCPMetadataCache()
+        self.launch_hook = launch_hook
         self.server_configs: dict[str, MCPServerConfig] = {}
         self._sessions: dict[str, Any] = {}
         self._session_contexts: dict[str, Any] = {}
         self._reconnect_task: asyncio.Task | None = None
+        self._states: dict[str, str] = {}
+        self._failures: dict[str, int] = {}
+        self._next_retry_at: dict[str, float] = {}
 
     async def initialize(self) -> None:
         self.reload_config()
@@ -33,6 +42,7 @@ class MCPClientManager:
     def reload_config(self) -> None:
         self.server_configs = self.config_loader.load()
         self.metadata_cache.sync_configs(self.server_configs)
+        self._states = {name: self._states.get(name, "configured") for name in self.server_configs}
 
     async def close(self) -> None:
         if self._reconnect_task is not None and not self._reconnect_task.done():
@@ -58,6 +68,7 @@ class MCPClientManager:
         if server not in self.server_configs:
             return None
         try:
+            self._states[server] = "connecting"
             await self._ensure_session(server)
             tools = await self._list_tools_from_session(server)
             resources = await self._list_resources_from_session(server)
@@ -70,6 +81,9 @@ class MCPClientManager:
                 connected=True,
                 error="",
             )
+            self._states[server] = "ready"
+            self._failures[server] = 0
+            self._next_retry_at.pop(server, None)
         except Exception as exc:
             await self._mark_server_unavailable(server, str(exc))
         entry = self.metadata_cache.get(server)
@@ -110,7 +124,10 @@ class MCPClientManager:
             return unavailable
         try:
             session = await self._ensure_session(server)
-            result = await session.call_tool(tool, arguments or {})
+            result = await asyncio.wait_for(
+                session.call_tool(tool, arguments or {}),
+                timeout=self.server_configs[server].call_timeout,
+            )
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
@@ -125,7 +142,9 @@ class MCPClientManager:
             return unavailable
         try:
             session = await self._ensure_session(server)
-            result = await session.read_resource(uri)
+            result = await asyncio.wait_for(
+                session.read_resource(uri), timeout=self.server_configs[server].call_timeout
+            )
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
@@ -140,7 +159,10 @@ class MCPClientManager:
             return unavailable
         try:
             session = await self._ensure_session(server)
-            result = await session.get_prompt(prompt, arguments or {})
+            result = await asyncio.wait_for(
+                session.get_prompt(prompt, arguments or {}),
+                timeout=self.server_configs[server].call_timeout,
+            )
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
@@ -161,6 +183,8 @@ class MCPClientManager:
     async def reconnect_unavailable_servers(self) -> list[MCPServerSummary]:
         restored: list[MCPServerSummary] = []
         for server in self.unavailable_servers():
+            if time.monotonic() < self._next_retry_at.get(server, 0.0):
+                continue
             summary = await self.refresh_server(server)
             if summary is not None and summary.available:
                 restored.append(summary)
@@ -179,32 +203,55 @@ class MCPClientManager:
         if existing is not None:
             return existing
         config = self.server_configs[server]
+        if self.launch_hook is not None:
+            target = config.url if config.transport == "streamable_http" else config.command
+            decision = await self.launch_hook.approve(
+                MCPServerLaunchRequest(
+                    server=server,
+                    transport=config.transport,
+                    target=target,
+                    sandboxed=config.sandbox,
+                    workspace_access=config.workspace_access,
+                    network=config.network,
+                )
+            )
+            if not decision.allowed:
+                raise PermissionError(f"MCP server launch denied: {server}")
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
+            from mcp.client.streamable_http import streamable_http_client
+            import httpx
         except Exception as exc:
             raise RuntimeError("Python package 'mcp' is required for real MCP discovery") from exc
 
-        env = os.environ.copy()
-        env.update(config.env)
-        env.setdefault("npm_config_cache", "/tmp/mycodingagent-npm-cache")
-        params = StdioServerParameters(command=config.command, args=list(config.args), env=env)
-        stdio_context = stdio_client(params)
-        session_context = None
+        stack = AsyncExitStack()
         try:
-            read_stream, write_stream = await stdio_context.__aenter__()
-            session_context = ClientSession(read_stream, write_stream)
-            session = await session_context.__aenter__()
-            await session.initialize()
-            self._session_contexts[server] = (session_context, stdio_context)
+            if config.transport == "streamable_http":
+                http_client = await stack.enter_async_context(
+                    httpx.AsyncClient(headers=config.headers, timeout=config.call_timeout)
+                )
+                read_stream, write_stream, _ = await stack.enter_async_context(
+                    streamable_http_client(config.url, http_client=http_client)
+                )
+            else:
+                env = os.environ.copy()
+                env.update(config.env)
+                env.setdefault("npm_config_cache", "/tmp/mycodingagent-npm-cache")
+                if config.sandbox:
+                    docker_args = self._sandboxed_stdio_args(config)
+                    params = StdioServerParameters(command="docker", args=docker_args, env=env)
+                else:
+                    params = StdioServerParameters(command=config.command, args=list(config.args), env=env)
+                read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
+            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+            await asyncio.wait_for(session.initialize(), timeout=config.startup_timeout)
+            self._session_contexts[server] = stack
             self._sessions[server] = session
             return session
         except Exception:
-            if session_context is not None:
-                with contextlib.suppress(Exception):
-                    await session_context.__aexit__(None, None, None)
             with contextlib.suppress(Exception):
-                await stdio_context.__aexit__(None, None, None)
+                await stack.aclose()
             raise
 
     async def _close_session(self, server: str) -> None:
@@ -212,15 +259,51 @@ class MCPClientManager:
         contexts = self._session_contexts.pop(server, None)
         if contexts is None:
             return
-        session_context, stdio_context = contexts
         with contextlib.suppress(Exception):
-            await session_context.__aexit__(None, None, None)
-        with contextlib.suppress(Exception):
-            await stdio_context.__aexit__(None, None, None)
+            await contexts.aclose()
+
+    def _sandboxed_stdio_args(self, config: MCPServerConfig) -> list[str]:
+        args = [
+            "run", "--rm", "-i",
+            "--network", "bridge" if config.network else "none",
+            "--cpus", CONFIG.docker.cpus,
+            "--memory", CONFIG.docker.memory,
+            "--pids-limit", CONFIG.docker.pids_limit,
+            "--security-opt", "no-new-privileges",
+            "--cap-drop", "ALL",
+            "--user", f"{os.getuid()}:{os.getgid()}",
+        ]
+        if config.workspace_access != "none":
+            mode = "rw" if config.workspace_access == "write" else "ro"
+            args.extend(
+                [
+                    "--volume",
+                    f"{CONFIG.sandbox.root.resolve(strict=False)}:{CONFIG.sandbox.docker_workspace_alias}:{mode}",
+                    "--workdir",
+                    str(CONFIG.sandbox.docker_workspace_alias),
+                ]
+            )
+        for key in config.env:
+            args.extend(["--env", key])
+        args.extend([config.image or CONFIG.docker.image, config.command, *config.args])
+        return args
 
     async def _mark_server_unavailable(self, server: str, error: str) -> None:
         await self._close_session(server)
         self.metadata_cache.mark_error(server, error)
+        failures = self._failures.get(server, 0) + 1
+        self._failures[server] = failures
+        self._next_retry_at[server] = time.monotonic() + min(60.0, float(2 ** min(failures, 6)))
+        self._states[server] = "backoff"
+
+    async def live_tool_metadata(self, server: str, tool: str) -> dict[str, Any]:
+        if server not in self.server_configs:
+            return {}
+        tools = await self._list_tools_from_session(server)
+        entry = self.metadata_cache.get(server)
+        self.metadata_cache.update_discovery(server, tools=tools, connected=True, error="")
+        item = next((candidate for candidate in tools if candidate.name == tool), None)
+        return dict(item.metadata) if item is not None else {}
 
     def _unavailable_result(self, server: str, *, operation: str, name: str) -> MCPExecutionResult | None:
         entry = self.metadata_cache.get(server)
@@ -238,20 +321,26 @@ class MCPClientManager:
 
     async def _list_tools_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)
-        result = await session.list_tools()
+        result = await asyncio.wait_for(
+            session.list_tools(), timeout=self.server_configs[server].call_timeout
+        )
         return [_item_summary(item) for item in getattr(result, "tools", [])]
 
     async def _list_resources_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)
         with contextlib.suppress(Exception):
-            result = await session.list_resources()
+            result = await asyncio.wait_for(
+                session.list_resources(), timeout=self.server_configs[server].call_timeout
+            )
             return [_item_summary(item) for item in getattr(result, "resources", [])]
         return []
 
     async def _list_prompts_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)
         with contextlib.suppress(Exception):
-            result = await session.list_prompts()
+            result = await asyncio.wait_for(
+                session.list_prompts(), timeout=self.server_configs[server].call_timeout
+            )
             return [_item_summary(item) for item in getattr(result, "prompts", [])]
         return []
 
@@ -264,10 +353,12 @@ def _item_summary(item: Any) -> MCPItemSummary:
     metadata: dict[str, Any] = {}
     if raw_name and raw_name != name:
         metadata["name"] = raw_name
-    for key in ("uri", "mimeType", "title"):
+    for key in ("uri", "mimeType", "title", "inputSchema", "outputSchema", "annotations"):
         value = getattr(item, key, None)
         if value:
-            metadata[key] = str(value)
+            if hasattr(value, "model_dump"):
+                value = value.model_dump(by_alias=True, exclude_none=True)
+            metadata[key] = value if isinstance(value, (dict, list, bool, int, float)) else str(value)
     return MCPItemSummary(name=name, description=description, metadata=metadata)
 
 

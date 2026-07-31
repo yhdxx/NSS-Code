@@ -13,6 +13,7 @@ from enum import Enum
 from time import time
 from typing import Any, Callable
 from uuid import uuid4
+from pathlib import Path
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.memory.budget import PromptBudgetManager, PromptBudgetSnapshot, estimate_tokens
@@ -32,6 +33,7 @@ from mycodingagent.memory.models import (
     CompressionResult,
     ContextEpochState,
     ContextEpochStatus,
+    ExecutionRecord,
     ConversationSnapshot,
     HistoricalTurn,
     HotContextBudgetSnapshot,
@@ -47,6 +49,7 @@ from mycodingagent.memory.models import (
 )
 from mycodingagent.memory.stores import SQLiteMemoryStore
 from mycodingagent.memory.working_context import WorkingContext
+from mycodingagent.memory.workspace_checkpoint import RewindResult, WorkspaceCheckpointManager
 from mycodingagent.workspace.identity import workspace_fingerprint, workspace_label, workspace_root_text
 
 
@@ -104,6 +107,10 @@ class MemoryRuntime:
         self.checkpoint_manager = CheckpointManager(
             memory_runtime=self,
             prompt_budget_manager=self.budget_manager,
+        )
+        self.workspace_checkpoint_manager = WorkspaceCheckpointManager(
+            store=self.store,
+            workspace_root=Path(self.workspace_root),
         )
         self.current_session_id: str | None = None
         self.latest_snapshot_id: str = ""
@@ -203,6 +210,39 @@ class MemoryRuntime:
 
     def get_current_session_id(self) -> str | None:
         return self.current_session_id
+
+    def begin_workspace_checkpoint(self, *, prompt: str, message_index: int) -> None:
+        session_id = self.get_current_session_id()
+        if not session_id:
+            return
+        checkpoints = self.workspace_checkpoint_manager.list(session_id)
+        self.workspace_checkpoint_manager.begin_turn(
+            session_id=session_id,
+            turn_index=(checkpoints[-1].turn_index + 1) if checkpoints else 0,
+            message_index=message_index,
+            prompt=prompt,
+        )
+
+    def capture_before(self, path: Path) -> None:
+        self.workspace_checkpoint_manager.capture_before(path)
+
+    def capture_after(self, path: Path) -> None:
+        self.workspace_checkpoint_manager.capture_after(path)
+
+    def list_workspace_checkpoints(self):
+        session_id = self.get_current_session_id() or ""
+        return self.workspace_checkpoint_manager.list(session_id)
+
+    def rewind_workspace(self, checkpoint_id: str, *, force: bool = False) -> RewindResult:
+        session_id = self.get_current_session_id() or ""
+        self.workspace_checkpoint_manager.session_id = session_id
+        return self.workspace_checkpoint_manager.rewind(checkpoint_id, force=force)
+
+    def start_execution_record(self, record: ExecutionRecord) -> None:
+        self.store.start_execution(record)
+
+    def finish_execution_record(self, execution_id: str, *, status: str, error: str = "") -> None:
+        self.store.finish_execution(execution_id, status=status, error=error)
 
     def clear_current_session_id(self) -> None:
         self.current_session_id = None

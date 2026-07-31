@@ -59,7 +59,15 @@ class CallMCPToolTool(Tool):
         if not intent:
             return ToolResult(output="MCP tool calls require a short intent.", is_error=True)
         config = self._manager.server_configs.get(params.server)
-        risk = self._policy.classify(server_config=config, tool_name=params.tool)
+        try:
+            live_metadata = await self._manager.live_tool_metadata(params.server, params.tool)
+        except Exception:
+            live_metadata = {}
+        risk = self._policy.classify(
+            server_config=config,
+            tool_name=params.tool,
+            tool_metadata=live_metadata,
+        )
         approval = "auto_allowed_read"
         if self._policy.requires_approval(risk):
             decision = await self._approval_hook.approve(

@@ -90,6 +90,7 @@ class MultiAgentOrchestrator:
         memory_runtime: Any | None = None,
         model: str | None = None,
         cancel_event: asyncio.Event | None = None,
+        workspace_root: Any | None = None,
     ) -> None:
         self.store = store
         self.registry = registry
@@ -97,7 +98,7 @@ class MultiAgentOrchestrator:
         self.memory_runtime = memory_runtime
         self.model = model or llm_client.MODEL
         self.cancel_event = cancel_event
-        self.file_coordinator = FileCoordinator()
+        self.file_coordinator = FileCoordinator(sandbox_root=workspace_root)
         self._operation_lock = asyncio.Lock()
 
     async def start(self, *, task: str, main_messages: list[dict[str, Any]]) -> MultiAgentRun:
@@ -455,7 +456,16 @@ class MultiAgentOrchestrator:
             tool_calls_used += len(tool_calls)
             for index, tool_call in enumerate(tool_calls):
                 call_id = tool_call.tool_id or f"{role.value}_tool_call_{index}"
-                if self._cancelled():
+                selected_tool = self.registry.get(tool_call.tool_name)
+                is_mutation = selected_tool is not None and not selected_tool.is_read_only
+                blocked = failure_tracker.preflight(
+                    tool_call.tool_name,
+                    tool_call.arguments,
+                    is_mutation=is_mutation,
+                )
+                if blocked is not None:
+                    execution = blocked
+                elif self._cancelled():
                     execution = ToolExecution("因用户中断，本工具调用未执行。", is_error=True)
                 else:
                     execution = await self._execute_subagent_tool_queued(
@@ -467,7 +477,12 @@ class MultiAgentOrchestrator:
                         active_task_id=task_id,
                         main_messages=main_messages,
                     )
-                execution = failure_tracker.annotate(tool_call.tool_name, tool_call.arguments, execution)
+                execution = failure_tracker.annotate(
+                    tool_call.tool_name,
+                    tool_call.arguments,
+                    execution,
+                    is_mutation=is_mutation,
+                )
                 messages.append(
                     {
                         "role": "tool",
@@ -626,7 +641,7 @@ class MultiAgentOrchestrator:
                     arguments=json.dumps(args, ensure_ascii=False, sort_keys=True),
                     execution=execution,
                 )
-        execution = await execute_tool(tool, exec_args, cancel_event=self.cancel_event)
+        execution = await self._execute_runtime_tool(tool, exec_args)
         if control is not None:
             return execution
         return self._store_tool_output(
@@ -649,7 +664,7 @@ class MultiAgentOrchestrator:
     ) -> ToolExecution | None:
         run = self._load_or_raise(run_id)
         if tool_name == "ReadFile":
-            execution = await execute_tool(tool, args, cancel_event=self.cancel_event)
+            execution = await self._execute_runtime_tool(tool, args)
             if not execution.is_error:
                 self.file_coordinator.record_read(run, task_id=task_id, raw_path=str(args.get("file_path", "")))
                 self.store.save_run(run)
@@ -663,7 +678,7 @@ class MultiAgentOrchestrator:
             self.store.save_run(run)
             if not ok:
                 return ToolExecution(error, is_error=True)
-            execution = await execute_tool(tool, args, cancel_event=self.cancel_event)
+            execution = await self._execute_runtime_tool(tool, args)
             success = not execution.is_error
             run = self._load_or_raise(run_id)
             self.file_coordinator.after_write(run, task_id=task_id, file_key=file_key, success=success)
@@ -679,7 +694,7 @@ class MultiAgentOrchestrator:
             if not ok:
                 return ToolExecution(error, is_error=True)
             before = self.file_coordinator.snapshot_workspace()
-            execution = await execute_tool(tool, args, cancel_event=self.cancel_event)
+            execution = await self._execute_runtime_tool(tool, args)
             after = self.file_coordinator.snapshot_workspace()
             run = self._load_or_raise(run_id)
             ok, coordination_error, changed = self.file_coordinator.after_bash(
@@ -698,6 +713,20 @@ class MultiAgentOrchestrator:
                 return ToolExecution(coordination_error, is_error=True)
             return execution
         return None
+
+    async def _execute_runtime_tool(self, tool: Any, args: dict[str, Any]) -> ToolExecution:
+        session_id = ""
+        recorder = None
+        if self.memory_runtime is not None and hasattr(self.memory_runtime, "start_execution_record"):
+            recorder = self.memory_runtime
+            session_id = self.memory_runtime.get_current_session_id() or ""
+        return await execute_tool(
+            tool,
+            args,
+            cancel_event=self.cancel_event,
+            execution_recorder=recorder,
+            session_id=session_id,
+        )
 
     def _validate_execute_task(self, run_id: str, args: dict[str, Any], *, active_task_id: str = "") -> str:
         run = self._load_or_raise(run_id)

@@ -14,7 +14,7 @@ from mycodingagent.tool_runtime.command_policy import (  # 高危命令分类与
     USER_DENIED_COMMAND_MESSAGE,
     CommandApprovalHook,
     CommandApprovalRequest,
-    classify_command,
+    analyze_command,
 )
 
 MAX_TIMEOUT = CONFIG.docker.max_timeout  # 单次命令允许的最大运行秒数；即使调用方传入更大 timeout，也会被截断到该上限。
@@ -88,20 +88,21 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         if image_error:  # 镜像不存在或无法检查时，给出可执行的修复提示。
             return ToolResult(output=image_error, is_error=True)  # 返回工具错误，让模型或用户先处理镜像配置。
         if self._approval_hook is not None:
-            risk, reason = classify_command(params.command)
-            decision = await self._approval_hook.approve(
-                CommandApprovalRequest(
-                    command=params.command,
-                    risk=risk,
-                    reason=reason or "Every interactive Bash call requires approval.",
-                    intent=str(getattr(params, "intent", "") or ""),
+            risk, reason = analyze_command(params.command)
+            if risk != "read":
+                decision = await self._approval_hook.approve(
+                    CommandApprovalRequest(
+                        command=params.command,
+                        risk=risk,
+                        reason=reason or "Command side effects require approval.",
+                        intent=str(getattr(params, "intent", "") or ""),
+                    )
                 )
-            )
-            if not decision.allowed:
-                return ToolResult(
-                    output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or 'user_denied'}",
-                    is_error=True,
-                )
+                if not decision.allowed:
+                    return ToolResult(
+                        output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or 'user_denied'}",
+                        is_error=True,
+                    )
         network = CONFIG.docker.network  # 默认关闭容器网络；需要联网时必须由外部环境显式打开。
         cpus = CONFIG.docker.cpus  # 默认限制为 2 个 CPU，避免编译或测试命令压满宿主机。
         memory = CONFIG.docker.memory  # 默认限制为 1GB 内存，降低失控命令影响整个 agent 进程的风险。

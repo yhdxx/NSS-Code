@@ -12,15 +12,24 @@ class MCPPermissionConfig:
     read_tools: tuple[str, ...] = ()
     write_tools: tuple[str, ...] = ()
     dangerous_tools: tuple[str, ...] = ()
-    readonly_by_default: bool = True
+    readonly_by_default: bool = False
 
 
 @dataclass(frozen=True)
 class MCPServerConfig:
     name: str
-    command: str
+    command: str = ""
     args: tuple[str, ...] = ()
     env: dict[str, str] = field(default_factory=dict)
+    transport: str = "stdio"
+    url: str = ""
+    headers: dict[str, str] = field(default_factory=dict)
+    startup_timeout: float = 20.0
+    call_timeout: float = 60.0
+    sandbox: bool = False
+    image: str = ""
+    workspace_access: str = "none"
+    network: bool = False
     description: str = ""
     tags: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
@@ -94,14 +103,32 @@ class MCPConfigLoader:
 
 def _server_config_from_dict(name: str, data: dict[str, Any]) -> MCPServerConfig | None:
     command = str(data.get("command", "")).strip()
+    transport = str(data.get("transport", "stdio") or "stdio").strip().lower()
+    url = str(data.get("url", "") or "").strip()
     disabled = bool(data.get("disabled", False))
-    if not command and not disabled:
+    if transport not in {"stdio", "streamable_http"}:
+        raise ValueError(f"MCP server {name!r} has unsupported transport: {transport}")
+    if transport == "stdio" and not command and not disabled:
         raise ValueError(f"MCP server {name!r} is missing required field: command")
+    if transport == "streamable_http" and not url and not disabled:
+        raise ValueError(f"MCP server {name!r} is missing required field: url")
+    workspace_access = str(data.get("workspace_access", "none") or "none").strip().lower()
+    if workspace_access not in {"none", "read", "write"}:
+        raise ValueError(f"MCP server {name!r} has invalid workspace_access: {workspace_access}")
     return MCPServerConfig(
         name=name,
         command=command,
         args=_string_tuple(data.get("args", ())),
         env={str(key): str(value) for key, value in dict(data.get("env", {})).items()},
+        transport=transport,
+        url=url,
+        headers={str(key): str(value) for key, value in dict(data.get("headers", {})).items()},
+        startup_timeout=max(0.1, float(data.get("startup_timeout", 20.0))),
+        call_timeout=max(0.1, float(data.get("call_timeout", 60.0))),
+        sandbox=bool(data.get("sandbox", False)),
+        image=str(data.get("image", "") or ""),
+        workspace_access=workspace_access,
+        network=bool(data.get("network", False)),
         description=str(data.get("description", "") or ""),
         tags=_string_tuple(data.get("tags", ())),
         aliases=_string_tuple(data.get("aliases", ())),
@@ -130,5 +157,5 @@ def _permission_config(value: Any) -> MCPPermissionConfig:
         read_tools=_string_tuple(value.get("read_tools", ())),
         write_tools=_string_tuple(value.get("write_tools", ())),
         dangerous_tools=_string_tuple(value.get("dangerous_tools", ())),
-        readonly_by_default=bool(value.get("readonly_by_default", True)),
+        readonly_by_default=bool(value.get("readonly_by_default", False)),
     )

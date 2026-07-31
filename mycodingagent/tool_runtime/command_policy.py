@@ -4,9 +4,12 @@ import re
 from dataclasses import dataclass, field
 from typing import Literal
 
+from tree_sitter_language_pack import get_parser
+
 from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
 
 CommandRisk = Literal["normal", "dangerous"]
+ExecutionRisk = Literal["read", "write", "network", "process", "dangerous", "unknown"]
 
 USER_DENIED_COMMAND_MESSAGE = "用户拒绝执行该命令"
 
@@ -39,6 +42,10 @@ _DANGEROUS_PATTERNS: tuple[tuple[str, str], ...] = (
 _OUT_OF_SANDBOX_PATTERN = re.compile(
     r"\b(rm|mv|cp|dd|tee|truncate|install)\b[^|;&]*\s(/(?!workspace\b|tmp\b|dev/null\b|proc\b)[a-zA-Z][^\s]*)"
 )
+
+_READ_COMMANDS = {"pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "stat", "wc", "git"}
+_WRITE_COMMANDS = {"mkdir", "touch", "cp", "mv", "rm", "install", "chmod", "chown", "truncate"}
+_NETWORK_COMMANDS = {"curl", "wget", "ssh", "scp", "rsync", "git"}
 
 
 @dataclass(frozen=True)
@@ -73,6 +80,63 @@ def classify_command(command: str) -> tuple[CommandRisk, str]:
     if match:
         return "dangerous", f"操作指向工作区之外的路径：{match.group(2)}"
     return "normal", ""
+
+
+def analyze_command(command: str) -> tuple[ExecutionRisk, str]:
+    """Classify shell semantics for the execution gate.
+
+    Regex rules retain precise destructive-operation messages while the syntax tree
+    prevents malformed or indirect shell from being mistaken for a read-only call.
+    """
+    legacy_risk, legacy_reason = classify_command(command)
+    if legacy_risk == "dangerous":
+        return "dangerous", legacy_reason
+    if not command.strip():
+        return "read", ""
+    try:
+        parser = get_parser("bash")
+        tree = parser.parse(command.encode("utf-8"))
+    except Exception as exc:
+        return "unknown", f"shell parser unavailable: {exc}"
+    if tree.root_node.has_error:
+        return "unknown", "shell syntax could not be parsed safely"
+
+    command_names: list[str] = []
+    has_write_redirect = False
+    has_dynamic_command = False
+    stack = [tree.root_node]
+    while stack:
+        node = stack.pop()
+        if node.type in {"file_redirect", "heredoc_redirect"}:
+            text = command.encode("utf-8")[node.start_byte : node.end_byte].decode("utf-8", errors="ignore")
+            if re.search(r"(^|\s)(>|>>|<>|&>)", text):
+                has_write_redirect = True
+        if node.type == "command":
+            name_node = node.child_by_field_name("name")
+            if name_node is not None:
+                name = command.encode("utf-8")[name_node.start_byte : name_node.end_byte].decode(
+                    "utf-8", errors="ignore"
+                ).strip()
+                if "$" in name or "`" in name:
+                    has_dynamic_command = True
+                elif name:
+                    command_names.append(name.rsplit("/", 1)[-1])
+        stack.extend(node.named_children)
+    if has_dynamic_command or not command_names:
+        return "unknown", "command target is dynamic or could not be identified"
+    if has_write_redirect:
+        return "write", "shell output redirects to a file"
+    if any(name in _NETWORK_COMMANDS for name in command_names):
+        if all(name == "git" for name in command_names):
+            lowered = " ".join(command.lower().split())
+            if re.search(r"\bgit\s+(status|diff|log|show|branch\s+--show-current)\b", lowered):
+                return "read", ""
+        return "network", "command may access a network or remote system"
+    if any(name in _WRITE_COMMANDS for name in command_names):
+        return "write", "command may modify workspace files"
+    if all(name in _READ_COMMANDS for name in command_names):
+        return "read", ""
+    return "process", "command starts a process whose side effects are not statically known"
 
 
 class CommandApprovalHook:

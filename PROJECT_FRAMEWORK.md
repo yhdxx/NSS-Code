@@ -340,12 +340,12 @@ Bash(command)
 
 在多智能体 execute 中，Bash 额外需要 `declared_write_files`，Runtime 会用前后快照发现未声明写入并回滚。
 
-高危命令在进入容器前先经过审批（`tool_runtime/command_policy.py`）：
+命令在进入容器前先经过 Bash AST 风险分析（`tool_runtime/command_policy.py`）：
 
 ```text
-classify_command(command)
-  -> normal：直接执行
-  -> dangerous：CommandApprovalHook 请求确认
+analyze_command(command)
+  -> read：直接执行
+  -> write/network/process/dangerous/unknown：CommandApprovalHook 请求确认
      -> 允许：正常执行
      -> 拒绝：返回"用户拒绝执行该命令"（is_error=True）
 ```
@@ -359,7 +359,8 @@ classify_command(command)
 
 ```text
 call_tool(server, tool)
-  -> 按工具名和配置分类风险
+  -> 实时刷新 schema/annotation
+  -> 按显式配置、annotation 和工具名分类风险
   -> read 自动放行
   -> write/dangerous/unknown 请求用户审批
   -> 用户拒绝则返回拒绝结果
@@ -431,11 +432,11 @@ call_tool(server, tool)
 
 ```text
 MCPClientManager.initialize()
-  -> 建立 stdio 连接
+  -> 按需建立 stdio / Streamable HTTP 连接
   -> tools/list
   -> resources/list
   -> prompts/list
-  -> 写入 metadata cache
+  -> 写入指纹校验的 SQLite metadata cache
 ```
 
 ### 9.3 Runtime 可用性

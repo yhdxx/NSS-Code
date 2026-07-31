@@ -11,7 +11,12 @@ from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
 from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
-from mycodingagent.tool_runtime.execution import execute_tool, parse_tool_arguments_object
+from mycodingagent.tool_runtime.execution import (
+    RepeatedFailureTracker,
+    ToolExecution,
+    execute_tool,
+    parse_tool_arguments_object,
+)
 
 
 class _Params(BaseModel):
@@ -73,3 +78,33 @@ def test_argument_parser_rejects_invalid_or_non_object_json():
     assert parse_tool_arguments_object("[1]")[1]
     assert parse_tool_arguments_object("{")[1]
     assert parse_tool_arguments_object('{"value":1}')[0] == {"value": 1}
+
+
+def test_repeated_failure_tracker_blocks_third_identical_call():
+    tracker = RepeatedFailureTracker()
+    failure = ToolExecution("failed", is_error=True)
+
+    tracker.annotate("Bash", '{"command":"false"}', failure)
+    tracker.annotate("Bash", '{"command": "false"}', failure)
+
+    blocked = tracker.preflight("Bash", '{"command":"false"}')
+    assert blocked is not None
+    assert blocked.is_error is True
+
+
+def test_mutation_gate_is_not_reset_by_read_only_success():
+    tracker = RepeatedFailureTracker()
+    for index in range(3):
+        tracker.annotate(
+            "WriteFile",
+            json.dumps({"file_path": f"{index}.txt"}),
+            ToolExecution("failed", is_error=True),
+            is_mutation=True,
+        )
+    tracker.annotate("ReadFile", '{"file_path":"a.txt"}', ToolExecution("ok"))
+
+    blocked = tracker.preflight(
+        "WriteFile", '{"file_path":"next.txt"}', is_mutation=True
+    )
+    assert blocked is not None
+    assert "Mutation gate" in blocked.output

@@ -44,6 +44,7 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
         workspace_tracker: Any = None,
         sandbox_root: Path | None = None,  # 保存配置值或中间计算结果。
         approval_hook: WriteApprovalHook | None = None,
+        checkpoint_hook: Any = None,
     ) -> None:  # 开启一个新的代码块。
         self._cache = file_cache  # 保存配置值或中间计算结果。
         self.file_history = file_history  # 保存配置值或中间计算结果。
@@ -51,6 +52,7 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
         self._workspace_tracker = workspace_tracker
         self._sandbox_root = sandbox_root  # 保存配置值或中间计算结果。
         self._approval_hook = approval_hook
+        self._checkpoint_hook = checkpoint_hook
 
 
     async def execute(self, params: Params) -> ToolResult:  # 定义异步函数，供事件循环调用。
@@ -92,6 +94,8 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
             )
             if not decision.allowed:
                 return ToolResult(output=f"{USER_DENIED_WRITE_MESSAGE}：{decision.reason}", is_error=True)
+        if self._checkpoint_hook is not None:
+            self._checkpoint_hook.capture_before(path)
         if self.file_history is not None:
             self.file_history.track_edit(str(path))
         try:  # 开始可能抛出异常的保护代码块。
@@ -102,6 +106,8 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
                 self._state_cache.update(str(path))  # 执行当前步骤的业务逻辑。
             if self._workspace_tracker is not None:
                 self._workspace_tracker.mark_agent_write(str(path))
+            if self._checkpoint_hook is not None:
+                self._checkpoint_hook.capture_after(path)
         except Exception as e:  # 捕获并处理指定异常。
             return ToolResult(output=f"Error writing file: {e}", is_error=True)  # 返回当前函数的处理结果。
 

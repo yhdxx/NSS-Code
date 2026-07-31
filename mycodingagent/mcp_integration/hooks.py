@@ -14,6 +14,47 @@ class MCPToolApprovalHook:
         return MCPApprovalDecision(allowed=True, reason="auto-approved")
 
 
+@dataclass(frozen=True)
+class MCPServerLaunchRequest:
+    server: str
+    transport: str
+    target: str
+    sandboxed: bool
+    workspace_access: str
+    network: bool
+
+
+class MCPServerLaunchHook:
+    async def approve(self, request: MCPServerLaunchRequest) -> MCPApprovalDecision:
+        return MCPApprovalDecision(allowed=True, reason="auto-approved")
+
+
+class CLILaunchApprovalHook(MCPServerLaunchHook):
+    def __init__(self, coordinator: TerminalInputCoordinator) -> None:
+        self.coordinator = coordinator
+        self._approved: set[str] = set()
+
+    async def approve(self, request: MCPServerLaunchRequest) -> MCPApprovalDecision:
+        if request.server in self._approved:
+            return MCPApprovalDecision(allowed=True, reason="session-server-approved")
+        print("[MCP Server Launch Approval Required]", flush=True)
+        print(f"Server: {request.server}", flush=True)
+        print(f"Transport: {request.transport}", flush=True)
+        print(f"Target: {request.target}", flush=True)
+        print(
+            f"Sandboxed: {request.sandboxed} | Workspace: {request.workspace_access} | Network: {request.network}",
+            flush=True,
+        )
+        try:
+            answer = await self.coordinator.read_choice("Launch this MCP server? [y/N]: ", allowed={"y", "yes"})
+        except PromptCancelled:
+            return MCPApprovalDecision(allowed=False, reason="user_cancelled")
+        if answer in {"y", "yes"}:
+            self._approved.add(request.server)
+            return MCPApprovalDecision(allowed=True, reason="user_allowed")
+        return MCPApprovalDecision(allowed=False, reason="user_denied")
+
+
 @dataclass
 class CLIApprovalHook(MCPToolApprovalHook):
     coordinator: TerminalInputCoordinator = field(default_factory=TerminalInputCoordinator)

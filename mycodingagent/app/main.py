@@ -18,6 +18,7 @@ import pyfiglet  # 导入当前模块需要的依赖。
 from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
 
 from mycodingagent.capability_discovery import CapabilityRouter
+from mycodingagent.code_intelligence import LSPManager, WorkspaceCodeIndex
 from mycodingagent.terminal_ui.input import read_user_prompt
 from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
 from mycodingagent.commands import CommandContext
@@ -35,8 +36,10 @@ from mycodingagent.tool_runtime.file_state_cache import FileStateCache  # 共享
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
 from mycodingagent.tool_runtime.workspace_change_tracker import WorkspaceChangeTracker  # 监听工作区文件变化并过滤模型自身写入。
+from mycodingagent.workspace.lease import WorkspaceLease, WorkspaceLeaseError
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
-from mycodingagent.mcp_integration.hooks import CLIApprovalHook
+from mycodingagent.mcp_integration.cache import MCPMetadataCache
+from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from mycodingagent.multi_agent import MultiAgentStore
@@ -70,10 +73,21 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         return  # Bash 环境无法准备时直接退出，避免后续模型调用命令全部失败。
     print(image_result.output, flush=True)  # 镜像已就绪时打印确认信息。
 
+    workspace_lease = WorkspaceLease(get_sandbox_root(), CONFIG.memory.db_path.parent)
+    if CONFIG.sandbox.workspace_lease_enabled:
+        try:
+            workspace_lease.acquire()
+        except WorkspaceLeaseError as exc:
+            print(f"无法启动：{exc}", flush=True)
+            return
     file_state_cache = FileStateCache()  # 记录模型读过的文件，用于识别已读文件的外部变更。
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
     workspace_tracker.start()  # 启动后台监听线程；不可用时静默降级为不提示。
     memory_runtime = MemoryRuntime(model=client.MODEL, workspace_root=str(get_sandbox_root())) if CONFIG.memory.enabled else None
+    code_index = WorkspaceCodeIndex(
+        get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
+    )
+    lsp_manager = LSPManager(get_sandbox_root())
     if memory_runtime is not None:
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
@@ -92,6 +106,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         command_approval_hook=command_approval_hook,
         write_approval_hook=write_approval_hook,
         terminal_input_coordinator=terminal_input,
+        code_index_service=code_index,
+        lsp_service=lsp_manager,
     )
     multi_agent_store = MultiAgentStore()
     long_term_memory_runtime = None
@@ -120,7 +136,9 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 project_path=CONFIG.mcp.project_config_path,
                 user_path=CONFIG.mcp.user_config_path,
                 env_path_var=CONFIG.mcp.env_config_var,
-            )
+            ),
+            metadata_cache=MCPMetadataCache(CONFIG.memory.db_path.with_name("mcp_cache.sqlite3")),
+            launch_hook=CLILaunchApprovalHook(terminal_input) if sys.stdin.isatty() else None,
         )
         try:
             await mcp_manager.initialize()
@@ -274,6 +292,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 if mcp_user_rounds % CONFIG.mcp.reconnect_server_step == 0:
                     mcp_manager.schedule_reconnect_unavailable_servers()
     finally:  # 执行无论是否异常都需要收尾的逻辑。
+        await lsp_manager.close()
         if long_term_memory_runtime is not None and memory_runtime is not None:
             session_id = memory_runtime.get_current_session_id()
             if session_id and messages:
@@ -290,6 +309,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             await mcp_manager.close()
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
         workspace_tracker.close()  # 停止工作区文件监听线程。
+        if CONFIG.sandbox.workspace_lease_enabled:
+            workspace_lease.release()
         # 退出时关闭连接
         await api_client.close()  # 执行当前步骤的业务逻辑。
         print("\n连接已关闭，再见！")  # 执行当前步骤的业务逻辑。

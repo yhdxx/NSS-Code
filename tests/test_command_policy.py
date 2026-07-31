@@ -11,6 +11,7 @@ from mycodingagent.tool_runtime.command_policy import (
     CommandApprovalDecision,
     CommandApprovalHook,
     classify_command,
+    analyze_command,
 )
 
 
@@ -86,6 +87,13 @@ def test_empty_command_is_normal():
 def test_classification_ignores_extra_whitespace():
     risk, _ = classify_command("rm    -rf     /workspace/x")
     assert risk == "dangerous"
+
+
+def test_ast_policy_distinguishes_read_write_network_and_dynamic_commands():
+    assert analyze_command("git status")[0] == "read"
+    assert analyze_command("cat input.txt > output.txt")[0] == "write"
+    assert analyze_command("curl https://example.com/data")[0] == "network"
+    assert analyze_command("cmd=rm; $cmd -rf /workspace")[0] == "unknown"
 
 
 class _DenyHook(CommandApprovalHook):
