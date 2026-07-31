@@ -31,6 +31,7 @@ class RuntimeContext:
     workspace_changes: WorkspaceChanges = field(default_factory=WorkspaceChanges)
     context_budget: ContextBudgetState | None = None
     capabilities: dict[str, Any] | None = None
+    code_intelligence: dict[str, Any] | None = None
     task_snapshot: str | None = None
     long_term_memory: dict[str, Any] | None = None
 
@@ -41,6 +42,8 @@ class RuntimeContext:
         payload: dict[str, Any] = {"context_mode": self.context_mode}
         if self.capabilities:
             payload["capabilities"] = self.capabilities
+        if self.code_intelligence:
+            payload["code_intelligence"] = self.code_intelligence
         if self.long_term_memory:
             payload["long_term_memory"] = self.long_term_memory
         return payload
@@ -89,11 +92,13 @@ class RuntimeContextBuilder:
         workspace_tracker: Any | None = None,
         context_mode: str = "raw",
         capabilities: Any | None = None,
+        code_intelligence: Any | None = None,
         long_term_memory: dict[str, Any] | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
         self.capabilities = capabilities
+        self.code_intelligence = code_intelligence
         self.long_term_memory = long_term_memory
 
     def build(self) -> RuntimeContext:
@@ -101,6 +106,7 @@ class RuntimeContextBuilder:
             context_mode=self.context_mode,
             workspace_changes=self._workspace_changes(),
             capabilities=self._capability_payload(),
+            code_intelligence=self._code_intelligence_payload(),
             long_term_memory=self.long_term_memory,
         )
 
@@ -121,6 +127,13 @@ class RuntimeContextBuilder:
             payload = to_runtime_payload()
         else:
             payload = self.capabilities
+        return payload if isinstance(payload, dict) else None
+
+    def _code_intelligence_payload(self) -> dict[str, Any] | None:
+        if self.code_intelligence is None:
+            return None
+        runtime_payload = getattr(self.code_intelligence, "runtime_payload", None)
+        payload = runtime_payload() if callable(runtime_payload) else self.code_intelligence
         return payload if isinstance(payload, dict) else None
 
 

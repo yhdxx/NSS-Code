@@ -143,6 +143,9 @@ class ClientConfig:
     step_token: bool = field(default_factory=lambda: _env_bool("STEP_TOKEN", True))
     round_token: bool = field(default_factory=lambda: _env_bool("ROUND_TOKEN", True))
     conversation_token: bool = field(default_factory=lambda: _env_bool("CONVERSATION_TOKEN", True))
+    legacy_system_prompt: bool = field(
+        default_factory=lambda: _env_bool("MYCODINGAGENT_LEGACY_SYSTEM_PROMPT", False)
+    )
 
 
 @dataclass(frozen=True)

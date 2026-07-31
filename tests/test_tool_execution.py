@@ -12,6 +12,7 @@ from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_runtime.execution import (
+    CodeQueryLedger,
     RepeatedFailureTracker,
     ToolExecution,
     execute_tool,
@@ -108,3 +109,24 @@ def test_mutation_gate_is_not_reset_by_read_only_success():
     )
     assert blocked is not None
     assert "Mutation gate" in blocked.output
+
+
+def test_code_query_ledger_blocks_identical_success_but_allows_changed_scope():
+    ledger = CodeQueryLedger()
+    first = '{"operation":"impact","query":"Bash","intent":"first"}'
+    same_query = '{"query":"Bash","operation":"impact","intent":"again"}'
+
+    ledger.record("code_index", first, ToolExecution("ok"))
+
+    assert ledger.preflight("code_index", same_query) is not None
+    assert ledger.preflight("code_index", '{"operation":"impact","query":"Bash","depth":2}') is None
+    assert ledger.preflight("Grep", first) is None
+
+
+def test_code_query_ledger_does_not_record_failed_queries():
+    ledger = CodeQueryLedger()
+    query = '{"operation":"references","path":"sample.py","line":1}'
+
+    ledger.record("lsp", query, ToolExecution("unavailable", is_error=True))
+
+    assert ledger.preflight("lsp", query) is None

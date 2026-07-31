@@ -39,6 +39,8 @@ myCodingAgent 是一个本地 Coding Agent 运行框架。用户在终端用自�
 - 上下文窗口、压缩阈值、热工作区阈值
 - Skill 检索、Milvus、Embedding、LRFU 参数
 - MCP 配置路径和后台重连频率
+- `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT=1`：临时切回旧版系统提示词；默认使用按运行时能力组装的精简提示词
+- `MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND`：覆盖某语言的 LSP 启动命令，例如 `MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"`
 - 多智能体最大轮次和并发任务数
 - 长期记忆存储/查询模型、抽取超时和启动回填开关
 
@@ -354,12 +356,19 @@ MCP server 暴露 `available` 状态：
 - 连接失败进入指数 backoff，调用和启动均有独立超时。
 - stdio server 可配置 `sandbox: true` 进入 Docker，工作区读写和网络需显式开放。
 
-### 8.4 代码理解
+### 8.3 代码理解
 
-`code_index` 使用 tree-sitter 为 Python、Go、TypeScript、JavaScript、Rust 和 Java 建立增量符号/调用索引。
-`lsp` 按需启动对应 language server，提供 definition、references、hover 和 diagnostics；未安装时结构化降级。
+`code_index` 使用 tree-sitter 为 Python、Go、TypeScript、JavaScript、Rust 和 Java 建立版本化增量索引。索引记录符号、限定调用、import 和语法引用，并提供：
 
-### 8.3 执行接口
+- `impact`：一次聚合定义、调用方、被调用方、import、引用、相关测试和推荐阅读文件。
+- `batch`：在一次索引刷新后执行最多 20 个结构查询。
+- 工作区文件事件触发的脏路径刷新；监听事件延迟时使用文件指纹兜底，不重复读取未变化文件。
+
+`lsp` 在 tree-sitter 定位文件和位置后按需启动 language server，提供 `definition`、`references`、`hover` 和 `diagnostics`。支持的外部可执行程序是 `pyright-langserver`/`pylsp`、`gopls`、`typescript-language-server`、`rust-analyzer` 和 `jdtls`；未安装时返回结构化不可用结果，不阻塞后续分析。
+
+每轮 Runtime Context 会声明索引状态和各语言 LSP 可用性。相同参数的成功 `code_index`/`lsp` 查询在同一用户轮内不会重复执行。
+
+### 8.4 执行接口
 
 固定工具 schema：
 

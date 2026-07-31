@@ -2,10 +2,12 @@ from __future__ import annotations
 
 import asyncio
 from pathlib import Path
+from types import SimpleNamespace
 
 import pytest
 
 from mycodingagent.code_intelligence import LSPManager, WorkspaceCodeIndex
+from mycodingagent.code_intelligence.lsp import _LSPProcess
 from mycodingagent.tool_runtime.code_intelligence import CodeIndexTool, LSPTool
 
 
@@ -41,6 +43,77 @@ def test_code_index_incrementally_updates_and_reports_calls(tmp_path):
     assert index.query("definition_candidates", query="renamed")["symbols"]
 
 
+def test_code_index_impact_aggregates_callers_callees_and_tests(tmp_path):
+    (tmp_path / "service.py").write_text(
+        "def helper():\n    return 1\n\ndef target():\n    return helper()\n\ndef entry():\n    return target()\n",
+        encoding="utf-8",
+    )
+    tests_dir = tmp_path / "tests"
+    tests_dir.mkdir()
+    (tests_dir / "test_service.py").write_text(
+        "from service import target\n\ndef test_target():\n    assert target() == 1\n",
+        encoding="utf-8",
+    )
+    index = WorkspaceCodeIndex(tmp_path, tmp_path / "index.sqlite3")
+
+    result = index.query("impact", query="target", depth=2)
+
+    assert {item["path"] for item in result["definitions"]} == {"service.py"}
+    assert {item["caller"] for item in result["callers"]} >= {"entry", "test_target"}
+    assert {item["callee_name"] for item in result["callees"]} == {"helper"}
+    assert {item["path"] for item in result["tests"]} == {"tests/test_service.py"}
+    assert result["recommended_files"] == ["service.py", "tests/test_service.py"]
+
+
+def test_code_index_batch_uses_one_refresh_and_honors_filters(tmp_path):
+    (tmp_path / "sample.py").write_text("def target():\n    return 1\n", encoding="utf-8")
+    (tmp_path / "sample.js").write_text("function target() { return 1; }\n", encoding="utf-8")
+    index = WorkspaceCodeIndex(tmp_path, tmp_path / "index.sqlite3")
+
+    result = index.query(
+        "batch",
+        queries=[
+            {"operation": "definition_candidates", "query": "target", "language": "python"},
+            {"operation": "outline", "path": "sample.js"},
+        ],
+    )
+
+    assert result["refresh"]["full"] == 1
+    assert {item["path"] for item in result["results"][0]["symbols"]} == {"sample.py"}
+    assert result["results"][1]["symbols"][0]["path"] == "sample.js"
+
+
+def test_code_index_does_not_reread_unchanged_files(tmp_path, monkeypatch):
+    source = tmp_path / "sample.py"
+    source.write_text("def target():\n    return 1\n", encoding="utf-8")
+    index = WorkspaceCodeIndex(tmp_path, tmp_path / "index.sqlite3")
+    index.query("symbols", query="target")
+
+    monkeypatch.setattr(Path, "read_bytes", lambda _self: (_ for _ in ()).throw(AssertionError("reread")))
+
+    result = index.query("symbols", query="target")
+    assert result["symbols"]
+    assert result["refresh"]["indexed"] == 0
+
+
+def test_code_index_rejects_outside_workspace_filter(tmp_path):
+    (tmp_path / "sample.py").write_text("def target():\n    return 1\n", encoding="utf-8")
+    index = WorkspaceCodeIndex(tmp_path, tmp_path / "index.sqlite3")
+
+    result = index.query("symbols", query="target", path="/etc")
+
+    assert "outside the workspace" in result["error"]
+
+
+def test_code_index_empty_impact_has_zero_evidence(tmp_path):
+    (tmp_path / "sample.py").write_text("value = 1\n", encoding="utf-8")
+    index = WorkspaceCodeIndex(tmp_path, tmp_path / "index.sqlite3")
+
+    result = index.query("impact", query="missing_symbol")
+
+    assert result["evidence_count"] == 0
+
+
 def test_lsp_degrades_when_language_server_is_missing(tmp_path, monkeypatch):
     source = tmp_path / "sample.py"
     source.write_text("value = 1\n", encoding="utf-8")
@@ -53,8 +126,49 @@ def test_lsp_degrades_when_language_server_is_missing(tmp_path, monkeypatch):
     assert result["language"] == "python"
 
 
+def test_lsp_runtime_payload_reports_all_supported_languages(tmp_path, monkeypatch):
+    monkeypatch.setattr(
+        "mycodingagent.code_intelligence.lsp.shutil.which",
+        lambda name: f"/usr/bin/{name}" if name in {"gopls", "rust-analyzer"} else None,
+    )
+    manager = LSPManager(tmp_path)
+
+    payload = manager.runtime_payload()
+
+    assert set(payload["languages"]) == {"python", "go", "typescript", "javascript", "rust", "java"}
+    assert payload["languages"]["go"]["available"] is True
+    assert payload["languages"]["python"]["available"] is False
+
+
+def test_lsp_document_sync_opens_once_and_changes_only_when_content_changes(tmp_path, monkeypatch):
+    source = tmp_path / "sample.py"
+    source.write_text("value = 1\n", encoding="utf-8")
+    manager = LSPManager(tmp_path)
+    client = _LSPProcess(
+        process=SimpleNamespace(), lock=asyncio.Lock(), server_name="fake-lsp"
+    )
+    notifications = []
+
+    async def fake_notify(_client, method, params):
+        notifications.append((method, params))
+
+    monkeypatch.setattr(manager, "_notify", fake_notify)
+
+    async def scenario():
+        uri = source.as_uri()
+        await manager._sync_document(client, uri=uri, language="python", path=source)
+        await manager._sync_document(client, uri=uri, language="python", path=source)
+        source.write_text("value = 2\n", encoding="utf-8")
+        await manager._sync_document(client, uri=uri, language="python", path=source)
+
+    asyncio.run(scenario())
+
+    assert [method for method, _params in notifications] == ["textDocument/didOpen", "textDocument/didChange"]
+    assert notifications[1][1]["textDocument"]["version"] == 2
+
+
 def test_code_intelligence_tool_descriptions_define_selection_order():
-    assert "Use it before Grep" in CodeIndexTool.description
+    assert "before Grep" in CodeIndexTool.description
     assert "change-impact analysis" in CodeIndexTool.description
     assert "Use after code_index" in LSPTool.description
     assert "language server is unavailable" in LSPTool.description

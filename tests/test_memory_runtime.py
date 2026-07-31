@@ -132,6 +132,19 @@ def test_empty_runtime_context_omits_empty_fields():
     assert "recovery_hint" not in rendered.runtime_context_json
 
 
+def test_runtime_context_exposes_code_intelligence_availability():
+    payload = {
+        "index": {"available": True, "generation": 3},
+        "lsp": {"languages": {"python": {"available": False}}},
+    }
+
+    rendered = PromptRenderer.render_current_user_message(
+        RuntimeContextBuilder(code_intelligence=payload).build(), "inspect code"
+    )
+
+    assert json.loads(rendered.runtime_context_json)["code_intelligence"] == payload
+
+
 def test_build_round_tools_falls_back_to_default_tools():
     default_tools = [{"type": "function", "function": {"name": "Default"}}]
 

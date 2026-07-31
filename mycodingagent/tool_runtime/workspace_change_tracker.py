@@ -6,6 +6,7 @@ import select
 import struct
 from pathlib import Path
 from threading import Event, Lock, Thread
+from typing import Callable
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.tool_runtime.file_state_cache import FileStateCache
@@ -49,6 +50,15 @@ class WorkspaceChangeTracker:
         self._stop_event = Event()
         self._thread: Thread | None = None
         self._backend: _WorkspaceBackend | None = None
+        self._subscribers: set[Callable[[Path, bool], None]] = set()
+
+    def subscribe(self, callback: Callable[[Path, bool], None]) -> None:
+        with self._lock:
+            self._subscribers.add(callback)
+
+    def unsubscribe(self, callback: Callable[[Path, bool], None]) -> None:
+        with self._lock:
+            self._subscribers.discard(callback)
 
     def start(self) -> None:
         if self._thread is not None:
@@ -76,6 +86,7 @@ class WorkspaceChangeTracker:
         with self._lock:
             self._agent_writes[normalized] = fingerprint
             self._changed_paths.discard(normalized)
+        self._notify_subscribers(Path(normalized), False)
 
     def mark_paths_for_recheck(self, paths: list[str]) -> None:
         with self._lock:
@@ -111,6 +122,7 @@ class WorkspaceChangeTracker:
     def _record_change(self, path: Path, is_delete: bool) -> None:
         if path.is_dir() and not is_delete:
             return
+        self._notify_subscribers(path, is_delete)
         normalized = self._normalize_path(str(path))
         if not self.file_state_cache.has_read(normalized):
             return
@@ -118,6 +130,15 @@ class WorkspaceChangeTracker:
             return
         with self._lock:
             self._changed_paths.add(normalized)
+
+    def _notify_subscribers(self, path: Path, is_delete: bool) -> None:
+        with self._lock:
+            subscribers = tuple(self._subscribers)
+        for callback in subscribers:
+            try:
+                callback(path, is_delete)
+            except Exception:
+                continue
 
     def _is_agent_write(self, path: str) -> bool:
         with self._lock:

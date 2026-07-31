@@ -9,6 +9,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import BaseModel
 
 from mycodingagent.llm_runtime import client
+from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
@@ -148,15 +149,32 @@ def _run_stream(fake_client, tools=None):
 
 
 def test_system_prompt_prioritizes_code_intelligence_for_impact_analysis():
-    source = client.ask_deepseek.__code__.co_consts
-    prompt = next(
-        value for value in source if isinstance(value, str) and "***工具使用指南***" in value
+    prompt = build_system_prompt(
+        PromptFeatures(code_intelligence_enabled=True)
     )
 
-    assert "评估修改影响范围时，优先使用 code_index" in prompt
-    assert "使用 lsp 复核" in prompt
-    assert "Grep 用于补充查找 import、字符串、配置、文档" in prompt
-    assert "不得使用 Bash 执行 grep、rg、find" in prompt
+    assert "start with code_index" in prompt
+    assert "impact or batch" in prompt
+    assert "use lsp only" in prompt
+    assert "Use Grep after structural analysis" in prompt
+    assert "Do not use Bash to run grep, rg, find" in prompt
+
+
+def test_system_prompt_includes_only_enabled_capability_modules():
+    core = build_system_prompt(PromptFeatures())
+    full = build_system_prompt(
+        PromptFeatures(skills_enabled=True, mcp_enabled=True, memory_enabled=True),
+        skill_hint="Use project-skill for release work.",
+    )
+
+    assert "## Skills" not in core
+    assert "## MCP" not in core
+    assert "## Memory" not in core
+    assert "## Skills" in full
+    assert "## MCP" in full
+    assert "## Memory" in full
+    assert "Use project-skill for release work." in full
+    assert len(core) < 6500
 
 
 # --- retry behaviour -------------------------------------------------------

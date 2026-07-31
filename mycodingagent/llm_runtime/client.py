@@ -25,8 +25,10 @@ from mycodingagent.llm_runtime.context import (
     render_current_turn_for_model,
 )
 from mycodingagent.llm_runtime.streaming import PendingToolCall, normalize_stream_result, stream_one_round
+from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.tool_runtime import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
 from mycodingagent.tool_runtime.execution import (
+    CodeQueryLedger,
     RepeatedFailureTracker,
     ToolExecution,
     execute_tool,
@@ -505,6 +507,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     workspace_tracker: Any | None = None,
     memory_runtime: MemoryRuntime | None = None,
     capability_router: Any | None = None,
+    code_intelligence: Any | None = None,
     long_term_memory_runtime: Any | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:  # 返回 `(最终模型文本, 更新后的消息历史)`，供 CLI 继续保持上下文。
@@ -521,7 +524,17 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         messages = [  # 创建新的消息列表；后续会原地 append 用户、assistant 和 tool 消息。
             {  # 单条 system 消息对象。
                 "role": "system",  # system role 用于定义模型行为规则。
-                "content": (  # system 内容描述 agent 身份、文件读取原则和沙箱约束。
+                "content": build_system_prompt(
+                    PromptFeatures(
+                        skills_enabled=skill_runtime is not None,
+                        mcp_enabled=capability_router is not None,
+                        memory_enabled=memory_runtime is not None,
+                        code_intelligence_enabled=registry.get("code_index") is not None
+                        if hasattr(registry, "get")
+                        else False,
+                    ),
+                    skill_hint=skill_hint,
+                ) if not CONFIG.client.legacy_system_prompt else (  # 临时保留一个版本的兼容回退。
                     """
                     ***角色定义***
                     你是一个名为 H-Agent 的智能体助手，你的基础功能是帮助用户编写、修改、审查和测试代码。
@@ -719,11 +732,13 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         workspace_tracker=workspace_tracker,
         context_mode=current_context_mode(),
         capabilities=capability_result,
+        code_intelligence=code_intelligence,
         long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else None,
     ).build()
     round_messages = list(messages)
     current_tools = await build_round_tools(tools, core_tool_schemas)  # 本轮工具列表在整轮内保持稳定，利于 prompt 缓存命中。
     failure_tracker = RepeatedFailureTracker()
+    code_query_ledger = CodeQueryLedger()
     previous_budget_state: ContextBudgetState | None = None
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
@@ -895,6 +910,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 tool_call.arguments,
                 is_mutation=is_mutation,
             )
+            if blocked is None:
+                blocked = code_query_ledger.preflight(tool_call.tool_name, tool_call.arguments)
             if blocked is not None:
                 execution = blocked
             elif cancel_event is not None and cancel_event.is_set():
@@ -914,6 +931,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     skill_runtime,
                     **execution_kwargs,
                 )
+            code_query_ledger.record(tool_call.tool_name, tool_call.arguments, execution)
             execution = failure_tracker.annotate(
                 tool_call.tool_name,
                 tool_call.arguments,

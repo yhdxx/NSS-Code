@@ -87,6 +87,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     code_index = WorkspaceCodeIndex(
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
+    workspace_tracker.subscribe(code_index.mark_dirty)
     lsp_manager = LSPManager(get_sandbox_root())
     if memory_runtime is not None:
         deleted_count = memory_runtime.cleanup_expired_sessions()
@@ -263,6 +264,12 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                         workspace_tracker=workspace_tracker,
                         memory_runtime=memory_runtime,
                         capability_router=capability_router,
+                        code_intelligence={
+                            "index": code_index.status(),
+                            "lsp": lsp_manager.runtime_payload(),
+                            "recommended_sequence": ["code_index.impact", "lsp_if_available", "Grep", "ReadFile"],
+                            "soft_budget": {"code_index_calls": 2, "lsp_calls": 1, "supplemental_grep_calls": 2},
+                        },
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=turn_watcher.triggered,
                     )  # 结束上方的多行结构。
@@ -308,6 +315,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         if mcp_manager is not None:
             await mcp_manager.close()
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
+        workspace_tracker.unsubscribe(code_index.mark_dirty)
         workspace_tracker.close()  # 停止工作区文件监听线程。
         if CONFIG.sandbox.workspace_lease_enabled:
             workspace_lease.release()

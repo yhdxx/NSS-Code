@@ -1,12 +1,16 @@
 from __future__ import annotations
 
 import asyncio
+import contextlib
+import hashlib
 import json
 import os
+import shlex
 import shutil
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
+from urllib.parse import unquote, urlparse
 
 
 COMMANDS = {
@@ -21,12 +25,23 @@ LANGUAGE_BY_SUFFIX = {
     ".py": "python", ".go": "go", ".ts": "typescript", ".tsx": "typescript",
     ".js": "javascript", ".jsx": "javascript", ".rs": "rust", ".java": "java",
 }
+OPERATIONS = ("definition", "references", "hover", "diagnostics")
+
+
+@dataclass
+class _OpenDocument:
+    version: int
+    content_hash: str
 
 
 @dataclass
 class _LSPProcess:
     process: asyncio.subprocess.Process
     lock: asyncio.Lock
+    server_name: str
+    capabilities: dict[str, Any] = field(default_factory=dict)
+    open_documents: dict[str, _OpenDocument] = field(default_factory=dict)
+    diagnostics: dict[str, list[dict[str, Any]]] = field(default_factory=dict)
     next_id: int = 1
 
 
@@ -37,37 +52,60 @@ class LSPManager:
         self._processes: dict[str, _LSPProcess] = {}
         self._startup_locks: dict[str, asyncio.Lock] = {}
 
+    def runtime_payload(self) -> dict[str, Any]:
+        languages: dict[str, Any] = {}
+        for language in COMMANDS:
+            command = self._command_for(language)
+            languages[language] = {
+                "available": command is not None,
+                "server": command[0] if command else "",
+                "operations": list(OPERATIONS) if command else [],
+            }
+        return {"languages": languages, "policy": "optional_external_servers"}
+
     async def query(self, operation: str, **kwargs: Any) -> dict[str, Any]:
+        if operation not in OPERATIONS:
+            return {"error": f"unsupported LSP operation: {operation}"}
         path = self._resolve(str(kwargs.get("path", "")))
         if path is None:
             return {"error": "path is outside the workspace or unsupported"}
         language = LANGUAGE_BY_SUFFIX[path.suffix.lower()]
-        client = await self._ensure(language)
-        if client is None:
-            return {"available": False, "language": language, "error": "language server is not installed"}
-        line = max(0, int(kwargs.get("line", 1)) - 1)
-        column = max(0, int(kwargs.get("column", 0)))
-        uri = path.as_uri()
-        await self._notify(
-            client,
-            "textDocument/didOpen",
-            {"textDocument": {"uri": uri, "languageId": language, "version": 1, "text": path.read_text(encoding="utf-8", errors="replace")}},
-        )
-        position = {"textDocument": {"uri": uri}, "position": {"line": line, "character": column}}
-        methods = {
-            "definition": ("textDocument/definition", position),
-            "references": ("textDocument/references", {**position, "context": {"includeDeclaration": True}}),
-            "hover": ("textDocument/hover", position),
-            "diagnostics": ("textDocument/diagnostic", {"textDocument": {"uri": uri}}),
-        }
-        if operation not in methods:
-            return {"error": f"unsupported LSP operation: {operation}"}
-        method, params = methods[operation]
+        process_key = self._process_key(language)
         try:
-            result = await self._request(client, method, params)
-            return {"available": True, "language": language, "operation": operation, "result": result}
+            client = await self._ensure(language)
+            if client is None:
+                return {"available": False, "language": language, "error": "language server is not installed"}
+            uri = path.as_uri()
+            await self._sync_document(client, uri=uri, language=language, path=path)
+            line = max(0, int(kwargs.get("line", 1)) - 1)
+            column = max(0, int(kwargs.get("column", 0)))
+            position = {"textDocument": {"uri": uri}, "position": {"line": line, "character": column}}
+            if operation == "definition":
+                raw = await self._request(client, "textDocument/definition", position)
+                result = self._normalize_locations(raw)
+            elif operation == "references":
+                raw = await self._request(
+                    client, "textDocument/references", {**position, "context": {"includeDeclaration": True}}
+                )
+                result = self._normalize_locations(raw)
+            elif operation == "hover":
+                result = await self._request(client, "textDocument/hover", position)
+            else:
+                if client.capabilities.get("diagnosticProvider"):
+                    raw = await self._request(client, "textDocument/diagnostic", {"textDocument": {"uri": uri}})
+                    result = raw.get("items", []) if isinstance(raw, dict) else raw or []
+                else:
+                    await self._collect_notifications(client, uri=uri)
+                    result = client.diagnostics.get(uri, [])
+            return {
+                "available": True,
+                "language": language,
+                "server": client.server_name,
+                "operation": operation,
+                "result": result,
+            }
         except Exception as exc:
-            await self._close_language(language)
+            await self._close_language(process_key)
             return {"available": False, "language": language, "error": str(exc)}
 
     async def close(self) -> None:
@@ -75,21 +113,19 @@ class LSPManager:
             await self._close_language(language)
 
     async def _ensure(self, language: str) -> _LSPProcess | None:
-        existing = self._processes.get(language)
+        process_key = self._process_key(language)
+        existing = self._processes.get(process_key)
         if existing is not None and existing.process.returncode is None:
             return existing
-        lock = self._startup_locks.setdefault(language, asyncio.Lock())
+        lock = self._startup_locks.setdefault(process_key, asyncio.Lock())
         async with lock:
-            existing = self._processes.get(language)
+            existing = self._processes.get(process_key)
             if existing is not None and existing.process.returncode is None:
                 return existing
-            return await self._start(language)
+            return await self._start(language, process_key)
 
-    async def _start(self, language: str) -> _LSPProcess | None:
-        command = next((candidate for candidate in COMMANDS[language] if shutil.which(candidate[0])), None)
-        override = os.getenv(f"MYCODINGAGENT_LSP_{language.upper()}_COMMAND", "").strip()
-        if override:
-            command = tuple(override.split())
+    async def _start(self, language: str, process_key: str) -> _LSPProcess | None:
+        command = self._command_for(language)
         if command is None:
             return None
         process = await asyncio.create_subprocess_exec(
@@ -99,23 +135,56 @@ class LSPManager:
             stderr=asyncio.subprocess.DEVNULL,
             cwd=self.workspace_root,
         )
-        client = _LSPProcess(process=process, lock=asyncio.Lock())
-        self._processes[language] = client
+        client = _LSPProcess(process=process, lock=asyncio.Lock(), server_name=command[0])
+        self._processes[process_key] = client
         try:
-            await self._request(
+            result = await self._request(
                 client,
                 "initialize",
                 {
                     "processId": os.getpid(),
                     "rootUri": self.workspace_root.as_uri(),
-                    "capabilities": {"textDocument": {"definition": {}, "references": {}, "hover": {}, "diagnostic": {}}},
+                    "workspaceFolders": [{"uri": self.workspace_root.as_uri(), "name": self.workspace_root.name}],
+                    "capabilities": {
+                        "textDocument": {
+                            "definition": {}, "references": {}, "hover": {},
+                            "diagnostic": {"dynamicRegistration": False},
+                            "publishDiagnostics": {"relatedInformation": True},
+                            "synchronization": {"didSave": True},
+                        }
+                    },
                 },
             )
+            if isinstance(result, dict) and isinstance(result.get("capabilities"), dict):
+                client.capabilities = dict(result["capabilities"])
             await self._notify(client, "initialized", {})
             return client
         except Exception:
-            await self._close_language(language)
+            await self._close_language(process_key)
             raise
+
+    async def _sync_document(self, client: _LSPProcess, *, uri: str, language: str, path: Path) -> None:
+        text = path.read_text(encoding="utf-8", errors="replace")
+        content_hash = hashlib.sha256(text.encode("utf-8")).hexdigest()
+        opened = client.open_documents.get(uri)
+        if opened is None:
+            await self._notify(
+                client,
+                "textDocument/didOpen",
+                {"textDocument": {"uri": uri, "languageId": language, "version": 1, "text": text}},
+            )
+            client.open_documents[uri] = _OpenDocument(1, content_hash)
+            return
+        if opened.content_hash == content_hash:
+            return
+        version = opened.version + 1
+        client.diagnostics.pop(uri, None)
+        await self._notify(
+            client,
+            "textDocument/didChange",
+            {"textDocument": {"uri": uri, "version": version}, "contentChanges": [{"text": text}]},
+        )
+        client.open_documents[uri] = _OpenDocument(version, content_hash)
 
     async def _request(self, client: _LSPProcess, method: str, params: dict[str, Any]) -> Any:
         async with client.lock:
@@ -124,6 +193,7 @@ class LSPManager:
             await self._write(client, {"jsonrpc": "2.0", "id": request_id, "method": method, "params": params})
             while True:
                 message = await asyncio.wait_for(self._read(client), timeout=self.timeout)
+                self._consume_notification(client, message)
                 if message.get("id") == request_id:
                     if "error" in message:
                         raise RuntimeError(json.dumps(message["error"], ensure_ascii=False))
@@ -134,6 +204,32 @@ class LSPManager:
     async def _notify(self, client: _LSPProcess, method: str, params: dict[str, Any]) -> None:
         async with client.lock:
             await self._write(client, {"jsonrpc": "2.0", "method": method, "params": params})
+
+    async def _collect_notifications(self, client: _LSPProcess, *, uri: str) -> None:
+        async with client.lock:
+            deadline = asyncio.get_running_loop().time() + min(self.timeout, 0.2)
+            while True:
+                remaining = deadline - asyncio.get_running_loop().time()
+                if remaining <= 0:
+                    return
+                try:
+                    message = await asyncio.wait_for(self._read(client), timeout=remaining)
+                except asyncio.TimeoutError:
+                    return
+                self._consume_notification(client, message)
+                if uri in client.diagnostics:
+                    return
+                if "id" in message and "method" in message:
+                    await self._write(client, {"jsonrpc": "2.0", "id": message["id"], "result": None})
+
+    @staticmethod
+    def _consume_notification(client: _LSPProcess, message: dict[str, Any]) -> None:
+        if message.get("method") != "textDocument/publishDiagnostics":
+            return
+        params = message.get("params", {})
+        if isinstance(params, dict) and isinstance(params.get("uri"), str):
+            diagnostics = params.get("diagnostics", [])
+            client.diagnostics[params["uri"]] = diagnostics if isinstance(diagnostics, list) else []
 
     @staticmethod
     async def _write(client: _LSPProcess, payload: dict[str, Any]) -> None:
@@ -160,24 +256,68 @@ class LSPManager:
             raise RuntimeError("invalid language server response")
         return json.loads(await client.process.stdout.readexactly(length))
 
-    async def _close_language(self, language: str) -> None:
-        client = self._processes.pop(language, None)
+    async def _close_language(self, process_key: str) -> None:
+        client = self._processes.pop(process_key, None)
         if client is None:
             return
         if client.process.returncode is None:
-            client.process.terminate()
-            try:
-                await asyncio.wait_for(client.process.wait(), timeout=2)
-            except asyncio.TimeoutError:
-                client.process.kill()
-                await client.process.wait()
+            for uri in list(client.open_documents):
+                with contextlib.suppress(Exception):
+                    await self._notify(client, "textDocument/didClose", {"textDocument": {"uri": uri}})
+            with contextlib.suppress(Exception):
+                await self._request(client, "shutdown", {})
+                await self._notify(client, "exit", {})
+            if client.process.returncode is None:
+                client.process.terminate()
+                try:
+                    await asyncio.wait_for(client.process.wait(), timeout=2)
+                except asyncio.TimeoutError:
+                    client.process.kill()
+                    await client.process.wait()
+
+    def _command_for(self, language: str) -> tuple[str, ...] | None:
+        override = os.getenv(f"MYCODINGAGENT_LSP_{language.upper()}_COMMAND", "").strip()
+        if language == "javascript" and not override:
+            override = os.getenv("MYCODINGAGENT_LSP_TYPESCRIPT_COMMAND", "").strip()
+        if override:
+            parsed = tuple(shlex.split(override))
+            return parsed or None
+        return next((candidate for candidate in COMMANDS[language] if shutil.which(candidate[0])), None)
+
+    @staticmethod
+    def _process_key(language: str) -> str:
+        return "typescript" if language == "javascript" else language
 
     def _resolve(self, raw_path: str) -> Path | None:
         path = Path(raw_path)
-        path = path if path.is_absolute() else self.workspace_root / path
+        if path.is_absolute() and (path == Path("/workspace") or Path("/workspace") in path.parents):
+            path = self.workspace_root / path.relative_to("/workspace")
+        elif not path.is_absolute():
+            path = self.workspace_root / path
         try:
             path = path.resolve(strict=False)
             path.relative_to(self.workspace_root)
         except ValueError:
             return None
         return path if path.is_file() and path.suffix.lower() in LANGUAGE_BY_SUFFIX else None
+
+    def _normalize_locations(self, raw: Any) -> list[dict[str, Any]]:
+        items = raw if isinstance(raw, list) else [raw] if isinstance(raw, dict) else []
+        normalized: list[dict[str, Any]] = []
+        for item in items:
+            uri = item.get("uri") or item.get("targetUri")
+            location_range = item.get("range") or item.get("targetSelectionRange") or item.get("targetRange")
+            if not isinstance(uri, str) or not isinstance(location_range, dict):
+                continue
+            normalized.append({"uri": uri, "path": self._display_uri(uri), "range": location_range})
+        return normalized
+
+    def _display_uri(self, uri: str) -> str:
+        parsed = urlparse(uri)
+        if parsed.scheme != "file":
+            return uri
+        path = Path(unquote(parsed.path)).resolve(strict=False)
+        try:
+            return path.relative_to(self.workspace_root).as_posix()
+        except ValueError:
+            return str(path)

@@ -18,6 +18,40 @@ class ToolExecution:
     is_error: bool = False
 
 
+class CodeQueryLedger:
+    """Avoid spending a model turn on an identical successful semantic read."""
+
+    TRACKED_TOOLS = {"code_index", "lsp"}
+
+    def __init__(self) -> None:
+        self._successful: set[tuple[str, str]] = set()
+
+    def preflight(self, tool_name: str, raw_args: str) -> ToolExecution | None:
+        key = self._key(tool_name, raw_args)
+        if key is not None and key in self._successful:
+            return ToolExecution(
+                "Duplicate code-intelligence query skipped. Reuse the earlier evidence or change the query scope.",
+                is_error=True,
+            )
+        return None
+
+    def record(self, tool_name: str, raw_args: str, execution: ToolExecution) -> None:
+        key = self._key(tool_name, raw_args)
+        if key is not None and not execution.is_error:
+            self._successful.add(key)
+
+    @classmethod
+    def _key(cls, tool_name: str, raw_args: str) -> tuple[str, str] | None:
+        if tool_name not in cls.TRACKED_TOOLS:
+            return None
+        parsed, error = parse_tool_arguments_object(raw_args)
+        if error:
+            return None
+        parsed.pop("intent", None)
+        parsed.pop("analysis_intent", None)
+        return tool_name, json.dumps(parsed, ensure_ascii=False, sort_keys=True, default=str)
+
+
 def parse_tool_arguments_object(raw_args: str) -> tuple[dict[str, Any], str]:
     try:
         parsed = json.loads(raw_args) if raw_args else {}
