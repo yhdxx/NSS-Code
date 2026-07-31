@@ -25,12 +25,13 @@ class CodeQueryLedger:
 
     def __init__(self) -> None:
         self._successful: set[tuple[str, str]] = set()
+        self._failed_lsp: set[tuple[str, str]] = set()
 
     def preflight(self, tool_name: str, raw_args: str) -> ToolExecution | None:
         key = self._key(tool_name, raw_args)
-        if key is not None and key in self._successful:
+        if key is not None and (key in self._successful or key in self._failed_lsp):
             return ToolExecution(
-                "已跳过重复的代码智能查询。请复用已有证据或调整查询范围。",
+                "已跳过重复的代码智能查询。请复用已有证据、按 fallback 降级或调整查询范围。",
                 is_error=True,
             )
         return None
@@ -39,6 +40,8 @@ class CodeQueryLedger:
         key = self._key(tool_name, raw_args)
         if key is not None and not execution.is_error:
             self._successful.add(key)
+        elif key is not None and tool_name == "lsp":
+            self._failed_lsp.add(key)
 
     @classmethod
     def _key(cls, tool_name: str, raw_args: str) -> tuple[str, str] | None:

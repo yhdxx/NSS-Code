@@ -30,9 +30,9 @@ CORE_PROMPT = """
 
 ## 工具选择
 - 存在专用工具时不要使用 Bash 替代：读取文件用 ReadFile，编辑用 EditFile，新建用 WriteFile，查找路径用 Glob，文本搜索用 Grep。禁止使用 Bash 运行 grep、rg、find、ls、cat、head、tail、sed 或 awk 来替代这些工具。
-- 查找符号定义、文件结构、调用方、被调用方或分析修改影响时，先使用 code_index；优先使用一次 impact 或 batch，不要拼接多次重叠搜索。
+- 查看项目或目录结构时先使用 code_index.overview，查看单个文件结构时使用 outline；查找符号定义、调用关系或修改影响时使用 symbols、impact 或 batch，不要拼接多次重叠搜索。
 - code_index 定位文件和位置后，仅在需要精确语义定义、引用、类型或诊断，且 Runtime Context 显示对应语言服务器可用时使用 lsp。
-- 结构分析后，再使用 Grep 补充查找 import、字符串、配置、文档或语法索引无法覆盖的动态引用。目标符号或模块已知时，避免宽泛的 **/* 探查。
+- code_index 返回 suggested_call 时先按建议修正一次。结构分析后，再用 Grep 补充 import、字符串、配置、文档或动态引用；不要用宽泛 Glob/Grep 弥补错误的索引参数。
 - 输入互不依赖的工具应并行调用。确认定义、直接依赖、运行入口和相关测试后停止探查；连续两次搜索没有增加证据时也应停止。
 - 每次工具调用必须提供简短、稳定的 intent，说明需要该结果的原因。
 
@@ -72,8 +72,12 @@ MCP_PROMPT = """
 
 CODE_INTELLIGENCE_PROMPT = """
 ## 代码智能
-- code_index 是结构发现的主要工具。使用 analysis_intent 声明分析目的，优先调用一次 impact 或 batch，不要执行多次独立的 callers 查询。
-- LSP 用于语义复核，不是必须执行的形式化步骤。不可用时继续使用 code_index、定向 Grep 和 ReadFile。
+- code_index 是结构发现的主要工具。工具路径只使用相对路径或 /workspace；不得使用长期记忆中的其他宿主机绝对路径。
+- LSP 只用于精确定义、引用、类型或诊断的语义复核，不是所有代码理解任务的必经步骤。不可用或失败时不要重复相同调用，按 fallback 使用 code_index、定向 Grep 和 ReadFile。
+
+### 易混淆样例
+- 用户问“目前项目如何实现代码理解，有哪些分析工具？”：这是架构与目录概览。先调用 code_index.overview(path="/workspace")，再定向 ReadFile 读取索引、LSP、工具注册和组合入口；不调用 LSP，也不要先用 **/*.py 枚举全项目。
+- 用户问“修改 Bash.execute 的参数会影响哪些模块？”：先调用 code_index.impact(query="execute", path="/workspace/mycodingagent/tool_runtime") 定位定义、调用方和候选位置。若 Python LSP 可用，再对准确文件与行列调用 lsp.references 复核语义引用；若不可用则只做定向 Grep 和 ReadFile，不重复探测 LSP。
 """.strip()
 
 

@@ -175,22 +175,46 @@ class WorkspaceCodeIndex:
 
     def _query_without_refresh(self, operation: str, **kwargs: Any) -> dict[str, Any]:
         raw_path_filter = str(kwargs.get("path", ""))
-        path_filter = self._normalize_filter(raw_path_filter)
-        if raw_path_filter.strip() and not path_filter:
-            return {"error": f"路径过滤条件位于工作区之外：{raw_path_filter}"}
         language = str(kwargs.get("language", "")).strip().lower()
-        limit = self._limit(kwargs.get("limit", 50))
         query = str(kwargs.get("query", "")).strip()
+        path_filter = self._normalize_filter(raw_path_filter)
+        if path_filter is None:
+            candidate = self._relative_candidate(raw_path_filter)
+            error_code = "path_outside_workspace" if candidate is None else "path_not_found"
+            message = (
+                f"路径位于工作区之外：{raw_path_filter}"
+                if candidate is None
+                else f"工作区路径不存在：{raw_path_filter}"
+            )
+            suggested_call: dict[str, Any] = {"operation": operation, "path": "/workspace"}
+            if query:
+                suggested_call["query"] = query
+            if language:
+                suggested_call["language"] = language
+            return self._error(
+                error_code,
+                message,
+                suggested_call=suggested_call,
+            )
+        limit = self._limit(kwargs.get("limit", 50))
         if language and language not in set(LANGUAGE_BY_SUFFIX.values()):
-            return {"error": f"不支持的语言过滤条件：{language}"}
+            return self._error("unsupported_language", f"不支持的语言过滤条件：{language}")
+        if operation == "overview":
+            return self._overview(raw_path_filter, language=language, limit=limit)
         if operation == "outline":
             return self._outline(str(kwargs.get("path", "")))
         if operation in {"symbols", "definition_candidates"}:
+            if not query:
+                return self._error("query_required", f"{operation} 需要非空 query")
             return self._symbols(query, exact=operation == "definition_candidates", limit=limit,
                                  path_filter=path_filter, language=language)
         if operation in {"callers", "callees"}:
+            if not query:
+                return self._error("query_required", f"{operation} 需要非空 query")
             return self._calls(operation, query, limit, path_filter=path_filter, language=language)
         if operation == "impact":
+            if not query:
+                return self._error("query_required", "impact 需要非空 query")
             return self._impact(
                 query,
                 depth=max(1, min(int(kwargs.get("depth", 1)), 3)),
@@ -202,20 +226,29 @@ class WorkspaceCodeIndex:
         if operation == "batch":
             queries = kwargs.get("queries", [])
             if not isinstance(queries, list) or not queries:
-                return {"error": "batch 需要非空的 queries 列表"}
+                return self._error("queries_required", "batch 需要非空的 queries 列表")
             if len(queries) > 20:
-                return {"error": "batch 最多支持 20 个查询"}
+                return self._error("too_many_queries", "batch 最多支持 20 个查询")
             results: list[dict[str, Any]] = []
             for item in queries:
                 if not isinstance(item, dict):
-                    return {"error": "batch 中的每个查询都必须是对象"}
+                    return self._error("invalid_batch_query", "batch 中的每个查询都必须是对象")
                 child = dict(item)
                 child_operation = str(child.pop("operation", ""))
                 if child_operation == "batch":
-                    return {"error": "不支持嵌套 batch 查询"}
-                results.append(self._query_without_refresh(child_operation, **child))
+                    return self._error("nested_batch", "不支持嵌套 batch 查询")
+                child_result = self._query_without_refresh(child_operation, **child)
+                if "error" in child_result:
+                    return self._error(
+                        "batch_query_invalid",
+                        f"batch 第 {len(results) + 1} 个查询无效：{child_result['error']}",
+                        suggested_call=child_result.get("suggested_call"),
+                        query_index=len(results),
+                        cause=child_result,
+                    )
+                results.append(child_result)
             return {"results": results, "count": len(results)}
-        return {"error": f"不支持的代码索引操作：{operation}"}
+        return self._error("unsupported_operation", f"不支持的代码索引操作：{operation}")
 
     def _refresh_full(self) -> dict[str, int]:
         files = list(self._iter_files())[: self.max_files]
@@ -365,10 +398,96 @@ class WorkspaceCodeIndex:
             )
         return True
 
+    def _overview(self, raw_path: str, *, language: str, limit: int) -> dict[str, Any]:
+        relative = self._normalize_directory(raw_path)
+        if relative is None:
+            candidate = self._relative_candidate(raw_path or ".")
+            candidate_path = self.workspace_root / candidate if candidate is not None else None
+            if candidate_path is not None and candidate_path.is_file():
+                return self._error(
+                    "directory_required",
+                    f"overview 需要目录，但收到文件：{raw_path}",
+                    suggested_call={"operation": "outline", "path": self._display_path(candidate)},
+                )
+            return self._error(
+                "directory_not_found",
+                f"工作区目录不存在：{raw_path or '/workspace'}",
+                suggested_call={"operation": "overview", "path": "/workspace"},
+            )
+        clauses: list[str] = []
+        values: list[Any] = []
+        self._add_filters(clauses, values, relative, language)
+        where = f" WHERE {' AND '.join(clauses)}" if clauses else ""
+        with self._connect() as conn:
+            file_rows = conn.execute(
+                f"SELECT path, language FROM code_files{where} ORDER BY path", values
+            ).fetchall()
+            language_rows = conn.execute(
+                f"SELECT language, COUNT(*) AS count FROM code_files{where} GROUP BY language ORDER BY language",
+                values,
+            ).fetchall()
+            symbol_rows = conn.execute(
+                f"SELECT kind, COUNT(*) AS count FROM code_symbols{where} GROUP BY kind ORDER BY kind",
+                values,
+            ).fetchall()
+            symbol_count = int(conn.execute(
+                f"SELECT COUNT(*) FROM code_symbols{where}", values
+            ).fetchone()[0])
+            top_level = conn.execute(
+                f"SELECT path, language, name, qualified_name, kind, start_line, start_column, signature "
+                f"FROM code_symbols{where}{' AND' if where else ' WHERE'} parent = '' "
+                "ORDER BY path, start_line, start_column LIMIT ?",
+                (*values, limit + 1),
+            ).fetchall()
+
+        module_stats: dict[str, dict[str, Any]] = {}
+        for row in file_rows:
+            path = str(row["path"])
+            scoped = path
+            if relative:
+                prefix = relative.rstrip("/") + "/"
+                scoped = path[len(prefix):] if path.startswith(prefix) else Path(path).name
+            module = scoped.split("/", 1)[0] if "/" in scoped else "."
+            stats = module_stats.setdefault(module, {"path": module, "files": 0, "languages": set()})
+            stats["files"] += 1
+            stats["languages"].add(str(row["language"]))
+        modules = [
+            {"path": item["path"], "files": item["files"], "languages": sorted(item["languages"])}
+            for item in sorted(module_stats.values(), key=lambda item: (-item["files"], item["path"]))
+        ]
+        return {
+            "path": self._display_path(relative),
+            "files": {
+                "total": len(file_rows),
+                "by_language": {str(row["language"]): int(row["count"]) for row in language_rows},
+            },
+            "symbols": {
+                "total": symbol_count,
+                "by_kind": {str(row["kind"]): int(row["count"]) for row in symbol_rows},
+                "top_level": [dict(row) for row in top_level[:limit]],
+            },
+            "modules": modules[:limit],
+            "truncated": len(top_level) > limit or len(modules) > limit,
+        }
+
     def _outline(self, raw_path: str) -> dict[str, Any]:
         relative = self._normalize_file(raw_path)
         if relative is None:
-            return {"error": f"路径位于工作区之外或不存在：{raw_path}", "symbols": []}
+            candidate = self._relative_candidate(raw_path)
+            candidate_path = self.workspace_root / candidate if candidate is not None else None
+            if candidate_path is not None and candidate_path.is_dir():
+                return self._error(
+                    "file_required",
+                    f"outline 需要源码文件，但收到目录：{raw_path}",
+                    suggested_call={"operation": "overview", "path": self._display_path(candidate)},
+                    symbols=[],
+                )
+            return self._error(
+                "file_not_found",
+                f"工作区源码文件不存在或类型不受支持：{raw_path}",
+                suggested_call={"operation": "overview", "path": "/workspace"},
+                symbols=[],
+            )
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM code_symbols WHERE path = ? ORDER BY start_line, start_column", (relative,)
@@ -557,11 +676,47 @@ class WorkspaceCodeIndex:
             return None
         return relative if (self.workspace_root / relative).is_file() else None
 
-    def _normalize_filter(self, raw_path: str) -> str:
+    def _normalize_directory(self, raw_path: str) -> str | None:
+        relative = self._relative_candidate(raw_path or ".")
+        if relative is None:
+            return None
+        path = self.workspace_root if relative == "." else self.workspace_root / relative
+        if not path.is_dir():
+            return None
+        return "" if relative == "." else relative.rstrip("/")
+
+    def _normalize_filter(self, raw_path: str) -> str | None:
         if not raw_path.strip():
             return ""
         relative = self._relative_candidate(raw_path)
-        return relative or ""
+        if relative is None:
+            return None
+        path = self.workspace_root if relative == "." else self.workspace_root / relative
+        if not path.exists():
+            return None
+        return "" if relative == "." else relative.rstrip("/")
+
+    @staticmethod
+    def _display_path(relative: str) -> str:
+        return "/workspace" if not relative or relative == "." else f"/workspace/{relative}"
+
+    @staticmethod
+    def _error(
+        code: str,
+        message: str,
+        *,
+        suggested_call: dict[str, Any] | None = None,
+        **extra: Any,
+    ) -> dict[str, Any]:
+        payload: dict[str, Any] = {
+            "error": message,
+            "error_code": code,
+            "workspace_root": "/workspace",
+            **extra,
+        }
+        if suggested_call is not None:
+            payload["suggested_call"] = suggested_call
+        return payload
 
     @staticmethod
     def _add_filters(clauses: list[str], values: list[Any], path_filter: str, language: str) -> None:

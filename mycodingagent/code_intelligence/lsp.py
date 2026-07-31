@@ -51,6 +51,7 @@ class LSPManager:
         self.timeout = timeout
         self._processes: dict[str, _LSPProcess] = {}
         self._startup_locks: dict[str, asyncio.Lock] = {}
+        self._last_errors: dict[str, str] = {}
 
     def runtime_payload(self) -> dict[str, Any]:
         languages: dict[str, Any] = {}
@@ -60,21 +61,38 @@ class LSPManager:
                 "available": command is not None,
                 "server": command[0] if command else "",
                 "operations": list(OPERATIONS) if command else [],
+                "last_error": self._last_errors.get(self._process_key(language), ""),
             }
-        return {"languages": languages, "policy": "optional_external_servers"}
+        return {
+            "available": any(item["available"] for item in languages.values()),
+            "languages": languages,
+            "policy": "conditional_semantic_verification",
+        }
 
     async def query(self, operation: str, **kwargs: Any) -> dict[str, Any]:
         if operation not in OPERATIONS:
-            return {"error": f"不支持的 LSP 操作：{operation}"}
+            return {"error": f"不支持的 LSP 操作：{operation}", "error_code": "unsupported_operation"}
         path = self._resolve(str(kwargs.get("path", "")))
         if path is None:
-            return {"error": "路径位于工作区之外或文件类型不受支持"}
+            return {
+                "error": "路径位于工作区之外或文件类型不受支持",
+                "error_code": "invalid_path",
+                "workspace_root": "/workspace",
+                "fallback": "使用 code_index 定位工作区内的源码文件和位置",
+            }
         language = LANGUAGE_BY_SUFFIX[path.suffix.lower()]
         process_key = self._process_key(language)
         try:
             client = await self._ensure(language)
             if client is None:
-                return {"available": False, "language": language, "error": "未安装对应的语言服务器"}
+                return {
+                    "available": False,
+                    "language": language,
+                    "error": "未安装对应的语言服务器",
+                    "error_code": "server_unavailable",
+                    "retryable": False,
+                    "fallback": "继续使用 code_index、定向 Grep 和 ReadFile",
+                }
             uri = path.as_uri()
             await self._sync_document(client, uri=uri, language=language, path=path)
             line = max(0, int(kwargs.get("line", 1)) - 1)
@@ -97,6 +115,7 @@ class LSPManager:
                 else:
                     await self._collect_notifications(client, uri=uri)
                     result = client.diagnostics.get(uri, [])
+            self._last_errors.pop(process_key, None)
             return {
                 "available": True,
                 "language": language,
@@ -106,7 +125,15 @@ class LSPManager:
             }
         except Exception as exc:
             await self._close_language(process_key)
-            return {"available": False, "language": language, "error": str(exc)}
+            self._last_errors[process_key] = str(exc)
+            return {
+                "available": False,
+                "language": language,
+                "error": str(exc),
+                "error_code": "server_failure",
+                "retryable": False,
+                "fallback": "本轮不要重复调用相同 LSP 查询；继续使用 code_index、定向 Grep 和 ReadFile",
+            }
 
     async def close(self) -> None:
         for language in list(self._processes):

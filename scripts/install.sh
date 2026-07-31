@@ -7,9 +7,13 @@ set -Eeuo pipefail
 ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${MYCODINGAGENT_VENV:-$ROOT_DIR/.venv}"
 PYTHON_BIN="${MYCODINGAGENT_PYTHON:-python3}"
+USER_BIN_DIR="${MYCODINGAGENT_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
 SKIP_DOCKER=0
 SKIP_LSP=0
 UPGRADE_MODE=0
+LAUNCHER_ONLY=0
+SANDBOX_IMAGE="mycodingagent-sandbox:py312"
+SANDBOX_HASH_LABEL="org.mycodingagent.sandbox-input-sha"
 
 usage() {
     cat <<'EOF'
@@ -19,11 +23,13 @@ usage() {
   --skip-docker  不构建 Bash Docker 沙箱镜像
   --skip-lsp     不安装或探测语言服务器
   --upgrade      安装必要依赖，并询问是否安装可选分析工具
+  --launcher-only 只安装用户级 myAgent 启动命令
   -h, --help     显示帮助
 
 环境变量：
   MYCODINGAGENT_PYTHON    Python 解释器，默认 python3
   MYCODINGAGENT_VENV      虚拟环境目录，默认 .venv
+  MYCODINGAGENT_BIN_DIR   myAgent 命令安装目录，默认 ~/.local/bin
 EOF
 }
 
@@ -51,11 +57,57 @@ die() {
     exit 1
 }
 
+install_launcher() {
+    local launcher="$USER_BIN_DIR/myAgent"
+    mkdir -p "$USER_BIN_DIR"
+    if [[ -e "$launcher" && ! -L "$launcher" ]]; then
+        die "无法安装启动命令，目标已存在且不是符号链接：$launcher"
+    fi
+    ln -sfn "$ROOT_DIR/scripts/myAgent" "$launcher"
+    log "已安装启动命令：$launcher"
+    if ":$PATH:" != *":$USER_BIN_DIR:"*; then
+        warn "$USER_BIN_DIR 不在 PATH 中，请将其加入 shell 配置"
+    fi
+}
+
+report_lsp_status() {
+    printf '\n语言服务器状态：\n'
+    local language command
+    while read -r language command; do
+        if command -v "$command" >/dev/null 2>&1; then
+            printf '  %-12s available=true  server=%s\n' "$language" "$(command -v "$command")"
+        else
+            printf '  %-12s available=false server=-\n' "$language"
+        fi
+    done <<'EOF'
+python pyright-langserver
+go gopls
+typescript typescript-language-server
+javascript typescript-language-server
+rust rust-analyzer
+java jdtls
+EOF
+    if ! command -v pyright-langserver >/dev/null 2>&1 && command -v pylsp >/dev/null 2>&1; then
+        printf '  %-12s available=true  server=%s\n' "python-fallback" "$(command -v pylsp)"
+    fi
+}
+
+sandbox_input_hash() {
+    if command -v sha256sum >/dev/null 2>&1; then
+        sha256sum Dockerfile.sandbox requirements-sandbox.txt | sha256sum | awk '{print $1}'
+    elif command -v shasum >/dev/null 2>&1; then
+        shasum -a 256 Dockerfile.sandbox requirements-sandbox.txt | shasum -a 256 | awk '{print $1}'
+    else
+        die "找不到 sha256sum 或 shasum，无法计算 Docker 输入文件哈希"
+    fi
+}
+
 while (($#)); do
     case "$1" in
         --skip-docker) SKIP_DOCKER=1 ;;
         --skip-lsp) SKIP_LSP=1 ;;
         --upgrade) UPGRADE_MODE=1 ;;
+        --launcher-only) LAUNCHER_ONLY=1 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "未知选项：$1" ;;
     esac
@@ -63,6 +115,11 @@ while (($#)); do
 done
 
 cd "$ROOT_DIR"
+
+if ((LAUNCHER_ONLY == 1)); then
+    install_launcher
+    exit 0
+fi
 
 if ((UPGRADE_MODE == 1)); then
     log "开始升级依赖"
@@ -80,13 +137,16 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
     "$PYTHON_BIN" -m venv "$VENV_DIR" || die "创建虚拟环境失败；请安装 python3-venv"
 fi
 export PATH="$VENV_DIR/bin:$PATH"
+export PATH="${GOBIN:-$HOME/go/bin}:$HOME/.cargo/bin:$PATH"
 
 log "安装 Python 依赖"
 "$VENV_DIR/bin/python" -m pip install --upgrade pip
 "$VENV_DIR/bin/python" -m pip install -r requirements.txt
 
 if ((SKIP_LSP == 0)); then
-    if ask_optional "Python/TypeScript/JavaScript LSP（Pyright、pylsp、typescript-language-server）"; then
+    if { ! command -v pylsp >/dev/null 2>&1 || ! command -v pyright-langserver >/dev/null 2>&1 || \
+        ! command -v typescript-language-server >/dev/null 2>&1; } && \
+        ask_optional "Python/TypeScript/JavaScript LSP（Pyright、pylsp、typescript-language-server）"; then
         if ! command -v pylsp >/dev/null 2>&1; then
             log "安装 Python LSP 后备实现"
             "$VENV_DIR/bin/python" -m pip install 'python-lsp-server>=1.12,<2'
@@ -106,7 +166,7 @@ if ((SKIP_LSP == 0)); then
     fi
 
     if command -v go >/dev/null 2>&1; then
-        if ask_optional "Go 语言服务器 gopls" && ! command -v gopls >/dev/null 2>&1; then
+        if ! command -v gopls >/dev/null 2>&1 && ask_optional "Go 语言服务器 gopls"; then
             log "安装 gopls"
             go install golang.org/x/tools/gopls@latest
             if [[ -d "${GOBIN:-$HOME/go/bin}" && ":$PATH:" != *":${GOBIN:-$HOME/go/bin}:"* ]]; then
@@ -118,7 +178,7 @@ if ((SKIP_LSP == 0)); then
     fi
 
     if command -v rustup >/dev/null 2>&1; then
-        if ask_optional "Rust 语言服务器 rust-analyzer" && ! command -v rust-analyzer >/dev/null 2>&1; then
+        if ! command -v rust-analyzer >/dev/null 2>&1 && ask_optional "Rust 语言服务器 rust-analyzer"; then
             log "安装 rust-analyzer"
             rustup component add rust-analyzer
         fi
@@ -133,17 +193,22 @@ fi
 
 if ((SKIP_DOCKER == 0)); then
     command -v docker >/dev/null 2>&1 || die "找不到 Docker；使用 --skip-docker 可跳过镜像构建"
-    if docker image inspect mycodingagent-sandbox:py312 >/dev/null 2>&1; then
+    expected_hash="$(sandbox_input_hash)"
+    installed_hash="$(docker image inspect --format "{{ index .Config.Labels \"$SANDBOX_HASH_LABEL\" }}" "$SANDBOX_IMAGE" 2>/dev/null || true)"
+    if [[ "$installed_hash" == "$expected_hash" ]]; then
         log "Bash Docker 沙箱镜像已存在，跳过构建"
     else
         log "构建 Bash Docker 沙箱镜像"
         DOCKER_CONFIG="${DOCKER_CONFIG:-$ROOT_DIR/.docker-cli}" \
-            docker build --network=host -f Dockerfile.sandbox -t mycodingagent-sandbox:py312 .
+            docker build --network=host -f Dockerfile.sandbox \
+                --label "$SANDBOX_HASH_LABEL=$expected_hash" -t "$SANDBOX_IMAGE" .
     fi
 else
     log "已跳过 Docker 沙箱镜像构建"
 fi
 
+install_launcher
 log "安装完成"
 printf '\n启动方式（会保留当前目录作为工作区）：\n  %q/scripts/myAgent\n' "$ROOT_DIR"
-printf '\n检查 LSP 状态：\n  PYTHONPATH=. %q -c '\''from pathlib import Path; from mycodingagent.code_intelligence import LSPManager; print(LSPManager(Path.cwd()).runtime_payload())'\''\n' "$VENV_DIR/bin/python"
+report_lsp_status
+printf '\n如果 shell 中仍有旧 alias，请先执行 unalias myAgent，再运行 %q/myAgent。\n' "$USER_BIN_DIR"

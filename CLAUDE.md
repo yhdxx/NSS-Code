@@ -17,9 +17,11 @@ its dependency rules. Both root docs and the module READMEs are written in Chine
 ## Commands
 
 ```bash
-# Run the agent — the CWD at launch becomes the sandbox root, so invoke it via absolute path
-# from the directory you want the agent to work in (the user has a `myAgent` shell alias for this)
-/home/djia/PycharmProjects/myCodingAgent/.venv/bin/python /home/djia/PycharmProjects/myCodingAgent/__main__.py
+# Run the agent — the installer places this launcher in ~/.local/bin and the CWD becomes the sandbox root
+myAgent
+
+# Upgrade runtime dependencies and optionally install missing language servers before startup
+myAgent --upgrade
 
 # Full unit/integration suite (Python 3.12, deps in .venv)
 PYTHONPATH=. .venv/bin/python -m pytest -q

@@ -267,7 +267,19 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                         code_intelligence={
                             "index": code_index.status(),
                             "lsp": lsp_manager.runtime_payload(),
-                            "recommended_sequence": ["code_index.impact", "lsp_if_available", "Grep", "ReadFile"],
+                            "path_policy": {
+                                "tool_root": "/workspace",
+                                "allow_relative_paths": True,
+                                "reject_recalled_host_paths": True,
+                            },
+                            "operation_guide": {
+                                "workspace_or_directory_structure": "code_index.overview",
+                                "single_file_structure": "code_index.outline",
+                                "symbol_location": "code_index.symbols_or_definition_candidates",
+                                "call_graph_or_impact": "code_index.impact_or_batch",
+                                "exact_definition_references_types_diagnostics": "lsp_if_available_after_index",
+                                "dynamic_text_or_config": "targeted_Grep_then_ReadFile",
+                            },
                             "soft_budget": {"code_index_calls": 2, "lsp_calls": 1, "supplemental_grep_calls": 2},
                         },
                         long_term_memory_runtime=long_term_memory_runtime,

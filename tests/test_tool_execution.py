@@ -123,10 +123,13 @@ def test_code_query_ledger_blocks_identical_success_but_allows_changed_scope():
     assert ledger.preflight("Grep", first) is None
 
 
-def test_code_query_ledger_does_not_record_failed_queries():
+def test_code_query_ledger_blocks_repeated_failed_lsp_query():
     ledger = CodeQueryLedger()
     query = '{"operation":"references","path":"sample.py","line":1}'
 
     ledger.record("lsp", query, ToolExecution("unavailable", is_error=True))
 
-    assert ledger.preflight("lsp", query) is None
+    blocked = ledger.preflight("lsp", query)
+
+    assert blocked is not None
+    assert "fallback" in blocked.output

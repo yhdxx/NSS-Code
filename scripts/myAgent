@@ -23,5 +23,5 @@ if [[ ! -x "$VENV_DIR/bin/python" ]]; then
 fi
 
 # Keep the caller's current directory as the workspace root.
-export PATH="$VENV_DIR/bin:$PATH"
+export PATH="$VENV_DIR/bin:${GOBIN:-$HOME/go/bin}:$HOME/.cargo/bin:$PATH"
 exec "$VENV_DIR/bin/python" "$ROOT_DIR/__main__.py" "${FORWARDED_ARGS[@]}"

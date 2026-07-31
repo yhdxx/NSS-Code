@@ -156,8 +156,19 @@ def test_system_prompt_prioritizes_code_intelligence_for_impact_analysis():
     assert "先使用 code_index" in prompt
     assert "impact 或 batch" in prompt
     assert "使用 lsp" in prompt
-    assert "结构分析后，再使用 Grep" in prompt
+    assert "code_index.overview" in prompt
+    assert "不要用宽泛 Glob/Grep 弥补错误的索引参数" in prompt
     assert "禁止使用 Bash 运行 grep、rg、find" in prompt
+
+
+def test_system_prompt_contrasts_when_lsp_is_and_is_not_needed():
+    prompt = build_system_prompt(PromptFeatures(code_intelligence_enabled=True))
+
+    assert "目前项目如何实现代码理解" in prompt
+    assert "不调用 LSP" in prompt
+    assert "修改 Bash.execute 的参数" in prompt
+    assert "lsp.references" in prompt
+    assert "若不可用则只做定向 Grep 和 ReadFile" in prompt
 
 
 def test_system_prompt_includes_only_enabled_capability_modules():

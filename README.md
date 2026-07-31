@@ -34,7 +34,8 @@ myCodingAgent 是一个本地 Coding Agent 运行框架。用户在终端用自�
 bash scripts/install.sh
 ```
 
-脚本会创建 `.venv`、安装 `requirements.txt` 并构建 `mycodingagent-sandbox:py312` Docker 镜像。
+脚本会创建 `.venv`、安装 `requirements.txt`、在 `${XDG_BIN_HOME:-~/.local/bin}` 安装 `myAgent` 命令，
+并构建 `mycodingagent-sandbox:py312` Docker 镜像。Docker 输入文件没有变化时不会重复构建。
 Python/TypeScript、Go、Rust 等 LSP 属于可选分析工具，脚本会询问是否安装；Java 的 `jdtls` 需要单独下载
 Eclipse JDT Language Server。缺少某个外部工具链时，脚本会给出提示，但不会阻止 Python 项目启动。
 
@@ -48,22 +49,17 @@ bash scripts/install.sh --skip-lsp
 脚本支持重复执行。LSP 进程运行在宿主机上，必须让启动 `myAgent` 的 shell 能在 `PATH` 中找到对应
 可执行程序；Bash 命令仍然在 Docker 沙箱内执行。
 
-安装完成后，可以直接使用项目提供的启动包装器；它会保留当前目录作为工作区：
+安装完成后可以在任意工作区直接启动：
 
 ```bash
-/绝对路径/myCodingAgent/scripts/myAgent
+myAgent
 ```
 
-如果习惯直接输入 `myAgent`，可以将 shell 别名指向该包装器：
+如 shell 中存在旧的 `myAgent` alias，先执行 `unalias myAgent` 并从 shell 配置中删除旧定义。普通启动保持原来的
+快速流程；需要更新依赖时追加 `--upgrade`：
 
 ```bash
-alias myAgent='/绝对路径/myCodingAgent/scripts/myAgent'
-```
-
-启动包装器默认保持原来的快速启动流程。需要更新依赖时，在启动命令后追加 `--upgrade`：
-
-```bash
-/绝对路径/myCodingAgent/scripts/myAgent --upgrade
+myAgent --upgrade
 ```
 
 该模式会自动安装必要 Python 依赖并准备 Docker 镜像；Python/TypeScript、Go、Rust 等语言服务器属于可选分析工具，
@@ -405,13 +401,19 @@ MCP server 暴露 `available` 状态：
 
 `code_index` 使用 tree-sitter 为 Python、Go、TypeScript、JavaScript、Rust 和 Java 建立版本化增量索引。索引记录符号、限定调用、import 和语法引用，并提供：
 
+- `overview`：聚合工作区或目录的语言、文件、模块、符号类型和顶层符号，不需要先用 Glob 枚举文件。
+- `outline`：读取单个源码文件的符号结构；误传目录时返回可直接执行的 `overview` `suggested_call`。
 - `impact`：一次聚合定义、调用方、被调用方、import、引用、相关测试和推荐阅读文件。
 - `batch`：在一次索引刷新后执行最多 20 个结构查询。
 - 工作区文件事件触发的脏路径刷新；监听事件延迟时使用文件指纹兜底，不重复读取未变化文件。
 
-`lsp` 在 tree-sitter 定位文件和位置后按需启动 language server，提供 `definition`、`references`、`hover` 和 `diagnostics`。支持的外部可执行程序是 `pyright-langserver`/`pylsp`、`gopls`、`typescript-language-server`、`rust-analyzer` 和 `jdtls`；未安装时返回结构化不可用结果，不阻塞后续分析。
+`lsp` 只在 tree-sitter 定位文件和位置后、任务需要精确定义、引用、类型或诊断时按需启动 language server，
+提供 `definition`、`references`、`hover` 和 `diagnostics`。支持的外部可执行程序是
+`pyright-langserver`/`pylsp`、`gopls`、`typescript-language-server`、`rust-analyzer` 和 `jdtls`；
+未安装或启动失败时返回结构化 `fallback`，本轮相同失败查询不会重复执行。
 
-每轮 Runtime Context 会声明索引状态和各语言 LSP 可用性。相同参数的成功 `code_index`/`lsp` 查询在同一用户轮内不会重复执行。
+每轮 Runtime Context 会声明 `/workspace` 路径策略、索引状态、operation guide 和各语言 LSP 可用性。
+相同参数的成功 `code_index`/`lsp` 查询以及失败的相同 LSP 查询，在同一用户轮内不会重复执行。
 
 ### 8.4 执行接口
 
