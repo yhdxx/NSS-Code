@@ -1,0 +1,27 @@
+#!/usr/bin/env bash
+set -Eeuo pipefail
+
+ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
+VENV_DIR="${MYCODINGAGENT_VENV:-$ROOT_DIR/.venv}"
+
+UPGRADE_REQUESTED=0
+FORWARDED_ARGS=()
+for arg in "$@"; do
+    case "$arg" in
+        --upgrade) UPGRADE_REQUESTED=1 ;;
+        *) FORWARDED_ARGS+=("$arg") ;;
+    esac
+done
+
+if ((UPGRADE_REQUESTED == 1)); then
+    bash "$ROOT_DIR/scripts/install.sh" --upgrade
+fi
+
+if [[ ! -x "$VENV_DIR/bin/python" ]]; then
+    printf '[myCodingAgent][错误] 未找到虚拟环境，请先运行：bash %q/scripts/install.sh\n' "$ROOT_DIR" >&2
+    exit 1
+fi
+
+# Keep the caller's current directory as the workspace root.
+export PATH="$VENV_DIR/bin:$PATH"
+exec "$VENV_DIR/bin/python" "$ROOT_DIR/__main__.py" "${FORWARDED_ARGS[@]}"

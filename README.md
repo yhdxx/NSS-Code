@@ -26,6 +26,49 @@ myCodingAgent 是一个本地 Coding Agent 运行框架。用户在终端用自�
 
 这个流程由 `mycodingagent/app/main.py` 作为组合根启动，核心执行循环在 `mycodingagent/llm_runtime/client.py`，会话和上下文状态由 `mycodingagent/memory/` 维护。
 
+## 1.1 一键安装
+
+在项目根目录执行：
+
+```bash
+bash scripts/install.sh
+```
+
+脚本会创建 `.venv`、安装 `requirements.txt` 并构建 `mycodingagent-sandbox:py312` Docker 镜像。
+Python/TypeScript、Go、Rust 等 LSP 属于可选分析工具，脚本会询问是否安装；Java 的 `jdtls` 需要单独下载
+Eclipse JDT Language Server。缺少某个外部工具链时，脚本会给出提示，但不会阻止 Python 项目启动。
+
+只安装 Python 依赖、不构建 Docker 或不安装 LSP 时可以使用：
+
+```bash
+bash scripts/install.sh --skip-docker
+bash scripts/install.sh --skip-lsp
+```
+
+脚本支持重复执行。LSP 进程运行在宿主机上，必须让启动 `myAgent` 的 shell 能在 `PATH` 中找到对应
+可执行程序；Bash 命令仍然在 Docker 沙箱内执行。
+
+安装完成后，可以直接使用项目提供的启动包装器；它会保留当前目录作为工作区：
+
+```bash
+/绝对路径/myCodingAgent/scripts/myAgent
+```
+
+如果习惯直接输入 `myAgent`，可以将 shell 别名指向该包装器：
+
+```bash
+alias myAgent='/绝对路径/myCodingAgent/scripts/myAgent'
+```
+
+启动包装器默认保持原来的快速启动流程。需要更新依赖时，在启动命令后追加 `--upgrade`：
+
+```bash
+/绝对路径/myCodingAgent/scripts/myAgent --upgrade
+```
+
+该模式会自动安装必要 Python 依赖并准备 Docker 镜像；Python/TypeScript、Go、Rust 等语言服务器属于可选分析工具，
+会在交互终端逐项询问是否安装。非交互终端会跳过可选项并给出提示。
+
 ---
 
 ## 2. 启动流程
