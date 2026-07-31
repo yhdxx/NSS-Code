@@ -15,16 +15,16 @@ MAX_GREP_MATCHES = 200
 
 
 class Params(BaseModel):  # 定义用于封装相关状态和行为的类。
-    pattern: str = Field(description="Regex pattern to search for")  # 保存配置值或中间计算结果。
-    path: str = Field(default=".", description="Base directory to search from")  # 保存配置值或中间计算结果。
-    include: str = Field(default="", description="Glob filter for filenames (e.g. '*.py')")  # 保存配置值或中间计算结果。
+    pattern: str = Field(description="要搜索的正则表达式")  # 保存配置值或中间计算结果。
+    path: str = Field(default=".", description="搜索起始目录")  # 保存配置值或中间计算结果。
+    include: str = Field(default="", description="文件名 Glob 过滤条件，例如 '*.py'")  # 保存配置值或中间计算结果。
 
 
 class Grep(Tool):  # 定义用于封装相关状态和行为的类。
     name = "Grep"  # 保存配置值或中间计算结果。
     description = (
-        "Search sandbox file contents using a regex pattern, returning file:line:content matches. "
-        "Use include filters like '*.py' when possible to avoid broad workspace scans."
+        "使用正则表达式搜索沙箱内的文件内容，返回 file:line:content 格式的匹配结果。"
+        "尽量使用 '*.py' 等 include 过滤条件，避免宽泛扫描整个工作区。"
     )  # 保存配置值或中间计算结果。
     params_model = Params  # 保存配置值或中间计算结果。
     category = "read"  # 保存配置值或中间计算结果。
@@ -46,35 +46,35 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not base.exists():  # 根据条件决定是否执行后续分支。
-            return ToolResult(output=f"Error: path not found: {params.path}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：路径不存在：{params.path}", is_error=True)  # 返回当前函数的处理结果。
 
         try:  # 开始可能抛出异常的保护代码块。
             regex = re.compile(params.pattern)  # 保存配置值或中间计算结果。
         except re.error as e:  # 捕获并处理指定异常。
-            return ToolResult(output=f"Error: invalid regex: {e}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：正则表达式无效：{e}", is_error=True)  # 返回当前函数的处理结果。
 
         include_pattern = params.include or "*"  # 保存配置值或中间计算结果。
 
         results: list[str] = []  # 保存配置值或中间计算结果。
         for file_path, rel in _iter_search_files(base, include_pattern, self._sandbox_root or base):  # 遍历集合中的元素。
             if stop.is_set():
-                return ToolResult(output="Search interrupted.", is_error=True)
+                return ToolResult(output="搜索已中断。", is_error=True)
             try:  # 开始可能抛出异常的保护代码块。
                 text = file_path.read_text(encoding="utf-8", errors="ignore")  # 保存配置值或中间计算结果。
             except (OSError, UnicodeDecodeError):  # 捕获并处理指定异常。
                 continue  # 跳过本轮循环剩余逻辑。
             for line_num, line in enumerate(text.splitlines(), 1):  # 遍历集合中的元素。
                 if stop.is_set():
-                    return ToolResult(output="Search interrupted.", is_error=True)
+                    return ToolResult(output="搜索已中断。", is_error=True)
                 if regex.search(line):  # 根据条件决定是否执行后续分支。
                     results.append(f"{rel}:{line_num}:{line}")  # 执行当前步骤的业务逻辑。
                     if len(results) >= MAX_GREP_MATCHES:
                         output = "\n".join(results)
-                        output += f"\n... <truncated after {MAX_GREP_MATCHES} matches; use a narrower pattern or include filter>"
+                        output += f"\n... <匹配数达到 {MAX_GREP_MATCHES} 后已截断；请使用更精确的模式或 include 过滤条件>"
                         return ToolResult(output=output)
 
         if not results:  # 根据条件决定是否执行后续分支。
-            return ToolResult(output="No matches found.")  # 返回当前函数的处理结果。
+            return ToolResult(output="未找到匹配内容。")  # 返回当前函数的处理结果。
         return ToolResult(output="\n".join(results))  # 返回当前函数的处理结果。
 
 

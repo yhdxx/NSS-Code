@@ -72,10 +72,10 @@ class CapabilityRouter:
             recommend = getattr(runtime, "recommend_records_for_capability", None)
             if callable(recommend):
                 results = recommend(prompt, top_k=top_k)
-                reason = "skill router"
+                reason = "Skill 路由匹配"
             else:
                 results = runtime.search_records_for_capability(prompt, top_k=top_k)
-                reason = "skill retrieval"
+                reason = "Skill 检索匹配"
         except Exception:
             return []
         recommendations: list[CapabilityRecommendation] = []
@@ -104,7 +104,7 @@ class CapabilityRouter:
                 name=item.server.name,
                 description=item.server.description,
                 score=item.score * self.config.lexical_weight,
-                reasons=item.reasons or ("lexical match",),
+                reasons=item.reasons or ("词法匹配",),
                 metadata={
                     "tags": item.server.tags,
                     "available": item.server.available,
@@ -130,7 +130,7 @@ class CapabilityRouter:
                     name=server.name,
                     description=server.description,
                     score=lrfu_score,
-                    reasons=("recently used MCP server",),
+                    reasons=("近期使用过的 MCP Server",),
                     metadata={"tags": server.tags, "available": server.available},
                 )
                 continue
@@ -139,7 +139,7 @@ class CapabilityRouter:
                 name=existing.name,
                 description=existing.description,
                 score=existing.score + lrfu_score,
-                reasons=(*existing.reasons, "recently used MCP server"),
+                reasons=(*existing.reasons, "近期使用过的 MCP Server"),
                 metadata=existing.metadata,
             )
         ordered = sorted(by_name.values(), key=lambda item: (-item.score, item.name))

@@ -159,7 +159,7 @@ class ContextCompressor:
         recent = messages[-self.recent_messages_after_summary :]
         summary_message = {
             "role": "system",
-            "content": "ENGINEERING STATE SNAPSHOT:\n" + (summary_text or "UNKNOWN"),
+            "content": "工程状态快照：\n" + (summary_text or "未知"),
         }
         return [*system_messages, summary_message, *recent]
 
@@ -174,17 +174,17 @@ def sanitize_message_for_model(message: dict[str, Any]) -> dict[str, Any]:
 
 
 def is_reproducible_tool(tool_name: str, output: str = "") -> bool:
-    if output.startswith("Tool execution error:") or output.startswith("Error:"):
+    if output.startswith(("Tool execution error:", "Error:", "工具执行错误：", "错误：")):
         return False
     return tool_name in REPRODUCIBLE_TOOLS
 
 
 def tool_output_reference_text(ref: ToolOutputRef) -> str:
     return (
-        "[Tool output stored]\n"
+        "[工具输出已存储]\n"
         f"context_id: {ref.output_id}\n"
         f"tool_name: {ref.tool_name}\n"
         f"original_length: {ref.original_length}\n"
         f"preview:\n{ref.preview}\n"
-        "recover: Use BatchRecoverContext with this exact context_id in items."
+        "recover: 在 items 中使用此准确 context_id 调用 BatchRecoverContext。"
     )

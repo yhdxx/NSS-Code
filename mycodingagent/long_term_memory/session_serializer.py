@@ -131,4 +131,4 @@ def _tool_result_status(content: str, metadata: dict[str, Any]) -> str:
 def _tool_result_is_error(content: str, metadata: dict[str, Any]) -> bool:
     if metadata.get("is_error"):
         return True
-    return content.startswith("Error:") or content.startswith("Tool execution error:")
+    return content.startswith(("Error:", "Tool execution error:", "错误：", "工具执行错误："))

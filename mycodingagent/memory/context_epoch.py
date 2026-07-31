@@ -227,11 +227,11 @@ def automatic_context_epoch_summary(
         if message.get("role") == "user" and str(message.get("content", "")).strip()
     ]
     if not user_messages:
-        return "Working context automatically committed after reaching the configured token threshold."
+        return "工作上下文达到配置的 Token 阈值后自动提交。"
     latest = user_messages[-1]
     if len(latest) > 800:
         latest = latest[:800] + "..."
-    return f"Automatic working-context commit. Latest user request: {latest}"
+    return f"自动提交工作上下文。最近的用户请求：{latest}"
 
 
 def retained_hot_start_index(
@@ -267,13 +267,13 @@ def user_turn_starts(
 
 def format_hot_context_notice(snapshot: HotContextBudgetSnapshot) -> str:
     if snapshot.pending_commit:
-        action = "A commit is already pending and will be applied after the current turn completes."
+        action = "已有待处理提交，将在当前轮次结束后应用。"
     elif snapshot.force_commit:
-        action = "Runtime has forced a working-context rotation. Do not call CommitWorkingContext again for this notice."
+        action = "Runtime 已强制轮换工作上下文。不要因为本通知再次调用 CommitWorkingContext。"
     else:
-        action = "Call CommitWorkingContext when the current task or topic is complete."
+        action = "当前任务或主题完成时调用 CommitWorkingContext。"
     return (
-        "HOT WORKING CONTEXT NOTICE\n"
+        "热工作上下文通知\n"
         f"epoch_id: {snapshot.epoch_id}\n"
         f"hot_context_tokens: {snapshot.token_count}\n"
         f"context_window: {snapshot.context_window}\n"

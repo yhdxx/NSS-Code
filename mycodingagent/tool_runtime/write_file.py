@@ -19,17 +19,16 @@ if TYPE_CHECKING:  # 根据条件决定是否执行后续分支。
 
 
 class Params(BaseModel):  # 定义用于封装相关状态和行为的类。
-    file_path: str = Field(description="Path to the file to write")  # 保存配置值或中间计算结果。
-    content: str = Field(description="Content to write to the file")  # 保存配置值或中间计算结果。
-    intent: str = Field(default="", description="Short intent for this write")
+    file_path: str = Field(description="要写入的文件路径")  # 保存配置值或中间计算结果。
+    content: str = Field(description="要写入文件的内容")  # 保存配置值或中间计算结果。
+    intent: str = Field(default="", description="本次写入的简短目的")
 
 
 class WriteFile(Tool):  # 定义用于封装相关状态和行为的类。
     name = "WriteFile"  # 保存配置值或中间计算结果。
     description = (  # 保存配置值或中间计算结果。
-        "Write content to a file inside the sandbox, creating parent directories if needed. "  # 提供上方表达式需要的文本内容。
-        "Overwrites existing files.\n"  # 提供上方表达式需要的文本内容。
-        "You MUST read existing files with ReadFile before overwriting them. This tool will fail otherwise."  # 提供上方表达式需要的文本内容。
+        "将内容写入沙箱内的文件，必要时创建父目录；已有文件会被覆盖。\n"  # 提供上方表达式需要的文本内容。
+        "覆盖已有文件前必须先使用 ReadFile 读取，否则本工具会失败。"  # 提供上方表达式需要的文本内容。
     )  # 结束上方的多行结构。
     params_model = Params  # 保存配置值或中间计算结果。
     category = "write"  # 保存配置值或中间计算结果。
@@ -69,7 +68,7 @@ class WriteFile(Tool):  # 定义用于封装相关状态和行为的类。
             try:
                 existing = path.read_text(encoding="utf-8")
             except Exception as exc:
-                return ToolResult(output=f"Error reading file before write: {exc}", is_error=True)
+                return ToolResult(output=f"写入前读取文件失败：{exc}", is_error=True)
         if self._approval_hook is not None:
             decision = await self._approval_hook.approve(
                 WriteApprovalRequest(
@@ -100,5 +99,5 @@ class WriteFile(Tool):  # 定义用于封装相关状态和行为的类。
             if self._checkpoint_hook is not None:
                 self._checkpoint_hook.capture_after(path)
         except Exception as e:  # 捕获并处理指定异常。
-            return ToolResult(output=f"Error writing file: {e}", is_error=True)  # 返回当前函数的处理结果。
-        return ToolResult(output=f"Successfully wrote to {path}")  # 返回当前函数的处理结果。
+            return ToolResult(output=f"写入文件失败：{e}", is_error=True)  # 返回当前函数的处理结果。
+        return ToolResult(output=f"已成功写入 {path}")  # 返回当前函数的处理结果。

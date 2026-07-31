@@ -285,7 +285,7 @@ class CheckpointManager:
         snapshot: ConversationSnapshot,
         system_prompt_source: dict[str, Any] | None,
     ) -> RolloverResult:
-        summary = snapshot.overall_task_summary or snapshot.project_status or "Session checkpoint snapshot."
+        summary = snapshot.overall_task_summary or snapshot.project_status or "会话检查点快照。"
         self.memory_runtime.store.mark_session_historical(
             session_id,
             snapshot.snapshot_id,
@@ -331,7 +331,7 @@ class CheckpointManager:
 
 def format_snapshot_prompt(snapshot: ConversationSnapshot) -> str:
     payload = asdict(snapshot)
-    lines = ["CONVERSATION SNAPSHOT"]
+    lines = ["对话快照"]
     for field_name in SNAPSHOT_FIELD_ORDER:
         lines.append(f"{field_name}: {json.dumps(payload.get(field_name), ensure_ascii=False, default=str)}")
     return "\n".join(lines)
@@ -364,7 +364,7 @@ def format_archive_tool_messages(snapshot: ConversationSnapshot) -> list[dict[st
         {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": "[Conversation archive snapshot]\n" + format_compact_snapshot_prompt(snapshot),
+            "content": "[对话归档快照]\n" + format_compact_snapshot_prompt(snapshot),
             "metadata": {
                 "archive_snapshot": True,
                 "snapshot_id": snapshot.snapshot_id,
@@ -376,7 +376,7 @@ def format_archive_tool_messages(snapshot: ConversationSnapshot) -> list[dict[st
 
 def format_compact_snapshot_prompt(snapshot: ConversationSnapshot) -> str:
     payload = asdict(snapshot)
-    lines = ["CONVERSATION SNAPSHOT"]
+    lines = ["对话快照"]
     for field_name in SNAPSHOT_FIELD_ORDER:
         value = payload.get(field_name)
         if is_empty_prompt_value(value):
@@ -441,10 +441,10 @@ def infer_project_status(delta: SnapshotDelta, previous_snapshot: ConversationSn
 def build_summary(user_intentions: list[str], conclusions: list[str], project_status: str) -> str:
     parts = []
     if user_intentions:
-        parts.append(f"Latest user intent: {user_intentions[-1]}")
+        parts.append(f"最近的用户意图：{user_intentions[-1]}")
     if conclusions:
-        parts.append(f"Latest conclusion: {conclusions[-1]}")
-    parts.append(f"Project status: {project_status}")
+        parts.append(f"最近结论：{conclusions[-1]}")
+    parts.append(f"项目状态：{project_status}")
     return " ".join(parts)
 
 

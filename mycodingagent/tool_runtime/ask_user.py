@@ -9,16 +9,16 @@ from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCo
 
 
 class AskUserParams(BaseModel):
-    query: str = Field(description="Question to ask the terminal user")
-    choice: str | None = Field(default=None, description="Optional choices to show under the question")
-    intent: str = Field(description="Short reason why user input is required")
+    query: str = Field(description="要向终端用户提出的问题")
+    choice: str | None = Field(default=None, description="可选的候选项文本")
+    intent: str = Field(description="需要用户输入的简短原因")
 
 
 class AskUser(Tool):
     name = "ask_user"
     description = (
-        "Ask the terminal user for missing information when it cannot be safely inferred "
-        "from available tools or context. Use this instead of guessing user-specific data."
+        "向终端用户询问无法通过现有工具或上下文可靠确认的必要信息。"
+        "涉及用户特有数据时使用本工具，不要猜测。"
     )
     params_model = AskUserParams
     category = "read"
@@ -32,18 +32,18 @@ class AskUser(Tool):
         intent = " ".join(params.intent.split())
         query = " ".join(params.query.split())
         choice = "\n".join(line.rstrip() for line in str(params.choice or "").splitlines()).strip()
-        print("[User Input Required]", flush=True)
+        print("[需要用户输入]", flush=True)
         if intent:
-            print(f"Intent: {intent}", flush=True)
+            print(f"目的：{intent}", flush=True)
         if choice:
-            print(f"Question: {query}\n{choice}", flush=True)
+            print(f"问题：{query}\n{choice}", flush=True)
         else:
-            print(f"Question: {query}", flush=True)
+            print(f"问题：{query}", flush=True)
         try:
             answer = (
-                await self._coordinator.read_text("Answer: ")
+                await self._coordinator.read_text("回答：")
                 if self._coordinator is not None
-                else await asyncio.to_thread(input, "Answer: ")
+                else await asyncio.to_thread(input, "回答：")
             )
         except PromptCancelled:
             return ToolResult(output="用户取消了本次输入", is_error=True)

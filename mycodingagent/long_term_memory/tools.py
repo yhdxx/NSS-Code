@@ -79,8 +79,7 @@ class SubmitLongTermMemoryPatchParams(BaseModel):
 class SubmitLongTermMemoryPatch(Tool):
     name = "SubmitLongTermMemoryPatch"
     description = (
-        "Submit the complete structured long-term memory patch. "
-        "Use this tool instead of writing JSON in normal text."
+        "提交完整的结构化长期记忆补丁。使用本工具，不要在普通文本中输出 JSON。"
     )
     params_model = SubmitLongTermMemoryPatchParams
     category = "read"
@@ -100,22 +99,22 @@ class SubmitLongTermMemoryPatch(Tool):
 
     async def execute(self, params: SubmitLongTermMemoryPatchParams) -> ToolResult:
         if params.extraction_id != self._extraction_id:
-            return _json_error("wrong_extraction_id", "extraction_id does not match the current extraction.")
+            return _json_error("wrong_extraction_id", "extraction_id 与当前提取任务不匹配。")
         payload = params.model_dump()
         self._collector["payload"] = payload
         return _json({"status": "ok", "accepted": True})
 
 
 class SearchWorkspaceProjectFactsParams(BaseModel):
-    query: str = Field(description="Project name, workspace label, path fragment, or keyword from the user query.")
+    query: str = Field(description="用户请求中的项目名称、工作区标签、路径片段或关键词")
     limit: int = Field(default=5, ge=1, le=20)
 
 
 class SearchWorkspaceProjectFacts(Tool):
     name = "SearchWorkspaceProjectFacts"
     description = (
-        "Search abstract project facts from other workspaces only when the user explicitly asks about "
-        "another project or historical workspace. Returns project_fact memories only."
+        "仅当用户明确询问另一个项目或历史工作区时，搜索其他工作区的抽象项目事实。"
+        "只返回 project_fact 记忆。"
     )
     params_model = SearchWorkspaceProjectFactsParams
     category = "read"
@@ -150,9 +149,8 @@ class SubmitLongTermMemoryQueryResultParams(BaseModel):
 class SubmitLongTermMemoryQueryResult(Tool):
     name = "SubmitLongTermMemoryQueryResult"
     description = (
-        "Submit the selected long-term memory items for the current query. "
-        "Use memories for user/profile/project/decision items, workflow_candidates for workflow candidates, "
-        "and skill_candidates for skill candidates."
+        "提交为当前查询选中的长期记忆项。用户、Profile、项目和决策项放入 memories，"
+        "工作流候选放入 workflow_candidates，Skill 候选放入 skill_candidates。"
     )
     params_model = SubmitLongTermMemoryQueryResultParams
     category = "read"
@@ -172,7 +170,7 @@ class SubmitLongTermMemoryQueryResult(Tool):
 
     async def execute(self, params: SubmitLongTermMemoryQueryResultParams) -> ToolResult:
         if params.query_id != self._query_id:
-            return _json_error("wrong_query_id", "query_id does not match the current query.")
+            return _json_error("wrong_query_id", "query_id 与当前查询不匹配。")
         payload = params.model_dump()
         self._collector["payload"] = payload
         return _json({"status": "ok", "accepted": True})

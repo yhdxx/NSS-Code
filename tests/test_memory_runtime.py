@@ -283,11 +283,11 @@ def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypa
         )
 
         system_prompt = seen_messages[0][0]["content"]
-        assert "Work Context Sufficiency Protocol" in system_prompt
-        assert "Before producing the final answer, evaluate whether the current Working Context is sufficient" in system_prompt
-        assert "Evidence First Rule" in system_prompt
-        assert "never infer facts that could be verified by available historical context" in system_prompt
-        assert "Do not follow a fixed recovery sequence" in system_prompt
+        assert "工作上下文充分性协议" in system_prompt
+        assert "输出最终答案前，评估当前工作上下文是否充分" in system_prompt
+        assert "证据优先" in system_prompt
+        assert "能够通过历史上下文验证的事实不得依靠推断" in system_prompt
+        assert "不要遵循固定恢复顺序" in system_prompt
         assert "DelegateToMultiAgent" not in system_prompt
         assert "多智能体路由采用二分类" not in system_prompt
         assert "complexity_score" not in system_prompt
@@ -307,12 +307,12 @@ def test_recovery_tool_descriptions_emphasize_evidence_without_fixed_order():
         "GetRecentConversationTurns": GetRecentConversationTurns.description,
     }
 
-    assert "Do not use this for evidence already shown" in descriptions["BatchRecoverContext"]
-    assert "you do not yet know the relevant context_id" in descriptions["SearchRecoverableContext"]
-    assert "needed prior user request" in descriptions["SearchSessionHistory"]
-    assert "recent task flow" in descriptions["GetRecentConversationTurns"]
-    assert "already visible" in descriptions["SearchRecoverableContext"]
-    assert "current visible context is insufficient" in descriptions["GetRecentConversationTurns"]
+    assert "已经显示的证据不要重复恢复" in descriptions["BatchRecoverContext"]
+    assert "尚不知道相关 context_id" in descriptions["SearchRecoverableContext"]
+    assert "历史用户请求" in descriptions["SearchSessionHistory"]
+    assert "近期任务流程" in descriptions["GetRecentConversationTurns"]
+    assert "已经可见" in descriptions["SearchRecoverableContext"]
+    assert "当前可见上下文不足" in descriptions["GetRecentConversationTurns"]
     combined = "\n".join(descriptions.values())
     assert "GetRecentConversationTurns -> SearchSessionHistory" not in combined
     assert "SearchSessionHistory -> SearchRecoverableContext" not in combined
@@ -338,9 +338,9 @@ def test_recovery_protocol_forbids_recovering_visible_context(monkeypatch):
         )
 
         system_prompt = seen_messages[0][0]["content"]
-        assert "answer from the visible context directly" in system_prompt
-        assert "do not call BatchRecoverContext" in system_prompt
-        assert "Never invent context_id values" in system_prompt
+        assert "直接依据可见内容回答" in system_prompt
+        assert "不要调用 BatchRecoverContext" in system_prompt
+        assert "不得编造 context_id" in system_prompt
 
     asyncio.run(scenario())
 
@@ -1111,7 +1111,7 @@ def test_batch_recover_context_returns_multiple_results_and_item_errors(tmp_path
             "index": 1,
             "context_id": "missing-context",
             "status": "not_found",
-            "error": "recoverable context not found",
+            "error": "未找到可恢复上下文",
         }
     ]
 
@@ -1446,8 +1446,8 @@ def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_
         ("assistant", ""),
     ]
     assert "HISTORICAL TOOL INDEX" not in "\n".join(str(message.get("content", "")) for message in rendered)
-    assert "Skill output is not recoverable with BatchRecoverContext" in rendered[3]["content"]
-    assert "Historical tool output virtualized" in rendered[4]["content"]
+    assert "Skill 输出不能通过 BatchRecoverContext 恢复" in rendered[3]["content"]
+    assert "历史工具输出已虚拟化" in rendered[4]["content"]
     assert output_id in rendered[4]["content"]
     assert '"call_summary": "ReadFile: app.py"' in rendered[4]["content"]
     assert '"output_id"' not in rendered[4]["content"]
@@ -1571,7 +1571,7 @@ def test_context_switches_to_virtualized_when_raw_usage_exceeds_threshold(tmp_pa
     )
 
     assert runtime.context_mode(session_id) == ContextMode.VIRTUALIZED
-    assert "Historical tool output virtualized" in rendered[3]["content"]
+    assert "历史工具输出已虚拟化" in rendered[3]["content"]
     assert output_id in rendered[3]["content"]
 
 
@@ -1627,9 +1627,9 @@ def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
     )
 
     tool_content = rendered[3]["content"]
-    assert "Historical tool output virtualized" in tool_content
+    assert "历史工具输出已虚拟化" in tool_content
     assert '"intent": "读取入口文件"' in tool_content
-    assert "Use BatchRecoverContext with this exact context_id in items" in tool_content
+    assert "在 items 中使用此准确 context_id 调用 BatchRecoverContext" in tool_content
     assert "GetStoredToolOutput" not in tool_content
     assert '"output_id"' not in tool_content
     assert '"token_count"' not in tool_content
@@ -1805,6 +1805,8 @@ def test_reproducible_tool_classification():
     assert not is_reproducible_tool("Bash", "content")
     assert not is_reproducible_tool("WriteFile", "content")
     assert not is_reproducible_tool("ReadFile", "Error: failed")
+    assert not is_reproducible_tool("ReadFile", "错误：读取失败")
+    assert not is_reproducible_tool("ReadFile", "工具执行错误：参数无效")
 
 
 def test_lrfu_snapshot_round_trip(tmp_path):
@@ -1994,7 +1996,7 @@ def test_rollover_new_session_contains_system_and_archive_tool_snapshot(tmp_path
     assert len(rollover.new_messages) == 3
     assert [message["role"] for message in rollover.new_messages] == ["system", "assistant", "tool"]
     assert rollover.new_messages[1]["tool_calls"][0]["function"]["name"] == "ArchiveConversationSnapshot"
-    assert rollover.new_messages[2]["content"].startswith("[Conversation archive snapshot]\nCONVERSATION SNAPSHOT")
+    assert rollover.new_messages[2]["content"].startswith("[对话归档快照]\n对话快照")
     assert "reasoning_conclusions: []" not in rollover.new_messages[2]["content"]
     assert 'project_status: ""' not in rollover.new_messages[2]["content"]
     assert "workspace_state: {}" not in rollover.new_messages[2]["content"]
@@ -2058,7 +2060,7 @@ def test_restore_session_returns_snapshot_not_messages(tmp_path):
     assert not result.is_error
     assert payload["snapshot"]["snapshot_id"] == "snapshot-1"
     assert "full old transcript secret" not in result.output
-    assert "full old session" in payload["notice"]
+    assert "未恢复完整的旧 session_messages" in payload["notice"]
     assert "full old transcript secret" not in result.output
 
 
@@ -2107,7 +2109,7 @@ def test_prefix_cache_prompt_shape_stable_after_rollover():
     first_fields = [line.split(":", 1)[0] for line in format_snapshot_prompt(first).splitlines()[1:]]
     second_fields = [line.split(":", 1)[0] for line in format_snapshot_prompt(second).splitlines()[1:]]
 
-    assert format_snapshot_prompt(first).splitlines()[0] == "CONVERSATION SNAPSHOT"
+    assert format_snapshot_prompt(first).splitlines()[0] == "对话快照"
     assert first_fields == list(SNAPSHOT_FIELD_ORDER)
     assert second_fields == list(SNAPSHOT_FIELD_ORDER)
 
@@ -2224,7 +2226,7 @@ def test_batch_recover_context_reports_missing_after_owner_session_delete(tmp_pa
 
     assert not result.is_error
     assert recovered["status"] == "not_found"
-    assert recovered["error"] == "recoverable context not found"
+    assert recovered["error"] == "未找到可恢复上下文"
 
 
 def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(tmp_path):
@@ -2309,7 +2311,7 @@ def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(t
         current_turn_start=len(messages) - 1,
     )
     historical_tool = next(message for message in third if message.get("role") == "tool")
-    assert "Historical tool output virtualized" in historical_tool["content"]
+    assert "历史工具输出已虚拟化" in historical_tool["content"]
     assert output_id in historical_tool["content"]
 
 
@@ -2425,7 +2427,7 @@ def test_hot_context_force_retains_recent_turns_as_new_hot_context(tmp_path):
     marker_index = next(
         index
         for index, message in enumerate(rendered)
-        if "Working context transition" in str(message.get("content", ""))
+        if "工作上下文转换" in str(message.get("content", ""))
     )
     assert '"commit_note"' in rendered[marker_index]["content"]
     assert '"summary"' not in rendered[marker_index]["content"]
@@ -2471,7 +2473,7 @@ def test_cold_context_threshold_rolls_over_with_archive_tool_snapshot(tmp_path):
     assert rollover.new_messages is not None
     assert [message["role"] for message in rollover.new_messages] == ["system", "assistant", "tool"]
     assert rollover.new_messages[1]["tool_calls"][0]["function"]["name"] == "ArchiveConversationSnapshot"
-    assert rollover.new_messages[2]["content"].startswith("[Conversation archive snapshot]\nCONVERSATION SNAPSHOT")
+    assert rollover.new_messages[2]["content"].startswith("[对话归档快照]\n对话快照")
     assert "workspace_state: {}" not in rollover.new_messages[2]["content"]
 
 
@@ -2504,7 +2506,7 @@ def test_commit_working_context_tool_is_deferred_and_idempotent(tmp_path):
     pending = runtime.get_active_context_epoch(session_id)
     assert pending is not None
     assert pending.status == ContextEpochStatus.PENDING_COMMIT
-    assert pending.summary == "Model requested working-context commit: task complete"
+    assert pending.summary == "模型请求提交工作上下文：task complete"
     assert pending.active_files == ["app.py"]
     assert pending.end_message_index is None
 
@@ -2598,8 +2600,8 @@ def test_hot_context_threshold_schedules_runtime_commit(tmp_path):
         current_turn_start=1,
     )
 
-    hot_notice = next(str(message.get("content", "")) for message in rendered if "HOT WORKING CONTEXT NOTICE" in str(message.get("content", "")))
-    assert "Call CommitWorkingContext when" not in hot_notice
+    hot_notice = next(str(message.get("content", "")) for message in rendered if "热工作上下文通知" in str(message.get("content", "")))
+    assert "当前任务或主题完成时调用 CommitWorkingContext" not in hot_notice
     pending = runtime.get_active_context_epoch(session_id)
     assert pending is not None
     assert pending.status == ContextEpochStatus.PENDING_COMMIT
@@ -2626,7 +2628,7 @@ def test_hot_context_warning_does_not_schedule_commit(tmp_path):
         current_turn_start=1,
     )
 
-    assert any("HOT WORKING CONTEXT NOTICE" in str(message.get("content", "")) for message in rendered)
+    assert any("热工作上下文通知" in str(message.get("content", "")) for message in rendered)
     state = runtime.get_active_context_epoch(session_id)
     assert state is not None
     assert state.status == ContextEpochStatus.ACTIVE

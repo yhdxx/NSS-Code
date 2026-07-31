@@ -41,6 +41,8 @@ myCodingAgent 是一个本地 Coding Agent 运行框架。用户在终端用自�
 - MCP 配置路径和后台重连频率
 - `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT=1`：临时切回旧版系统提示词；默认使用按运行时能力组装的精简提示词
 - `MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND`：覆盖某语言的 LSP 启动命令，例如 `MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"`
+
+Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和本地结果包装统一使用中文。工具名、JSON 字段、状态枚举、代码标识、用户原文、Skill 原文以及外部命令/LSP/MCP 的原始输出保持原样，避免翻译破坏协议或证据。
 - 多智能体最大轮次和并发任务数
 - 长期记忆存储/查询模型、抽取超时和启动回填开关
 

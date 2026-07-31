@@ -401,11 +401,11 @@ class MemoryRuntime:
         )
         next_start = tail_start if tail_start > epoch.start_message_index else None
         pending = self.request_context_epoch_commit(
-            reason="hot working context reached the forced commit threshold",
+            reason="热工作上下文达到强制提交阈值",
             summary=automatic_context_epoch_summary(messages, epoch.start_message_index, next_start),
             active_files=collect_context_epoch_files(messages, epoch.start_message_index, next_start),
             next_context_hint=(
-                f"Runtime retained the latest {retained_turns} user turns as hot context."
+                f"Runtime 将最近 {retained_turns} 个用户轮次保留为热上下文。"
                 if next_start is not None
                 else ""
             ),
@@ -1350,21 +1350,20 @@ def insert_budget_notice(messages: list[dict[str, Any]], notice: str) -> list[di
 
 def format_budget_notice(snapshot: PromptBudgetSnapshot) -> str:
     lines = [
-        "CONTEXT BUDGET NOTICE",
+        "上下文预算通知",
         f"usage_ratio: {snapshot.usage_ratio:.2%}",
         f"stage: {snapshot.stage.value}",
-        "Historical tool outputs may be virtualized as metadata. Use BatchRecoverContext only with visible exact context_id values. Use SearchRecoverableContext to locate missing context_id values.",
+        "历史工具输出可能已虚拟化为元数据。只有准确且可见的 context_id 才能用于 BatchRecoverContext；使用 SearchRecoverableContext 查找缺失的 context_id。",
     ]
     if snapshot.usage_ratio >= CONFIG.memory.budget_working_ratio:
         lines.extend(
             [
-                "Budget is tight. If a current-turn non-skill tool output is important but low-density, call "
-                "SummarizeCurrentTurnMessage with its context_id or tool_call_id.",
-                "Revise a current-turn summary only when the prior summary is wrong or important new facts must be added.",
+                "预算紧张。当前轮次中非 Skill 工具输出重要但信息密度较低时，使用其 context_id 或 tool_call_id 调用 SummarizeCurrentTurnMessage。",
+                "只有先前摘要错误或必须加入新的重要事实时，才修订当前轮次摘要。",
             ]
         )
     if snapshot.usage_ratio >= CONFIG.memory.budget_emergency_ratio:
-        lines.append("Emergency budget stage: preserve task state, decisions, pending work, and recoverable references.")
+        lines.append("预算进入紧急阶段：保留任务状态、决策、待处理工作和可恢复引用。")
     return "\n".join(lines)
 
 
@@ -1407,8 +1406,8 @@ def render_context_transition_marker(epoch: ContextEpochState) -> list[dict[str,
         "epoch_id": epoch.epoch_id,
         **transition,
         "notice": (
-            "Previous hot working context is now cold. User and assistant text remain visible; "
-            "older tool outputs are represented by recoverable metadata."
+            "先前的热工作上下文现已转为冷上下文。用户和 Assistant 文本仍然可见；"
+            "较早的工具输出以可恢复元数据表示。"
         ),
     }
     return [
@@ -1428,7 +1427,7 @@ def render_context_transition_marker(epoch: ContextEpochState) -> list[dict[str,
         {
             "role": "tool",
             "tool_call_id": tool_call_id,
-            "content": "[Working context transition]\n"
+            "content": "[工作上下文转换]\n"
             + json.dumps(result, ensure_ascii=False, sort_keys=True, indent=2),
         },
     ]
@@ -1492,21 +1491,21 @@ def historical_tool_content(metadata: ToolInvocationMetadata | None, message: di
         return message_content_text(message)
     if metadata is None:
         return (
-            "[Historical tool output virtualized]\n"
+            "[历史工具输出已虚拟化]\n"
             "metadata_unavailable: true\n"
-            "recover: Use SearchSessionHistory with query terms from the surrounding user and assistant messages."
+            "recover: 使用周围用户和 Assistant 消息中的关键词调用 SearchSessionHistory。"
         )
     if metadata.kind == "skill":
         payload = {
             "tool_name": metadata.tool_name,
             **tool_summary_prompt_dict(metadata),
-            "recover": "Skill output is not recoverable with BatchRecoverContext. Use listed reference_paths when present.",
+            "recover": "Skill 输出不能通过 BatchRecoverContext 恢复；存在 reference_paths 时使用其中列出的路径。",
         }
         if metadata.reference_paths:
             payload["reference_paths"] = metadata.reference_paths[:8]
-        return "[Historical skill output omitted]\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
+        return "[历史 Skill 输出已省略]\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
     return (
-        "[Historical tool output virtualized]\n"
+        "[历史工具输出已虚拟化]\n"
         + json.dumps(tool_metadata_prompt_dict(metadata), ensure_ascii=False, sort_keys=True)
     )
 
@@ -1520,9 +1519,9 @@ def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any
     }
     if metadata.context_id:
         payload["context_id"] = metadata.context_id
-        payload["recover"] = "Use BatchRecoverContext with this exact context_id in items."
+        payload["recover"] = "在 items 中使用此准确 context_id 调用 BatchRecoverContext。"
     else:
-        payload["recover"] = "Use SearchSessionHistory with query terms from tool_name and call_summary."
+        payload["recover"] = "使用 tool_name 和 call_summary 中的关键词调用 SearchSessionHistory。"
     return payload
 
 
@@ -1762,7 +1761,7 @@ def extract_tool_intent(tool_name: str, arguments: str, metadata: dict[str, Any]
         value = parsed.get(key)
         if value:
             return truncate_one_line(f"{tool_name}: {value}", 160)
-    return truncate_one_line(f"Call {tool_name}", 160)
+    return truncate_one_line(f"调用 {tool_name}", 160)
 
 
 def extract_keywords_from_text(text: str) -> list[str]:
@@ -1841,7 +1840,7 @@ def infer_prompt_content_type(content: str) -> str:
 
 
 def is_error_text(text: str) -> bool:
-    return text.startswith("Tool execution error:") or text.startswith("Error:") or '"error"' in text[:300]
+    return text.startswith(("Tool execution error:", "Error:", "工具执行错误：", "错误：")) or '"error"' in text[:300]
 
 
 def file_state_paths(snapshot: dict) -> list[str]:

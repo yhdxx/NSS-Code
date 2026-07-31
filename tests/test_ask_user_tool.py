@@ -20,7 +20,7 @@ def test_ask_user_returns_terminal_input(monkeypatch, capsys):
 
     output = capsys.readouterr().out
     assert result.output == "yhdxx"
-    assert "[User Input Required]" in output
+    assert "[需要用户输入]" in output
     assert "需要确认账号" in output
     assert "你的 GitHub 用户名是什么？" in output
 

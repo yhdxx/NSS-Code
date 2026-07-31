@@ -12,15 +12,15 @@ MAX_GLOB_MATCHES = 200
 
 
 class Params(BaseModel):  # 定义用于封装相关状态和行为的类。
-    pattern: str = Field(description="Glob pattern to match (e.g. '**/*.py')")  # 保存配置值或中间计算结果。
-    path: str = Field(default=".", description="Base directory to search from")  # 保存配置值或中间计算结果。
+    pattern: str = Field(description="要匹配的 Glob 模式，例如 '**/*.py'")  # 保存配置值或中间计算结果。
+    path: str = Field(default=".", description="搜索起始目录")  # 保存配置值或中间计算结果。
 
 
 class Glob(Tool):  # 定义用于封装相关状态和行为的类。
     name = "Glob"  # 保存配置值或中间计算结果。
     description = (
-        "Find sandbox files matching a glob pattern, returning relative paths. Prefer targeted patterns "
-        "like '*.py' or 'backend/*.py'. Avoid broad workspace scans like '**/*' unless explicitly needed."
+        "查找沙箱内匹配 Glob 模式的文件并返回相对路径。优先使用 '*.py' 或 'backend/*.py' 等定向模式；"
+        "除非确有必要，避免使用 '**/*' 宽泛扫描整个工作区。"
     )  # 保存配置值或中间计算结果。
     params_model = Params  # 保存配置值或中间计算结果。
     category = "read"  # 保存配置值或中间计算结果。
@@ -35,7 +35,7 @@ class Glob(Tool):  # 定义用于封装相关状态和行为的类。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not base.exists():  # 根据条件决定是否执行后续分支。
-            return ToolResult(output=f"Error: path not found: {params.path}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：路径不存在：{params.path}", is_error=True)  # 返回当前函数的处理结果。
 
         try:  # 开始可能抛出异常的保护代码块。
             matches: list[str] = []  # 保存配置值或中间计算结果。
@@ -45,13 +45,13 @@ class Glob(Tool):  # 定义用于封装相关状态和行为的类。
                     break
             matches.sort()  # 执行当前步骤的业务逻辑。
         except Exception as e:  # 捕获并处理指定异常。
-            return ToolResult(output=f"Error: {e}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：{e}", is_error=True)  # 返回当前函数的处理结果。
 
         if not matches:  # 根据条件决定是否执行后续分支。
-            return ToolResult(output="No files matched the pattern.")  # 返回当前函数的处理结果。
+            return ToolResult(output="没有文件匹配该模式。")  # 返回当前函数的处理结果。
         output = "\n".join(matches)
         if len(matches) >= MAX_GLOB_MATCHES:
-            output += f"\n... <truncated after {MAX_GLOB_MATCHES} matches; use a narrower pattern>"
+            output += f"\n... <匹配数达到 {MAX_GLOB_MATCHES} 后已截断；请使用更精确的模式>"
         return ToolResult(output=output)  # 返回当前函数的处理结果。
 
 

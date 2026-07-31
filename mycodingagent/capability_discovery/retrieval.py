@@ -30,12 +30,12 @@ class LexicalServerSignal:
                 term_tokens = _tokens(term)
                 if normalized and normalized in query.lower():
                     score += weight
-                    reasons.append(f"matched term: {term}")
+                    reasons.append(f"匹配词：{term}")
                     continue
                 overlap = query_tokens.intersection(term_tokens)
                 if overlap:
                     score += weight * min(1.0, len(overlap) / max(len(term_tokens), 1))
-                    reasons.append(f"matched tokens: {', '.join(sorted(overlap))}")
+                    reasons.append(f"匹配 Token：{', '.join(sorted(overlap))}")
             if score > 0:
                 results.append(ServerRetrievalScore(server=server, score=score, reasons=tuple(reasons[:3])))
         results.sort(key=lambda item: (-item.score, item.server.name))

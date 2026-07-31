@@ -177,12 +177,12 @@ class WorkspaceCodeIndex:
         raw_path_filter = str(kwargs.get("path", ""))
         path_filter = self._normalize_filter(raw_path_filter)
         if raw_path_filter.strip() and not path_filter:
-            return {"error": f"path filter is outside the workspace: {raw_path_filter}"}
+            return {"error": f"路径过滤条件位于工作区之外：{raw_path_filter}"}
         language = str(kwargs.get("language", "")).strip().lower()
         limit = self._limit(kwargs.get("limit", 50))
         query = str(kwargs.get("query", "")).strip()
         if language and language not in set(LANGUAGE_BY_SUFFIX.values()):
-            return {"error": f"unsupported language filter: {language}"}
+            return {"error": f"不支持的语言过滤条件：{language}"}
         if operation == "outline":
             return self._outline(str(kwargs.get("path", "")))
         if operation in {"symbols", "definition_candidates"}:
@@ -202,20 +202,20 @@ class WorkspaceCodeIndex:
         if operation == "batch":
             queries = kwargs.get("queries", [])
             if not isinstance(queries, list) or not queries:
-                return {"error": "batch requires a non-empty queries list"}
+                return {"error": "batch 需要非空的 queries 列表"}
             if len(queries) > 20:
-                return {"error": "batch supports at most 20 queries"}
+                return {"error": "batch 最多支持 20 个查询"}
             results: list[dict[str, Any]] = []
             for item in queries:
                 if not isinstance(item, dict):
-                    return {"error": "each batch query must be an object"}
+                    return {"error": "batch 中的每个查询都必须是对象"}
                 child = dict(item)
                 child_operation = str(child.pop("operation", ""))
                 if child_operation == "batch":
-                    return {"error": "nested batch queries are not supported"}
+                    return {"error": "不支持嵌套 batch 查询"}
                 results.append(self._query_without_refresh(child_operation, **child))
             return {"results": results, "count": len(results)}
-        return {"error": f"unsupported code index operation: {operation}"}
+        return {"error": f"不支持的代码索引操作：{operation}"}
 
     def _refresh_full(self) -> dict[str, int]:
         files = list(self._iter_files())[: self.max_files]
@@ -368,7 +368,7 @@ class WorkspaceCodeIndex:
     def _outline(self, raw_path: str) -> dict[str, Any]:
         relative = self._normalize_file(raw_path)
         if relative is None:
-            return {"error": f"path outside workspace or not found: {raw_path}", "symbols": []}
+            return {"error": f"路径位于工作区之外或不存在：{raw_path}", "symbols": []}
         with self._connect() as conn:
             rows = conn.execute(
                 "SELECT * FROM code_symbols WHERE path = ? ORDER BY start_line, start_column", (relative,)
@@ -458,7 +458,7 @@ class WorkspaceCodeIndex:
             "tests": tests[:limit],
             "recommended_files": recommended_files[:limit],
             "truncated": any(len(items) >= limit for items in (callers, callees, imports, references)),
-            "warnings": ["references are syntactic; use LSP for type-aware semantic verification"],
+            "warnings": ["references 是语法级结果；需要类型感知的精确语义时请使用 LSP 复核"],
         }
 
     def _init_db(self) -> None:

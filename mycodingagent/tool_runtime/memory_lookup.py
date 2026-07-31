@@ -18,16 +18,16 @@ MAX_BATCH_RECOVER_TOTAL_CHARS = 60000
 
 
 class BatchRecoverContextItem(BaseModel):
-    context_id: str = Field(description="Exact context_id from a visible recoverable reference or search result. Do not guess.")
-    offset: int = Field(default=0, ge=0, description="Character offset to start reading from.")
-    limit: int = Field(default=12000, ge=1, le=50000, description="Maximum number of characters to return for this context_id.")
+    context_id: str = Field(description="可见恢复引用或搜索结果中的准确 context_id，不得猜测")
+    offset: int = Field(default=0, ge=0, description="开始读取的字符偏移量")
+    limit: int = Field(default=12000, ge=1, le=50000, description="该 context_id 最多返回的字符数")
 
 
 class BatchRecoverContextParams(BaseModel):
     items: list[BatchRecoverContextItem] = Field(
         description=(
-            "Stored context chunks to recover. Submit exact context_id values only. "
-            f"The first {MAX_BATCH_RECOVER_ITEMS} items are processed per call; split larger batches into follow-up calls."
+            "要恢复的已存储上下文块，只能提交准确的 context_id。"
+            f"每次调用处理前 {MAX_BATCH_RECOVER_ITEMS} 项；更大的批次应拆分为后续调用。"
         ),
         min_length=1,
         max_length=50,
@@ -37,11 +37,9 @@ class BatchRecoverContextParams(BaseModel):
 class BatchRecoverContext(Tool):
     name = "BatchRecoverContext"
     description = (
-        "Recover one or more stored context chunks by exact context_id. Use this only when "
-        "your answer depends on historical or virtualized evidence that is not currently visible "
-        "and each context_id is explicitly available from visible metadata or search results. "
-        "Provide all known relevant context_id values in items. Do not use this for evidence "
-        "already shown in the current conversation."
+        "根据准确的 context_id 恢复一个或多个已存储上下文块。仅当回答依赖当前不可见的历史或虚拟化证据，"
+        "并且每个 context_id 都明确来自可见元数据或搜索结果时使用。将所有已知且相关的 context_id 放入 items。"
+        "当前对话中已经显示的证据不要重复恢复。"
     )
     params_model = BatchRecoverContextParams
     category = "read"
@@ -63,7 +61,7 @@ class BatchRecoverContext(Tool):
                         "index": index,
                         "context_id": item.context_id,
                         "status": "skipped_batch_limit",
-                        "error": "batch total returned character limit reached",
+                        "error": "已达到 batch 返回字符总量上限",
                     }
                 )
                 continue
@@ -103,25 +101,23 @@ class BatchRecoverContext(Tool):
         }
         if len(params.items) > len(processed_items):
             output["limit_notice"] = (
-                f"Only the first {MAX_BATCH_RECOVER_ITEMS} items were processed. "
-                "Submit another BatchRecoverContext call for remaining context_ids if still needed."
+                f"本次只处理了前 {MAX_BATCH_RECOVER_ITEMS} 项。"
+                "如果仍需要其余 context_id，请再次调用 BatchRecoverContext。"
             )
         return ToolResult(output=json.dumps(output, ensure_ascii=False, indent=2), is_error=False)
 
 
 class SearchRecoverableContextParams(BaseModel):
-    query: str = Field(default="", description="Keywords for hidden historical/virtualized context metadata. Do not search for content already visible.")
-    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of metadata objects to return.")
+    query: str = Field(default="", description="用于搜索隐藏历史或虚拟化上下文元数据的关键词；不要搜索已经可见的内容")
+    limit: int = Field(default=10, ge=1, le=50, description="最多返回的元数据对象数量")
 
 
 class SearchRecoverableContext(Tool):
     name = "SearchRecoverableContext"
     description = (
-        "Search stored recoverable context metadata by topic, file path, command, error text, "
-        "keyword, or decision. Use only when required evidence is missing from the current visible "
-        "conversation and may exist in historical or virtualized context, but you do not yet know "
-        "the relevant context_id. Do not use this to retrieve or restate a tool result that is "
-        "already visible in the current turn or recent conversation."
+        "按主题、文件路径、命令、错误文本、关键词或决策搜索可恢复上下文元数据。仅当当前可见对话缺少必要证据，"
+        "证据可能存在于历史或虚拟化上下文中，但尚不知道相关 context_id 时使用。"
+        "不要用它重新获取或复述当前轮次或近期对话中已经可见的工具结果。"
     )
     params_model = SearchRecoverableContextParams
     category = "read"
@@ -133,7 +129,7 @@ class SearchRecoverableContext(Tool):
     async def execute(self, params: SearchRecoverableContextParams) -> ToolResult:
         session_id = self._memory_runtime.get_current_session_id()
         if not session_id:
-            return ToolResult(output="Error: no active memory session.", is_error=True)
+            return ToolResult(output="错误：当前没有活动的记忆会话。", is_error=True)
         await self._memory_runtime.drain()
         contexts = self._memory_runtime.search_context_metadata(session_id, params.query, limit=params.limit)
         payload = {
@@ -146,18 +142,16 @@ class SearchRecoverableContext(Tool):
 
 
 class SearchSessionHistoryParams(BaseModel):
-    query: str = Field(description="Keywords to search prior conversation turns that are not visible enough in the current context.")
-    limit: int = Field(default=10, ge=1, le=50, description="Maximum number of matching messages to return.")
-    include_system: bool = Field(default=False, description="Whether to include system messages in search results.")
+    query: str = Field(description="用于搜索当前上下文中不可充分见的历史对话轮次的关键词")
+    limit: int = Field(default=10, ge=1, le=50, description="最多返回的匹配消息数量")
+    include_system: bool = Field(default=False, description="搜索结果是否包含 system 消息")
 
 
 class SearchSessionHistory(Tool):
     name = "SearchSessionHistory"
     description = (
-        "Search prior conversation turns. Use this only when a needed prior user request, "
-        "assistant decision, constraint, or reference is not visible enough in the current working "
-        "context. This does not return full historical tool outputs; use BatchRecoverContext only "
-        "when exact stored output context_id values are visible."
+        "搜索历史对话轮次。仅当所需的历史用户请求、Assistant 决策、约束或引用在当前工作上下文中不可充分见时使用。"
+        "本工具不会返回完整的历史工具输出；只有准确的已存储输出 context_id 可见时才使用 BatchRecoverContext。"
     )
     params_model = SearchSessionHistoryParams
     category = "read"
@@ -170,16 +164,16 @@ class SearchSessionHistory(Tool):
     async def execute(self, params: SearchSessionHistoryParams) -> ToolResult:
         session_id = self._memory_runtime.get_current_session_id()
         if not session_id:
-            return ToolResult(output="Error: no active memory session.", is_error=True)
+            return ToolResult(output="错误：当前没有活动的记忆会话。", is_error=True)
         await self._memory_runtime.drain()
 
         query = " ".join(params.query.split())
         if not query:
-            return ToolResult(output="Error: query is empty.", is_error=True)
+            return ToolResult(output="错误：query 为空。", is_error=True)
 
         state = self._memory_runtime.load_session(session_id)
         if state is None:
-            return ToolResult(output=f"Error: active memory session not found: {session_id}", is_error=True)
+            return ToolResult(output=f"错误：未找到活动的记忆会话：{session_id}", is_error=True)
 
         query_lower = query.lower()
         results: list[dict[str, Any]] = []
@@ -232,16 +226,14 @@ class SearchSessionHistory(Tool):
 
 
 class GetRecentConversationTurnsParams(BaseModel):
-    limit: int = Field(default=5, ge=1, le=30, description="Maximum number of recent historical turns to return.")
+    limit: int = Field(default=5, ge=1, le=30, description="最多返回的近期历史轮次数量")
 
 
 class GetRecentConversationTurns(Tool):
     name = "GetRecentConversationTurns"
     description = (
-        "Inspect recent conversation structure and turn summaries. Use this only when the current "
-        "visible context is insufficient to understand recent task flow, prior decisions, or which "
-        "historical hidden outputs may matter. Do not use it when the relevant recent tool output "
-        "or answer is already visible."
+        "检查近期对话结构和轮次摘要。仅当当前可见上下文不足以理解近期任务流程、先前决策或哪些隐藏历史输出可能相关时使用。"
+        "相关的近期工具输出或答案已经可见时不要使用。"
     )
     params_model = GetRecentConversationTurnsParams
     category = "read"
@@ -253,7 +245,7 @@ class GetRecentConversationTurns(Tool):
     async def execute(self, params: GetRecentConversationTurnsParams) -> ToolResult:
         session_id = self._memory_runtime.get_current_session_id()
         if not session_id:
-            return ToolResult(output="Error: no active memory session.", is_error=True)
+            return ToolResult(output="错误：当前没有活动的记忆会话。", is_error=True)
         await self._memory_runtime.drain()
         turns = self._memory_runtime.store.load_historical_turns(session_id, limit=params.limit)
         payload = {
@@ -274,19 +266,18 @@ class GetRecentConversationTurns(Tool):
 
 
 class SummarizeCurrentTurnMessageParams(BaseModel):
-    message_id: str = Field(default="", description="tool_call_id or current-turn message id to replace with a summary.")
-    context_id: str = Field(default="", description="Recoverable context_id when summarizing a tool output.")
-    summary: str = Field(description="Dense replacement summary for the current-turn message.")
-    reason: str = Field(description="Why this summary is necessary. Required for revisions.")
-    focus: str = Field(default="", description="Optional focus area, such as errors, file list, or final facts.")
+    message_id: str = Field(default="", description="要用摘要替换的 tool_call_id 或当前轮次消息 ID")
+    context_id: str = Field(default="", description="摘要工具输出时对应的可恢复 context_id")
+    summary: str = Field(description="当前轮次消息的紧凑替换摘要")
+    reason: str = Field(description="需要该摘要的原因；修订摘要时必填")
+    focus: str = Field(default="", description="可选关注点，例如错误、文件列表或最终事实")
 
 
 class SummarizeCurrentTurnMessage(Tool):
     name = "SummarizeCurrentTurnMessage"
     description = (
-        "Replace a large current-turn message/tool output with a compact summary while keeping a recovery reference. "
-        "Use only when the context budget is tight. Revisions are allowed only when the previous summary is wrong "
-        "or new important information must be incorporated; repeated identical summaries are rejected."
+        "使用紧凑摘要替换当前轮次中的大型消息或工具输出，同时保留恢复引用。仅在上下文预算紧张时使用。"
+        "只有先前摘要错误或必须加入新的重要信息时才允许修订；重复的相同摘要会被拒绝。"
     )
     params_model = SummarizeCurrentTurnMessageParams
     category = "read"
@@ -305,13 +296,12 @@ class SummarizeCurrentTurnMessage(Tool):
                 focus=params.focus,
             )
         except ValueError as exc:
-            return ToolResult(output=f"Error: {exc}", is_error=True)
+            return ToolResult(output=f"错误：{exc}", is_error=True)
         payload = {
             "status": "ok",
             "metadata": asdict(metadata),
             "notice": (
-                "The summary is available for virtualized or budget-compressed renders. "
-                "Raw renders may continue to show the original current-turn content."
+                "该摘要可用于虚拟化或预算压缩后的上下文渲染；RAW 模式仍可能显示当前轮次的原始内容。"
             ),
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
@@ -320,31 +310,28 @@ class SummarizeCurrentTurnMessage(Tool):
 class CommitWorkingContextParams(BaseModel):
     model_config = ConfigDict(extra="allow")
 
-    reason: str = Field(description="Why the current hot working-context epoch should be committed after this turn.")
-    commit_note: str = Field(default="", description="Optional short note for this epoch commit. Do not summarize the full task history here.")
+    reason: str = Field(description="为什么应在本轮结束后提交当前热工作上下文 epoch")
+    commit_note: str = Field(default="", description="本次 epoch 提交的可选简短说明；不要在此总结完整任务历史")
     retain_context_ids: list[str] = Field(
         default_factory=list,
-        description="Visible context_id values that may still be needed after this hot epoch becomes cold context.",
+        description="当前热 epoch 转为冷上下文后仍可能需要的可见 context_id",
     )
     active_files: list[str] = Field(
         default_factory=list,
-        description="Important project files involved in this working context.",
+        description="当前工作上下文涉及的重要项目文件",
     )
     next_context_hint: str = Field(
         default="",
-        description="Optional guidance for the next working-context epoch.",
+        description="下一个工作上下文 epoch 的可选指引",
     )
 
 
 class CommitWorkingContext(Tool):
     name = "CommitWorkingContext"
     description = (
-        "Schedule the current hot working-context epoch to be committed after this assistant turn completes. "
-        "Use this only when the current task is complete, the user explicitly closes or switches work, or "
-        "the visible hot-context notice requests a commit. The model is responsible for semantic context "
-        "switches; runtime only forces commits when the hot context exceeds its budget. This tool schedules "
-        "a hot-to-cold epoch rotation and never hides messages during the current tool-call chain. It is not "
-        "a checkpoint or rollover summary generator."
+        "安排在当前 Assistant 轮次结束后提交热工作上下文 epoch。仅当当前任务完成、用户明确结束或切换工作，"
+        "或者可见热上下文通知要求提交时使用。模型负责识别语义上下文切换；Runtime 只在热上下文超过预算时强制提交。"
+        "本工具安排从热到冷的 epoch 轮换，不会在当前工具调用链中隐藏消息，也不是检查点或 rollover 摘要生成器。"
     )
     params_model = CommitWorkingContextParams
     category = "command"
@@ -364,7 +351,7 @@ class CommitWorkingContext(Tool):
                 trigger="model",
             )
         except ValueError as exc:
-            return ToolResult(output=f"Error: {exc}", is_error=True)
+            return ToolResult(output=f"错误：{exc}", is_error=True)
         payload = {
             "status": state.status.value,
             "epoch_id": state.epoch_id,
@@ -372,7 +359,7 @@ class CommitWorkingContext(Tool):
             "trigger": state.trigger,
             "retain_context_ids": state.retain_context_ids,
             "active_files": state.active_files,
-            "notice": "The working context will be archived only after the current assistant turn completes.",
+            "notice": "只有当前 Assistant 轮次结束后，工作上下文才会归档。",
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
 
@@ -387,19 +374,18 @@ def commit_context_note(params: CommitWorkingContextParams) -> str:
         return legacy_summary.strip()
     reason = " ".join(params.reason.split())
     if reason:
-        return f"Model requested working-context commit: {reason}"
-    return "Model requested working-context commit."
+        return f"模型请求提交工作上下文：{reason}"
+    return "模型请求提交工作上下文。"
 
 
 class RestoreSessionParams(BaseModel):
-    session_id: str = Field(description="Historical session id whose checkpoint snapshot should be restored.")
+    session_id: str = Field(description="要恢复检查点快照的历史会话 ID")
 
 
 class RestoreSession(Tool):
     name = "RestoreSession"
     description = (
-        "Read the latest checkpoint snapshot for a historical session. "
-        "This returns snapshot state only, not full old session messages."
+        "读取历史会话的最新检查点快照。只返回快照状态，不返回完整的旧会话消息。"
     )
     params_model = RestoreSessionParams
     category = "read"
@@ -412,13 +398,13 @@ class RestoreSession(Tool):
         await self._memory_runtime.drain()
         snapshot = self._memory_runtime.restore_historical_session_snapshot(params.session_id)
         if snapshot is None:
-            return ToolResult(output=f"Error: historical session snapshot not found: {params.session_id}", is_error=True)
+            return ToolResult(output=f"错误：未找到历史会话快照：{params.session_id}", is_error=True)
         payload = {
             "session_id": params.session_id,
             "snapshot": asdict(snapshot),
             "notice": (
-                "Snapshot restored as temporary working context only; full old session_messages were not restored. "
-                "Use BatchRecoverContext(items=[{context_id, offset, limit}]) for specific stored tool outputs."
+                "快照仅作为临时工作上下文恢复，未恢复完整的旧 session_messages。"
+                "需要特定的已存储工具输出时，使用 BatchRecoverContext(items=[{context_id, offset, limit}])。"
             ),
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
@@ -449,7 +435,7 @@ def recover_context_payload(
         return {
             "context_id": context_id,
             "status": "invalid_request",
-            "error": "context_id is required",
+            "error": "必须提供 context_id",
         }
     metadata = memory_runtime.get_context_metadata(context_id)
     if metadata is not None:
@@ -458,7 +444,7 @@ def recover_context_payload(
             return {
                 "context_id": context_id,
                 "status": "not_found",
-                "error": "recoverable context not found",
+                "error": "未找到可恢复上下文",
             }
         chunk, next_offset = partial
         start = min(max(0, offset), metadata.content_length)
@@ -485,7 +471,7 @@ def recover_context_payload(
         return {
             "context_id": context_id,
             "status": "not_found",
-            "error": "recoverable context not found",
+            "error": "未找到可恢复上下文",
         }
 
     output = record.output_text

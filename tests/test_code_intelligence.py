@@ -102,7 +102,7 @@ def test_code_index_rejects_outside_workspace_filter(tmp_path):
 
     result = index.query("symbols", query="target", path="/etc")
 
-    assert "outside the workspace" in result["error"]
+    assert "工作区之外" in result["error"]
 
 
 def test_code_index_empty_impact_has_zero_evidence(tmp_path):
@@ -168,7 +168,7 @@ def test_lsp_document_sync_opens_once_and_changes_only_when_content_changes(tmp_
 
 
 def test_code_intelligence_tool_descriptions_define_selection_order():
-    assert "before Grep" in CodeIndexTool.description
-    assert "change-impact analysis" in CodeIndexTool.description
-    assert "Use after code_index" in LSPTool.description
-    assert "language server is unavailable" in LSPTool.description
+    assert "Grep 前" in CodeIndexTool.description
+    assert "修改影响分析" in CodeIndexTool.description
+    assert "code_index 定位" in LSPTool.description
+    assert "语言服务器不可用" in LSPTool.description

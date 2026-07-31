@@ -478,7 +478,7 @@ async def execute_local_tool(
         return ToolExecution(error, is_error=True)
     tool = registry.get(tool_name)
     if tool is None:
-        return ToolExecution(f"Error: unknown tool {tool_name}", is_error=True)
+        return ToolExecution(f"错误：未知工具 {tool_name}", is_error=True)
 
     def show_notice() -> None:
         notice = skill_tool_notice(tool_name, args, skill_runtime)

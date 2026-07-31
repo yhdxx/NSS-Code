@@ -36,10 +36,9 @@ class LSPParams(BaseModel):
 class CodeIndexTool(Tool):
     name = "code_index"
     description = (
-        "Primary tool for code-symbol discovery and change-impact analysis. Prefer one impact or batch "
-        "call before Grep when locating definitions, listing an outline, or finding callers/callees. Use Grep "
-        "afterward only for imports, strings, configuration, documentation, or dynamic references "
-        "that a syntax index may not capture."
+        "用于代码符号发现和修改影响分析的主要工具。定位定义、查看文件结构或查找调用方/被调用方时，"
+        "应在 Grep 前优先调用一次 impact 或 batch。之后仅使用 Grep 补充查找语法索引可能无法覆盖的 "
+        "import、字符串、配置、文档或动态引用。"
     )
     params_model = CodeIndexParams
     category = "read"
@@ -67,9 +66,8 @@ class CodeIndexTool(Tool):
 class LSPTool(Tool):
     name = "lsp"
     description = (
-        "Verify exact semantic definitions, references, types, and diagnostics with a language server. "
-        "Use after code_index has located the relevant file and position. If the language server is "
-        "unavailable, continue with code_index, Grep, and ReadFile."
+        "使用语言服务器复核精确语义定义、引用、类型和诊断。应在 code_index 定位相关文件和位置后使用。"
+        "语言服务器不可用时，继续使用 code_index、Grep 和 ReadFile。"
     )
     params_model = LSPParams
     category = "read"

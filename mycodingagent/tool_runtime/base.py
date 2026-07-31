@@ -34,7 +34,7 @@ def resolve_sandbox_path(raw_path: str, sandbox_root: Path | None = None) -> tup
     root = (sandbox_root or get_sandbox_root()).resolve(strict=False)  # 保存配置值或中间计算结果。
     raw_path = raw_path.strip()  # 统一去掉首尾空白，避免空格影响路径判断。
     if not raw_path:  # 根据条件决定是否执行后续分支。
-        return None, "Error: path is empty"  # 返回当前函数的处理结果。
+        return None, "错误：路径为空"  # 返回当前函数的处理结果。
 
     path = Path(raw_path).expanduser()  # 保存配置值或中间计算结果。
     if not path.is_absolute():  # 根据条件决定是否执行后续分支。
@@ -45,10 +45,10 @@ def resolve_sandbox_path(raw_path: str, sandbox_root: Path | None = None) -> tup
     try:  # 开始可能抛出异常的保护代码块。
         resolved = path.resolve(strict=False)  # 保存配置值或中间计算结果。
     except RuntimeError as exc:  # 捕获并处理指定异常。
-        return None, f"Error resolving path: {exc}"  # 返回当前函数的处理结果。
+        return None, f"解析路径失败：{exc}"  # 返回当前函数的处理结果。
 
     if not is_path_in_sandbox(resolved, root):  # 根据条件决定是否执行后续分支。
-        return None, f"Error: path outside sandbox: {raw_path}\nSandbox root: {root}"  # 返回当前函数的处理结果。
+        return None, f"错误：路径位于沙箱之外：{raw_path}\n沙箱根目录：{root}"  # 返回当前函数的处理结果。
 
     return resolved, ""  # 返回当前函数的处理结果。
 
@@ -79,7 +79,7 @@ class Tool(ABC):  # 定义用于封装相关状态和行为的类。
         if isinstance(properties, dict) and "intent" not in properties:
             properties["intent"] = {
                 "type": "string",
-                "description": "Short intent for this tool call; used as compact metadata when context is virtualized.",
+                "description": "本次工具调用的简短目的；上下文虚拟化时用作紧凑元数据。",
                 "maxLength": 160,
             }
         required = schema.setdefault("required", [])

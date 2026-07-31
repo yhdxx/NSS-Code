@@ -137,7 +137,7 @@ def test_safe_command_skips_approval(monkeypatch, tmp_path):
     result = asyncio.run(tool.execute(tool.params_model(command="ls -la", intent="list")))
 
     assert hook.requests == [], "safe commands must not prompt the user"
-    assert "docker executable not found" in result.output
+    assert "未找到 docker 可执行程序" in result.output
 
 
 def test_no_hook_means_no_gate(monkeypatch, tmp_path):

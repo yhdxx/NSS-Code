@@ -27,7 +27,7 @@ class PromptBudgetSnapshot:
 
     def to_prompt_text(self) -> str:
         return (
-            "PROMPT BUDGET\n"
+            "PROMPT 预算\n"
             f"context_window: {self.context_window}\n"
             f"current_tokens: {self.current_tokens}\n"
             f"remaining_tokens: {self.remaining_tokens}\n"

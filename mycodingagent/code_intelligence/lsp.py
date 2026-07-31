@@ -65,16 +65,16 @@ class LSPManager:
 
     async def query(self, operation: str, **kwargs: Any) -> dict[str, Any]:
         if operation not in OPERATIONS:
-            return {"error": f"unsupported LSP operation: {operation}"}
+            return {"error": f"不支持的 LSP 操作：{operation}"}
         path = self._resolve(str(kwargs.get("path", "")))
         if path is None:
-            return {"error": "path is outside the workspace or unsupported"}
+            return {"error": "路径位于工作区之外或文件类型不受支持"}
         language = LANGUAGE_BY_SUFFIX[path.suffix.lower()]
         process_key = self._process_key(language)
         try:
             client = await self._ensure(language)
             if client is None:
-                return {"available": False, "language": language, "error": "language server is not installed"}
+                return {"available": False, "language": language, "error": "未安装对应的语言服务器"}
             uri = path.as_uri()
             await self._sync_document(client, uri=uri, language=language, path=path)
             line = max(0, int(kwargs.get("line", 1)) - 1)
@@ -234,7 +234,7 @@ class LSPManager:
     @staticmethod
     async def _write(client: _LSPProcess, payload: dict[str, Any]) -> None:
         if client.process.stdin is None:
-            raise RuntimeError("language server stdin is closed")
+            raise RuntimeError("语言服务器的标准输入已关闭")
         body = json.dumps(payload, ensure_ascii=False).encode("utf-8")
         client.process.stdin.write(f"Content-Length: {len(body)}\r\n\r\n".encode("ascii") + body)
         await client.process.stdin.drain()
@@ -242,18 +242,18 @@ class LSPManager:
     @staticmethod
     async def _read(client: _LSPProcess) -> dict[str, Any]:
         if client.process.stdout is None:
-            raise RuntimeError("language server stdout is closed")
+            raise RuntimeError("语言服务器的标准输出已关闭")
         length = 0
         while True:
             line = await client.process.stdout.readline()
             if not line:
-                raise RuntimeError("language server exited")
+                raise RuntimeError("语言服务器已退出")
             if line in {b"\r\n", b"\n"}:
                 break
             if line.lower().startswith(b"content-length:"):
                 length = int(line.split(b":", 1)[1].strip())
         if length <= 0:
-            raise RuntimeError("invalid language server response")
+            raise RuntimeError("语言服务器响应无效")
         return json.loads(await client.process.stdout.readexactly(length))
 
     async def _close_language(self, process_key: str) -> None:

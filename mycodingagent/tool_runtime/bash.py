@@ -49,19 +49,19 @@ def docker_subprocess_env() -> dict[str, str]:  # 为所有 Docker CLI 子进程
 
 
 class Params(BaseModel):  # Bash 工具的入参模型，会被工具注册表转成可暴露给模型的 JSON Schema。
-    command: str = Field(description="Shell command to execute")  # 要交给 `bash -lc` 执行的完整命令字符串，可包含管道、重定向和多行脚本。
+    command: str = Field(description="要执行的 Shell 命令")  # 要交给 `bash -lc` 执行的完整命令字符串，可包含管道、重定向和多行脚本。
     timeout: int = Field(
         default=CONFIG.docker.default_timeout,
-        description=f"Timeout in seconds (max {MAX_TIMEOUT})",
+        description=f"超时时间，单位为秒，最大值为 {MAX_TIMEOUT}",
     )  # 调用方期望的超时时间；实际执行时会再受 MAX_TIMEOUT 限制。
-    intent: str = Field(default="", description="Short intent for this command")  # 基类 schema 会强制要求 intent；这里显式声明，避免校验时被丢弃。
+    intent: str = Field(default="", description="本次命令的简短目的")  # 基类 schema 会强制要求 intent；这里显式声明，避免校验时被丢弃。
 
 
 class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器运行，和文件读写工具一样受沙箱目录约束。
     name = "Bash"  # 工具注册表和模型 tool_call 使用的公开名称，必须和客户端历史消息中的函数名一致。
     description = (  # 传给模型的工具说明，帮助模型理解该工具适合执行命令而不是直接读写文件。
-        "Execute a shell command inside a Docker sandbox and return stdout and stderr. "  # 明确命令运行位置在 Docker 沙箱内部，而非直接在宿主机执行。
-        f"The sandbox mounts the agent workspace at {CONFIG.sandbox.docker_workspace_alias}."  # 告诉模型项目根目录在容器内的固定路径，方便生成正确命令。
+        "在 Docker 沙箱内执行 Shell 命令并返回标准输出和标准错误。"  # 明确命令运行位置在 Docker 沙箱内部，而非直接在宿主机执行。
+        f"沙箱将 Agent 工作区挂载到 {CONFIG.sandbox.docker_workspace_alias}。"  # 告诉模型项目根目录在容器内的固定路径，方便生成正确命令。
     )  # 多段字符串在编译期自动拼接成完整描述。
     params_model = Params  # 指定参数校验模型；客户端执行工具前会用它校验模型生成的 JSON 参数。
     category = "command"  # 标记为命令类工具，区别于 ReadFile/Glob/Grep 这类只读工具和 WriteFile/EditFile 写工具。
@@ -77,7 +77,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
 
     async def execute(self, params: Params) -> ToolResult:  # 执行一次 Bash 工具调用，并把 stdout/stderr 封装成 ToolResult 返回给模型。
         if shutil.which("docker") is None:  # 先检查宿主环境是否能找到 Docker，避免进入子进程后才得到不清晰的失败信息。
-            return ToolResult(output="Error: docker executable not found", is_error=True)  # Docker 不可用时直接返回工具错误，agent 可据此向用户说明环境问题。
+            return ToolResult(output="错误：未找到 docker 可执行程序", is_error=True)  # Docker 不可用时直接返回工具错误，agent 可据此向用户说明环境问题。
 
         timeout = min(params.timeout, MAX_TIMEOUT)  # 对调用方提供的超时时间做硬上限保护，防止长时间占用 Docker 资源。
         image = get_docker_image()  # 使用和启动预拉取一致的镜像名，确保每次 Bash 调用都进入同一个镜像族。
@@ -94,13 +94,13 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                     CommandApprovalRequest(
                         command=params.command,
                         risk=risk,
-                        reason=reason or "Command side effects require approval.",
+                        reason=reason or "命令可能产生副作用，需要用户批准。",
                         intent=str(getattr(params, "intent", "") or ""),
                     )
                 )
                 if not decision.allowed:
                     return ToolResult(
-                        output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or 'user_denied'}",
+                        output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or '用户拒绝'}",
                         is_error=True,
                     )
         network = CONFIG.docker.network  # 默认关闭容器网络；需要联网时必须由外部环境显式打开。
@@ -159,26 +159,26 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                 proc.kill()  # 先终止宿主侧 docker run 进程，避免本地子进程继续占用事件循环资源。
                 await proc.wait()  # 等待 docker run 进程退出，回收子进程状态。
             await self._force_remove_container(container_name)  # 再按容器名强制删除容器，处理 Docker 侧仍在运行的情况。
-            return ToolResult(output=f"Error: command timed out after {timeout}s", is_error=True)  # 把超时作为工具错误返回，便于模型调整命令。
+            return ToolResult(output=f"错误：命令在 {timeout} 秒后超时", is_error=True)  # 把超时作为工具错误返回，便于模型调整命令。
         except FileNotFoundError:  # 即使前面检查过 docker，也保留竞态兜底，例如 PATH 被修改或二进制被移除。
-            return ToolResult(output="Error: docker executable not found", is_error=True)  # 返回和预检查一致的错误文本。
+            return ToolResult(output="错误：未找到 docker 可执行程序", is_error=True)  # 返回和预检查一致的错误文本。
         except Exception as e:  # 捕获 Docker 启动失败、权限问题等其他异常，避免异常冒泡导致 agent 崩溃。
-            return ToolResult(output=f"Error executing command: {e}", is_error=True)  # 将异常信息压缩成工具输出交还给模型。
+            return ToolResult(output=f"执行命令失败：{e}", is_error=True)  # 将异常信息压缩成工具输出交还给模型。
 
         parts: list[str] = []  # 分段保存 stdout/stderr，只有存在内容时才加入最终输出。
         if stdout:  # Docker 命令产生标准输出时，按独立区块返回。
-            parts.append(f"STDOUT:\n{stdout.decode(errors='replace')}")  # 解码失败的字节用替换字符处理，避免二进制或乱码让工具报错。
+            parts.append(f"标准输出：\n{stdout.decode(errors='replace')}")  # 解码失败的字节用替换字符处理，避免二进制或乱码让工具报错。
         if stderr:  # Docker 命令产生标准错误时，保留为独立区块，方便区分正常输出和诊断信息。
-            parts.append(f"STDERR:\n{stderr.decode(errors='replace')}")  # 同样使用容错解码，保证错误日志一定能作为文本返回。
+            parts.append(f"标准错误：\n{stderr.decode(errors='replace')}")  # 同样使用容错解码，保证错误日志一定能作为文本返回。
         if not parts:  # 命令完全没有输出时，也返回一个显式占位，避免调用方误以为工具结果丢失。
-            parts.append("(no output)")  # 明确表示命令执行结束但 stdout/stderr 都为空。
+            parts.append("（无输出）")  # 明确表示命令执行结束但 stdout/stderr 都为空。
 
         output = "\n".join(parts)  # 将存在的输出区块拼成最终工具响应文本。
         return ToolResult(output=output, is_error=proc.returncode != 0)  # Docker 返回码非 0 时标记为工具错误，但仍保留 stdout/stderr 供诊断。
 
     async def ensure_image(self, image: str | None = None) -> ToolResult:  # 启动阶段调用：确保 Bash 执行镜像已经拉取到本地。
         if shutil.which("docker") is None:  # 启动时先确认 Docker CLI 存在。
-            return ToolResult(output="Error: docker executable not found", is_error=True)  # 没有 Docker 时直接失败，避免进入对话后才发现 Bash 不可用。
+            return ToolResult(output="错误：未找到 docker 可执行程序", is_error=True)  # 没有 Docker 时直接失败，避免进入对话后才发现 Bash 不可用。
 
         image = image or get_docker_image()  # 默认使用 Bash 工具后续执行命令时会使用的同一个镜像名。
         docker_error = await self._check_docker_daemon()  # 确认当前用户能访问 Docker daemon。
@@ -190,7 +190,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
             bash_error = await self._check_image_supports_bash(image)  # 确认镜像能按 Bash 工具的方式执行 `bash -lc`。
             if bash_error:  # 镜像存在但没有 bash 或入口点不兼容时，启动阶段直接失败。
                 return ToolResult(output=bash_error, is_error=True)  # 返回镜像不可用原因。
-            return ToolResult(output=f"Docker image ready: {image}")  # 返回启动检查成功信息。
+            return ToolResult(output=f"Docker 镜像已就绪：{image}")  # 返回启动检查成功信息。
 
         if self._is_local_sandbox_image(image):  # 默认本地沙箱镜像不是远端镜像，缺失时应从项目 Dockerfile 构建。
             dockerfile = self._find_sandbox_dockerfile()
@@ -198,7 +198,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                 return ToolResult(
                     output=(
                         f"{image_error}\n"
-                        f"Local sandbox image `{image}` is configured, but Dockerfile.sandbox was not found."
+                        f"已配置本地沙箱镜像 `{image}`，但未找到 Dockerfile.sandbox。"
                     ),
                     is_error=True,
                 )
@@ -216,7 +216,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         bash_error = await self._check_image_supports_bash(image)  # 拉取成功后验证镜像内 Bash 能正常启动。
         if bash_error:  # 默认镜像被替换成不支持 Bash 的镜像时，在启动阶段给出明确错误。
             return ToolResult(output=bash_error, is_error=True)  # 返回镜像不可执行 Bash 的原因。
-        return ToolResult(output=f"Docker image ready: {image}")  # 镜像存在且可供后续 Bash 调用复用。
+        return ToolResult(output=f"Docker 镜像已就绪：{image}")  # 镜像存在且可供后续 Bash 调用复用。
 
     def _is_local_sandbox_image(self, image: str) -> bool:  # 判断目标镜像是否应由本项目 Dockerfile.sandbox 构建。
         return image == LOCAL_SANDBOX_IMAGE_REPOSITORY or image.startswith(f"{LOCAL_SANDBOX_IMAGE_REPOSITORY}:")
@@ -258,17 +258,17 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         except asyncio.TimeoutError:
             proc.kill()
             await proc.wait()
-            return f"Error: docker build timed out after {build_timeout}s: {image}"
+            return f"错误：构建 Docker 镜像在 {build_timeout} 秒后超时：{image}"
         except Exception as e:
-            return f"Error building docker image {image}: {e}"
+            return f"构建 Docker 镜像 {image} 失败：{e}"
 
         detail = self._decode_output(stdout, stderr)
         if proc.returncode != 0:
             return (
-                f"Error: failed to build local sandbox docker image: {image}\n"
-                f"Dockerfile: {dockerfile}\n"
-                f"Set `{DOCKER_BUILD_NETWORK_ENV}` to a Docker build network mode if package downloads fail.\n"
-                f"Docker output:\n{detail}"
+                f"错误：构建本地沙箱 Docker 镜像失败：{image}\n"
+                f"Dockerfile：{dockerfile}\n"
+                f"如果依赖包下载失败，请通过 `{DOCKER_BUILD_NETWORK_ENV}` 设置 Docker 构建网络模式。\n"
+                f"Docker 原始输出：\n{detail}"
             )
         return ""
 
@@ -287,9 +287,9 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         except asyncio.TimeoutError:  # Docker daemon 无响应时，避免工具一直卡在预检阶段。
             proc.kill()  # 终止卡住的 docker info 进程。
             await proc.wait()  # 回收子进程状态。
-            return f"Error: docker daemon did not respond within {DOCKER_CHECK_TIMEOUT}s"  # 返回明确的 daemon 响应超时。
+            return f"错误：Docker daemon 在 {DOCKER_CHECK_TIMEOUT} 秒内未响应"  # 返回明确的 daemon 响应超时。
         except Exception as e:  # 捕获其他预检异常，保证工具不会因为 Docker 环境问题崩溃。
-            return f"Error checking docker daemon: {e}"  # 将异常转成模型可读的工具错误。
+            return f"检查 Docker daemon 失败：{e}"  # 将异常转成模型可读的工具错误。
 
         if proc.returncode == 0:  # docker info 成功，说明当前用户可以访问 Docker daemon。
             return ""  # 空字符串表示预检通过。
@@ -297,12 +297,12 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         detail = self._decode_output(stdout, stderr)  # 合并 stdout/stderr，保留 Docker 原始诊断信息。
         if "permission denied" in detail.lower():  # 常见原因是当前用户不能访问 /var/run/docker.sock。
             return (  # 返回具体修复方向，而不是只把 Docker 的低层错误透传给模型。
-                "Error: docker daemon permission denied.\n"
-                "The current user cannot access the Docker socket. Add the user to the docker group, "
-                "adjust /var/run/docker.sock permissions, or run the agent from an environment that can access Docker.\n"
-                f"Docker output:\n{detail}"
+                "错误：没有访问 Docker daemon 的权限。\n"
+                "当前用户无法访问 Docker socket。请将用户加入 docker 用户组、调整 /var/run/docker.sock 权限，"
+                "或在能够访问 Docker 的环境中运行 Agent。\n"
+                f"Docker 原始输出：\n{detail}"
             )  # 结束权限错误提示。
-        return f"Error: docker daemon unavailable.\nDocker output:\n{detail}"  # 其他 daemon 连接失败统一返回原始输出。
+        return f"错误：Docker daemon 不可用。\nDocker 原始输出：\n{detail}"  # 其他 daemon 连接失败统一返回原始输出。
 
     async def _check_image_available(self, image: str) -> str:  # 检查目标 Docker 镜像是否已经存在本地；返回空字符串表示可用。
         try:  # 镜像检查可能因为 daemon 状态、镜像名错误或权限问题失败。
@@ -319,18 +319,18 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         except asyncio.TimeoutError:  # Docker 本地镜像检查异常卡住时中断。
             proc.kill()  # 终止卡住的 inspect 进程。
             await proc.wait()  # 回收子进程状态。
-            return f"Error: docker image check timed out after {DOCKER_CHECK_TIMEOUT}s: {image}"  # 返回镜像检查超时。
+            return f"错误：检查 Docker 镜像在 {DOCKER_CHECK_TIMEOUT} 秒后超时：{image}"  # 返回镜像检查超时。
         except Exception as e:  # 捕获其他检查异常。
-            return f"Error checking docker image {image}: {e}"  # 将异常转成工具错误。
+            return f"检查 Docker 镜像 {image} 失败：{e}"  # 将异常转成工具错误。
 
         if proc.returncode == 0:  # 镜像存在本地，后续 docker run 不需要先拉取。
             return ""  # 空字符串表示镜像可用。
 
         detail = stderr.decode(errors="replace").strip()  # 解码 Docker 的镜像检查错误。
         return (  # 给出两条修复路径：预拉取默认镜像，或通过环境变量指定已有镜像。
-            f"Error: docker image not found locally: {image}\n"
-            f"Run `docker pull {image}` first, or set `{DOCKER_IMAGE_ENV}` to an existing image that contains bash.\n"
-            f"Docker output:\n{detail}"
+            f"错误：本地不存在 Docker 镜像：{image}\n"
+            f"请先运行 `docker pull {image}`，或通过 `{DOCKER_IMAGE_ENV}` 指定一个包含 bash 的已有镜像。\n"
+            f"Docker 原始输出：\n{detail}"
         )  # 结束镜像缺失提示。
 
     async def _check_image_supports_bash(self, image: str) -> str:  # 验证镜像可以按 Bash 工具的调用方式运行 `bash -lc`。
@@ -353,18 +353,18 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         except asyncio.TimeoutError:  # 镜像启动或入口点卡住时中断探针。
             proc.kill()  # 终止探针 docker run 进程。
             await proc.wait()  # 回收子进程状态。
-            return f"Error: docker image bash check timed out after {DOCKER_CHECK_TIMEOUT}s: {image}"  # 返回镜像探针超时。
+            return f"错误：Docker 镜像 bash 检查在 {DOCKER_CHECK_TIMEOUT} 秒后超时：{image}"  # 返回镜像探针超时。
         except Exception as e:  # 捕获其他探针异常。
-            return f"Error checking bash support in docker image {image}: {e}"  # 将异常转成启动错误。
+            return f"检查 Docker 镜像 {image} 的 bash 支持失败：{e}"  # 将异常转成启动错误。
 
         if proc.returncode == 0:  # 探针成功说明镜像支持当前 Bash 工具的调用方式。
             return ""  # 空字符串表示镜像可用。
 
-        detail = stderr.decode(errors="replace").strip() or "(no output)"  # 解码探针失败信息。
+        detail = stderr.decode(errors="replace").strip() or "（无输出）"  # 解码探针失败信息。
         return (  # 返回明确原因和配置建议。
-            f"Error: docker image cannot run `bash -lc`: {image}\n"
-            f"Set `{DOCKER_IMAGE_ENV}` to an image that contains bash and allows command execution.\n"
-            f"Docker output:\n{detail}"
+            f"错误：Docker 镜像无法运行 `bash -lc`：{image}\n"
+            f"请通过 `{DOCKER_IMAGE_ENV}` 指定一个包含 bash 且允许执行命令的镜像。\n"
+            f"Docker 原始输出：\n{detail}"
         )  # 结束 Bash 支持检查错误。
 
     async def _pull_image(self, image: str) -> str:  # 拉取目标 Docker 镜像；返回空字符串表示成功。
@@ -382,13 +382,13 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         except asyncio.TimeoutError:  # 拉取耗时超过配置上限时中止。
             proc.kill()  # 终止 docker pull 进程。
             await proc.wait()  # 回收子进程状态。
-            return f"Error: docker pull timed out after {pull_timeout}s: {image}"  # 返回明确的拉取超时错误。
+            return f"错误：拉取 Docker 镜像在 {pull_timeout} 秒后超时：{image}"  # 返回明确的拉取超时错误。
         except Exception as e:  # 捕获其他拉取阶段异常。
-            return f"Error pulling docker image {image}: {e}"  # 将异常转成工具错误。
+            return f"拉取 Docker 镜像 {image} 失败：{e}"  # 将异常转成工具错误。
 
         detail = self._decode_output(stdout, stderr)  # 合并 docker pull 输出，便于失败时诊断。
         if proc.returncode != 0:  # docker pull 返回非 0 表示拉取失败。
-            return f"Error: failed to pull docker image: {image}\nDocker output:\n{detail}"  # 返回镜像名和 Docker 原始输出。
+            return f"错误：拉取 Docker 镜像失败：{image}\nDocker 原始输出：\n{detail}"  # 返回镜像名和 Docker 原始输出。
         return ""  # 空字符串表示拉取成功。
 
     def _decode_output(self, stdout: bytes, stderr: bytes) -> str:  # 把 Docker 预检命令的 stdout/stderr 合并成紧凑文本。
@@ -397,7 +397,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
             parts.append(stdout.decode(errors="replace").strip())  # 容错解码 stdout。
         if stderr:  # 有标准错误时加入诊断文本。
             parts.append(stderr.decode(errors="replace").strip())  # 容错解码 stderr。
-        return "\n".join(part for part in parts if part) or "(no output)"  # 如果 Docker 没返回文本，也给出显式占位。
+        return "\n".join(part for part in parts if part) or "（无输出）"  # 如果 Docker 没返回文本，也给出显式占位。
 
     async def _force_remove_container(self, container_name: str) -> None:  # 超时后的兜底清理：按名称强制删除可能仍在运行的 Docker 容器。
         try:  # 清理失败不应该覆盖原始超时错误，因此这里吞掉所有异常。

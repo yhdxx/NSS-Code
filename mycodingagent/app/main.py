@@ -144,7 +144,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         try:
             await mcp_manager.initialize()
         except ValueError as exc:
-            print(f"MCP config error: {exc}", flush=True)
+            print(f"MCP 配置错误：{exc}", flush=True)
         capability_router = CapabilityRouter(skill_runtime=skill_runtime, mcp_manager=mcp_manager)
         register_mcp_discovery_tools(registry, manager=mcp_manager, router=capability_router)
         register_mcp_execution_tools(
@@ -153,7 +153,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             policy=MCPToolPermissionPolicy(),
             approval_hook=CLIApprovalHook(terminal_input),
         )
-        print(f"MCP servers configured: {mcp_manager.server_count()}", flush=True)
+        print(f"已配置 MCP Server：{mcp_manager.server_count()} 个", flush=True)
     else:
         capability_router = CapabilityRouter(skill_runtime=skill_runtime, mcp_manager=None)
     discovery_tool_names = {

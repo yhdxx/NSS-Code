@@ -14,20 +14,20 @@ MAX_LIMIT = 100
 
 
 class PaginationParams(BaseModel):
-    offset: int = Field(default=0, ge=0, description="Zero-based result offset")
-    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="Maximum results to return")
+    offset: int = Field(default=0, ge=0, description="结果偏移量，从 0 开始")
+    limit: int = Field(default=DEFAULT_LIMIT, ge=1, le=MAX_LIMIT, description="最多返回的结果数量")
 
 
 class ServerSearchParams(PaginationParams):
-    query: str = Field(description="Capability, service, or task to search MCP servers for")
+    query: str = Field(description="用于搜索 MCP Server 的能力、服务或任务描述")
 
 
 class ServerNameParams(PaginationParams):
-    server: str = Field(description="Exact MCP server name")
+    server: str = Field(description="准确的 MCP Server 名称")
 
 
 class ServerItemSearchParams(ServerNameParams):
-    query: str = Field(description="Tool, resource, or prompt name/description to search for")
+    query: str = Field(description="要搜索的工具、资源或 Prompt 名称或描述")
 
 
 class _ServerItemsTool(Tool):
@@ -77,10 +77,9 @@ class _ServerItemSearchTool(_ServerItemsTool):
 class ListServersTool(Tool):
     name = "list_servers"
     description = (
-        "List configured MCP servers with metadata and availability state. This does not connect "
-        "servers or prove they are currently connected. available=true means the server is usable "
-        "or has not failed yet; use list_tools/list_resources/list_prompts to probe discovery. "
-        "Supports offset/limit pagination."
+        "列出已配置的 MCP Server、元数据和可用状态。本操作不会连接 Server，也不能证明当前已连接。"
+        "available=true 表示 Server 可用或尚未发生失败；使用 list_tools、list_resources 或 list_prompts 探测 discovery。"
+        "支持 offset/limit 分页。"
     )
     params_model = PaginationParams
     category = "read"
@@ -98,8 +97,8 @@ class ListServersTool(Tool):
 class SearchServersTool(Tool):
     name = "search_servers"
     description = (
-        "Search configured MCP servers by name, description, tags, aliases, abbreviations, synonyms, "
-        "and multilingual keywords. Supports offset/limit pagination."
+        "按名称、描述、标签、别名、缩写、同义词和多语言关键词搜索已配置的 MCP Server。"
+        "支持 offset/limit 分页。"
     )
     params_model = ServerSearchParams
     category = "read"
@@ -127,42 +126,42 @@ class SearchServersTool(Tool):
 
 class ListToolsTool(_ServerItemsTool):
     name = "list_tools"
-    description = "List MCP tools exposed by one MCP server. This does not execute tools. Supports offset/limit pagination."
+    description = "列出一个 MCP Server 暴露的工具，不会执行工具。支持 offset/limit 分页。"
     item_key = "tools"
     list_method = "list_tools"
 
 
 class SearchToolsTool(_ServerItemSearchTool):
     name = "search_tools"
-    description = "Search MCP tool summaries exposed by one MCP server. This does not execute tools. Supports offset/limit pagination."
+    description = "搜索一个 MCP Server 暴露的工具摘要，不会执行工具。支持 offset/limit 分页。"
     item_key = "tools"
     list_method = "list_tools"
 
 
 class ListResourcesTool(_ServerItemsTool):
     name = "list_resources"
-    description = "List MCP resource summaries exposed by one MCP server. This does not read resource contents. Supports offset/limit pagination."
+    description = "列出一个 MCP Server 暴露的资源摘要，不会读取资源内容。支持 offset/limit 分页。"
     item_key = "resources"
     list_method = "list_resources"
 
 
 class SearchResourcesTool(_ServerItemSearchTool):
     name = "search_resources"
-    description = "Search MCP resource summaries exposed by one MCP server. This does not read resource contents. Supports offset/limit pagination."
+    description = "搜索一个 MCP Server 暴露的资源摘要，不会读取资源内容。支持 offset/limit 分页。"
     item_key = "resources"
     list_method = "list_resources"
 
 
 class ListPromptsTool(_ServerItemsTool):
     name = "list_prompts"
-    description = "List MCP prompt summaries exposed by one MCP server. This does not read prompt contents. Supports offset/limit pagination."
+    description = "列出一个 MCP Server 暴露的 Prompt 摘要，不会读取 Prompt 内容。支持 offset/limit 分页。"
     item_key = "prompts"
     list_method = "list_prompts"
 
 
 class SearchPromptsTool(_ServerItemSearchTool):
     name = "search_prompts"
-    description = "Search MCP prompt summaries exposed by one MCP server. This does not read prompt contents. Supports offset/limit pagination."
+    description = "搜索一个 MCP Server 暴露的 Prompt 摘要，不会读取 Prompt 内容。支持 offset/limit 分页。"
     item_key = "prompts"
     list_method = "list_prompts"
 

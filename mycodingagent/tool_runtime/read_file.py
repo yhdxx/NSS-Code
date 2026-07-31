@@ -14,14 +14,14 @@ if TYPE_CHECKING:  # 根据条件决定是否执行后续分支。
 
 
 class Params(BaseModel):  # 定义用于封装相关状态和行为的类。
-    file_path: str = Field(description="Absolute or relative path to the file to read")  # 保存配置值或中间计算结果。
-    offset: int = Field(default=0, description="Line offset to start reading from (0-based)")  # 保存配置值或中间计算结果。
-    limit: int = Field(default=2000, description="Maximum number of lines to read")  # 保存配置值或中间计算结果。
+    file_path: str = Field(description="要读取文件的绝对或相对路径")  # 保存配置值或中间计算结果。
+    offset: int = Field(default=0, description="开始读取的行偏移量，从 0 开始")  # 保存配置值或中间计算结果。
+    limit: int = Field(default=2000, description="最多读取的行数")  # 保存配置值或中间计算结果。
 
 
 class ReadFile(Tool):  # 定义用于封装相关状态和行为的类。
     name = "ReadFile"  # 保存配置值或中间计算结果。
-    description = "Read a file inside the sandbox and return its contents with line numbers."  # 保存配置值或中间计算结果。
+    description = "读取沙箱内的文件，并返回带行号的内容。"  # 保存配置值或中间计算结果。
     params_model = Params   #传入该工具的参数
     category = "read"       #表明该工具属于读操作
     is_concurrency_safe = True  #并发安全
@@ -46,9 +46,9 @@ class ReadFile(Tool):  # 定义用于封装相关状态和行为的类。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not path.exists():  # 根据条件决定是否执行后续分支。
-            return ToolResult(output=f"Error: file not found: {params.file_path}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：文件不存在：{params.file_path}", is_error=True)  # 返回当前函数的处理结果。
         if not path.is_file():  # 根据条件决定是否执行后续分支。
-            return ToolResult(output=f"Error: not a file: {params.file_path}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：路径不是文件：{params.file_path}", is_error=True)  # 返回当前函数的处理结果。
 
         try:  # 开始可能抛出异常的保护代码块。
             text = self._cache.get(str(path)) if self._cache else None  # 保存配置值或中间计算结果。
@@ -57,7 +57,7 @@ class ReadFile(Tool):  # 定义用于封装相关状态和行为的类。
                 if self._cache:  # 根据条件决定是否执行后续分支。
                     self._cache.put(str(path), text)  # 执行当前步骤的业务逻辑。
         except Exception as e:  # 捕获并处理指定异常。
-            return ToolResult(output=f"Error reading file: {e}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"读取文件失败：{e}", is_error=True)  # 返回当前函数的处理结果。
 
         if self._state_cache:  # 根据条件决定是否执行后续分支。
             try:  # 开始可能抛出异常的保护代码块。

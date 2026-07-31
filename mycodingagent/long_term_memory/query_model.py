@@ -86,7 +86,7 @@ class LongTermMemoryQueryModel:
                     available_items.extend(_items_from_project_fact_search_output(execution.output))
                 else:
                     execution = ToolExecution(
-                        "Error: query model may only call allowed long-term memory query tools.",
+                        "错误：查询模型只能调用允许的长期记忆查询工具。",
                         is_error=True,
                     )
                 messages.append(
@@ -259,8 +259,7 @@ def _read_prompt(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return (
-            "Select only directly relevant long-term memories for the current query. "
-            "Call SubmitLongTermMemoryQueryResult with the selected items."
+            "只选择与当前查询直接相关的长期记忆，并使用选中项调用 SubmitLongTermMemoryQueryResult。"
         )
 
 

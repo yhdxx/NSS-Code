@@ -153,11 +153,11 @@ def test_system_prompt_prioritizes_code_intelligence_for_impact_analysis():
         PromptFeatures(code_intelligence_enabled=True)
     )
 
-    assert "start with code_index" in prompt
-    assert "impact or batch" in prompt
-    assert "use lsp only" in prompt
-    assert "Use Grep after structural analysis" in prompt
-    assert "Do not use Bash to run grep, rg, find" in prompt
+    assert "先使用 code_index" in prompt
+    assert "impact 或 batch" in prompt
+    assert "使用 lsp" in prompt
+    assert "结构分析后，再使用 Grep" in prompt
+    assert "禁止使用 Bash 运行 grep、rg、find" in prompt
 
 
 def test_system_prompt_includes_only_enabled_capability_modules():
@@ -169,12 +169,25 @@ def test_system_prompt_includes_only_enabled_capability_modules():
 
     assert "## Skills" not in core
     assert "## MCP" not in core
-    assert "## Memory" not in core
+    assert "## 记忆" not in core
     assert "## Skills" in full
     assert "## MCP" in full
-    assert "## Memory" in full
+    assert "## 记忆" in full
     assert "Use project-skill for release work." in full
     assert len(core) < 6500
+
+
+def test_system_prompt_uses_chinese_for_agent_authored_instructions():
+    prompt = build_system_prompt(
+        PromptFeatures(skills_enabled=True, mcp_enabled=True, memory_enabled=True, code_intelligence_enabled=True)
+    )
+
+    assert "## 角色" in prompt
+    assert "## 工具选择" in prompt
+    assert "## 代码智能" in prompt
+    assert "## Role" not in prompt
+    assert "## Tool Selection" not in prompt
+    assert "Before producing the final answer" not in prompt
 
 
 # --- retry behaviour -------------------------------------------------------
@@ -304,14 +317,14 @@ def test_execute_local_tool_flags_unknown_tool():
     execution = asyncio.run(client.execute_local_tool(_registry(), "NoSuchTool", "{}"))
 
     assert execution.is_error is True
-    assert "unknown tool" in execution.output
+    assert "未知工具" in execution.output
 
 
 def test_execute_local_tool_flags_invalid_json():
     execution = asyncio.run(client.execute_local_tool(_registry(), "EchoTool", "{not json"))
 
     assert execution.is_error is True
-    assert "invalid JSON" in execution.output
+    assert "JSON 参数无效" in execution.output
 
 
 def test_successful_output_containing_error_word_is_not_a_failure():

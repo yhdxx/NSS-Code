@@ -48,7 +48,7 @@ class LongTermMemoryStorageModel:
                 call_id = call.tool_id or f"ltm_storage_call_{index}"
                 if call.tool_name != submit_tool.name:
                     execution = ToolExecution(
-                        f"Error: storage model may only call {submit_tool.name}.", is_error=True
+                        f"错误：存储模型只能调用 {submit_tool.name}。", is_error=True
                     )
                 else:
                     execution = await _execute_submit_tool(submit_tool, call.arguments)
@@ -75,8 +75,7 @@ def _read_prompt(path: Path) -> str:
         return path.read_text(encoding="utf-8")
     except OSError:
         return (
-            "You extract durable long-term memory from a completed session. "
-            "Call SubmitLongTermMemoryPatch with the complete structured patch."
+            "从已完成会话中提取持久长期记忆，并使用完整的结构化补丁调用 SubmitLongTermMemoryPatch。"
         )
 
 

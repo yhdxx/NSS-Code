@@ -33,8 +33,7 @@ class CapabilityResult:
     mcp_available_count: int = 0
     discovery_tools_available: bool = False
     note: str = (
-        "Capability recommendations are not restrictions. "
-        "Use list_servers/search_servers to discover omitted MCP servers when needed."
+        "能力推荐不是限制。需要时使用 list_servers 或 search_servers 发现未列出的 MCP Server。"
     )
 
     def to_runtime_payload(self) -> dict[str, Any]:
@@ -51,7 +50,7 @@ class CapabilityResult:
             "mcp_approval_required_for_non_read": True,
             "mcp_tool_intent_required": True,
             "recommendations_are_restrictions": False,
-            "skill_recommendation_usage": "Call invoke_skill with recommendation.skill_name when a recommended SKILL should be applied.",
+            "skill_recommendation_usage": "需要应用推荐的 SKILL 时，使用 recommendation.skill_name 调用 invoke_skill。",
             "recommendations": [item.to_payload() for item in self.recommendations],
             "note": self.note,
         }

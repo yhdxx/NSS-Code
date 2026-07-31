@@ -108,7 +108,7 @@ def test_mutation_gate_is_not_reset_by_read_only_success():
         "WriteFile", '{"file_path":"next.txt"}', is_mutation=True
     )
     assert blocked is not None
-    assert "Mutation gate" in blocked.output
+    assert "修改操作门禁" in blocked.output
 
 
 def test_code_query_ledger_blocks_identical_success_but_allows_changed_scope():

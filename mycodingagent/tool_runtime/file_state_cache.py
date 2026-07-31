@@ -66,7 +66,7 @@ class FileStateCache:  # 定义用于封装相关状态和行为的类。
         with self._lock:
             entry = self._cache.get(path)  # 保存配置值或中间计算结果。
         if entry is None:  # 根据条件决定是否执行后续分支。
-            return False, "Error: file has not been read yet. Read it first before editing."  # 返回当前函数的处理结果。
+            return False, "错误：尚未读取该文件，请先读取再编辑。"  # 返回当前函数的处理结果。
 
         _, cached_mtime_ns = entry  # 保存配置值或中间计算结果。
         try:  # 开始可能抛出异常的保护代码块。
@@ -77,7 +77,7 @@ class FileStateCache:  # 定义用于封装相关状态和行为的类。
             return True, ""  # 返回当前函数的处理结果。
 
         if current_mtime_ns != cached_mtime_ns:  # 根据条件决定是否执行后续分支。
-            return False, "Error: file has been modified since last read. Read it again before editing."  # 返回当前函数的处理结果。
+            return False, "错误：文件在上次读取后已被修改，请重新读取再编辑。"  # 返回当前函数的处理结果。
 
         return True, ""  # 返回当前函数的处理结果。
 

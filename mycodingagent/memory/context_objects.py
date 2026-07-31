@@ -96,7 +96,7 @@ def build_recoverable_context(
 
 def infer_content_type(content: str) -> ContextContentType:
     stripped = content.lstrip()
-    if stripped.startswith("Tool execution error:") or stripped.startswith("Error:"):
+    if stripped.startswith(("Tool execution error:", "Error:", "工具执行错误：", "错误：")):
         return ContextContentType.ERROR
     if stripped.startswith("{") or stripped.startswith("["):
         try:

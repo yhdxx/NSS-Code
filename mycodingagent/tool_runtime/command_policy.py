@@ -97,9 +97,9 @@ def analyze_command(command: str) -> tuple[ExecutionRisk, str]:
         parser = get_parser("bash")
         tree = parser.parse(command.encode("utf-8"))
     except Exception as exc:
-        return "unknown", f"shell parser unavailable: {exc}"
+        return "unknown", f"Shell 解析器不可用：{exc}"
     if tree.root_node.has_error:
-        return "unknown", "shell syntax could not be parsed safely"
+        return "unknown", "无法安全解析 Shell 语法"
 
     command_names: list[str] = []
     has_write_redirect = False
@@ -123,27 +123,27 @@ def analyze_command(command: str) -> tuple[ExecutionRisk, str]:
                     command_names.append(name.rsplit("/", 1)[-1])
         stack.extend(node.named_children)
     if has_dynamic_command or not command_names:
-        return "unknown", "command target is dynamic or could not be identified"
+        return "unknown", "命令目标是动态值或无法识别"
     if has_write_redirect:
-        return "write", "shell output redirects to a file"
+        return "write", "Shell 输出重定向到文件"
     if any(name in _NETWORK_COMMANDS for name in command_names):
         if all(name == "git" for name in command_names):
             lowered = " ".join(command.lower().split())
             if re.search(r"\bgit\s+(status|diff|log|show|branch\s+--show-current)\b", lowered):
                 return "read", ""
-        return "network", "command may access a network or remote system"
+        return "network", "命令可能访问网络或远程系统"
     if any(name in _WRITE_COMMANDS for name in command_names):
-        return "write", "command may modify workspace files"
+        return "write", "命令可能修改工作区文件"
     if all(name in _READ_COMMANDS for name in command_names):
         return "read", ""
-    return "process", "command starts a process whose side effects are not statically known"
+    return "process", "命令会启动无法静态判断副作用的进程"
 
 
 class CommandApprovalHook:
     """Default hook: allow everything. Keeps non-interactive callers unchanged."""
 
     async def approve(self, request: CommandApprovalRequest) -> CommandApprovalDecision:
-        return CommandApprovalDecision(allowed=True, reason="auto-approved")
+        return CommandApprovalDecision(allowed=True, reason="自动批准")
 
 
 @dataclass
@@ -154,19 +154,19 @@ class CLICommandApprovalHook(CommandApprovalHook):
     async def approve(self, request: CommandApprovalRequest) -> CommandApprovalDecision:
         command_text = request.command
         if len(command_text) > self.max_command_chars:
-            command_text = command_text[: self.max_command_chars] + "\n... <command truncated>"
-        print("[Dangerous Command Approval Required]", flush=True)
-        print(f"Risk: {request.reason}", flush=True)
+            command_text = command_text[: self.max_command_chars] + "\n... <命令已截断>"
+        print("[需要批准高风险命令]", flush=True)
+        print(f"风险：{request.reason}", flush=True)
         if request.intent:
-            print(f"Intent: {request.intent}", flush=True)
-        print("Command:", flush=True)
+            print(f"目的：{request.intent}", flush=True)
+        print("命令：", flush=True)
         print(command_text, flush=True)
         try:
             answer = await self.coordinator.read_choice(
-                "Allow this command? [y/N]: ", allowed={"y", "yes"}
+                "允许执行该命令吗？[y/N]：", allowed={"y", "yes"}
             )
         except PromptCancelled:
-            return CommandApprovalDecision(allowed=False, reason="user_cancelled")
+            return CommandApprovalDecision(allowed=False, reason="用户取消")
         if answer in {"y", "yes"}:
-            return CommandApprovalDecision(allowed=True, reason="user_allowed")
-        return CommandApprovalDecision(allowed=False, reason="user_denied")
+            return CommandApprovalDecision(allowed=True, reason="用户批准")
+        return CommandApprovalDecision(allowed=False, reason="用户拒绝")

@@ -11,23 +11,21 @@ from mycodingagent.tool_runtime.base import Tool, ToolResult
 class SearchSkillParams(BaseModel):
     query: str = Field(
         description=(
-            "Chinese capability, task, or description to search for. If the user request is English or mixed, "
-            "translate/summarize it into Chinese before searching. Repeated searches should broaden the query."
+            "用于检索的中文能力、任务或描述。用户请求为英文或中英混合时，先翻译或概括为中文。"
+            "重复检索时应逐步放宽 query。"
         )
     )
-    max_results: int = Field(default=5, description="Maximum number of matching SKILL workflows to return")
-    tool_names: list[str] = Field(default_factory=list, description="Optional exact or partial tool names to prefer")
+    max_results: int = Field(default=5, description="最多返回的匹配 SKILL 工作流数量")
+    tool_names: list[str] = Field(default_factory=list, description="可选的优先工具准确名称或部分名称")
 
 
 class SearchSkillTool(Tool):
     name = "search_tool"
     description = (
-        "Search developer-provided SKILL tools by tool name or description using hybrid retrieval "
-        "(keyword + semantic over SKILL descriptions). Use this instead of Bash/Glob/ReadFile when looking "
-        "for a skill by capability. Returns matching skill names and metadata for invoke_skill. "
-        "Use this when no highly matching Business Skill is already available in the current prompt, but the "
-        "task may have a developer-provided expert workflow. Query must be Chinese; if retrying, broaden from "
-        "specific task to synonyms/capability category to upper-level domain."
+        "通过工具名称和描述进行关键词与语义混合检索，查找开发者提供的 SKILL。按能力查找 Skill 时，"
+        "应使用本工具，不要使用 Bash、Glob 或 ReadFile。结果包含可供 invoke_skill 使用的 Skill 名称和元数据。"
+        "当前 Prompt 中没有高匹配 Business Skill，但任务可能存在专家工作流时使用。query 必须为中文；"
+        "重试时按具体任务、同义词或能力类别、上位领域逐步放宽。"
     )
     params_model = SearchSkillParams
     category = "read"
@@ -53,12 +51,10 @@ class GetAllToolParams(BaseModel):
 class GetAllTool(Tool):
     name = "Get_all_tool"
     description = (
-        "List all currently registered SKILL tools with names and short descriptions. Use this first when "
-        "the user asks what skills are available, asks to view all skills, or asks about the agent's skill "
-        "capabilities. For task-solving, use this only when the global Skill capability summary clearly says "
-        "the needed capability exists and up to three broadened Chinese search_tool queries failed. If the "
-        "summary does not clearly cover the needed capability, do not call this tool. Do not inspect the "
-        "skills directory or SQLite database with Bash/Glob for this."
+        "列出当前注册的全部 SKILL 工具及其名称和简短描述。用户询问有哪些 Skill、要求查看全部 Skill，"
+        "或询问 Agent 的 Skill 能力时优先使用。解决任务时，仅当全局 Skill 能力摘要明确包含所需能力，"
+        "并且最多三次逐步放宽的中文 search_tool 查询均失败时使用。摘要未明确覆盖所需能力时不要调用。"
+        "禁止使用 Bash 或 Glob 检查 skills 目录或 SQLite 数据库来替代本工具。"
     )
     params_model = GetAllToolParams
     category = "read"
@@ -74,15 +70,14 @@ class GetAllTool(Tool):
 
 
 class GetToolByNameParams(BaseModel):
-    tool_name: str = Field(description="Exact SKILL tool name returned by Get_all_tool")
+    tool_name: str = Field(description="Get_all_tool 返回的准确 SKILL 工具名称")
 
 
 class GetToolByNameTool(Tool):
     name = "Get_tool_by_name"
     description = (
-        "Return details for a SKILL workflow by exact name from Get_all_tool or search_tool. Use this after "
-        "Get_all_tool/search_tool identifies a Business Skill that matches the task, then call invoke_skill "
-        "with that skill_name when the workflow should be applied."
+        "根据 Get_all_tool 或 search_tool 返回的准确名称获取 SKILL 工作流详情。识别出与任务匹配的 "
+        "Business Skill 后使用；需要应用该工作流时，再以对应 skill_name 调用 invoke_skill。"
     )
     params_model = GetToolByNameParams
     category = "read"
@@ -98,17 +93,16 @@ class GetToolByNameTool(Tool):
 
 
 class SearchSkillReferencesParams(BaseModel):
-    query: str = Field(default="", description="Reference content, filename, or topic to search for. Optional when skill_name is provided to list that skill's references.")
-    skill_name: str = Field(default="", description="Optional exact SKILL tool name, e.g. skill_infinitetalk. Provide only skill_name and no query to list references for that skill.")
-    max_results: int = Field(default=5, description="Maximum number of reference files to return")
+    query: str = Field(default="", description="要搜索的引用内容、文件名或主题；按 skill_name 列出引用时可留空")
+    skill_name: str = Field(default="", description="可选的准确 SKILL 工具名称，例如 skill_infinitetalk；只提供 skill_name 可列出该 Skill 的引用")
+    max_results: int = Field(default=5, description="最多返回的引用文件数量")
 
 
 class SearchSkillReferencesTool(Tool):
     name = "search_skill_references"
     description = (
-        "Search indexed files under a SKILL's references/ directory. Use this when a skill mentions "
-        "a reference file but the exact path is unknown, when additional skill reference material is needed, "
-        "or with only skill_name to list references for that skill."
+        "搜索 SKILL 的 references/ 目录中已建立索引的文件。Skill 提到引用文件但准确路径未知、"
+        "需要补充引用材料，或需要仅通过 skill_name 列出该 Skill 的引用时使用。"
     )
     params_model = SearchSkillReferencesParams
     category = "read"
@@ -128,15 +122,15 @@ class SearchSkillReferencesTool(Tool):
 
 
 class GetSkillReferenceParams(BaseModel):
-    skill_name: str = Field(description="Exact SKILL tool name, e.g. skill_infinitetalk")
-    reference_path: str = Field(description="Reference path under the skill directory, e.g. references/model_config.md. Short filenames such as model_config.md are accepted and normalized under references/.")
+    skill_name: str = Field(description="准确的 SKILL 工具名称，例如 skill_infinitetalk")
+    reference_path: str = Field(description="Skill 目录下的引用路径，例如 references/model_config.md；也接受 model_config.md 等短文件名并归一化到 references/ 下")
 
 
 class GetSkillReferenceTool(Tool):
     name = "Get_skill_reference"
     description = (
-        "Return the full content of a file under a SKILL's references/ directory. Use only with a "
-        "reference_path returned by a skill invocation or search_skill_references."
+        "返回 SKILL 的 references/ 目录下某个文件的完整内容。仅使用 Skill 调用或 "
+        "search_skill_references 返回的 reference_path。"
     )
     params_model = GetSkillReferenceParams
     category = "read"
@@ -155,24 +149,24 @@ class GetSkillReferenceTool(Tool):
 
 
 class SkillInvocationParams(BaseModel):
-    instruction: str = Field(description="How to apply this Business Skill's expert workflow for the current task")
-    context: str = Field(default="", description="Optional task-specific context for applying the skill")
+    instruction: str = Field(description="如何将该 Business Skill 的专家工作流应用到当前任务")
+    context: str = Field(default="", description="应用该 Skill 时可选的任务特定上下文")
 
 
 class InvokeSkillParams(SkillInvocationParams):
-    skill_name: str = Field(description="Exact SKILL tool name to invoke, e.g. skill_frontend_design")
+    skill_name: str = Field(description="要调用的准确 SKILL 工具名称，例如 skill_frontend_design")
 
 
 def execute_skill_workflow(runtime: SkillService, tool_name: str, instruction: str, context: str = "") -> ToolResult:
     record = runtime.get_record(tool_name)
     if record is None:
-        return ToolResult(output=f"Error: skill not found: {tool_name}", is_error=True)
+        return ToolResult(output=f"错误：未找到 Skill：{tool_name}", is_error=True)
     runtime.record_skill_invocation(tool_name)
     output = (
-        f"SKILL: {record.name}\n"
-        f"DESCRIPTION:\n{record.description}\n\n"
-        f"INSTRUCTIONS:\n{record.content}\n\n"
-        f"USER INSTRUCTION:\n{instruction}"
+        f"SKILL：{record.name}\n"
+        f"描述：\n{record.description}\n\n"
+        f"指令：\n{record.content}\n\n"
+        f"用户指令：\n{instruction}"
     )
     references = runtime.list_references_for_skill(tool_name)
     if references:
@@ -186,23 +180,22 @@ def execute_skill_workflow(runtime: SkillService, tool_name: str, instruction: s
             ensure_ascii=False,
         )
         output += (
-            "\n\nAVAILABLE REFERENCES:\n"
+            "\n\n可用引用：\n"
             f"{reference_lines}\n\n"
-            "Use Get_skill_reference with this skill tool name and one of the reference_path values "
-            "when the reference content is needed.\n"
-            f"Example Get_skill_reference arguments: {example}"
+            "需要引用内容时，使用当前 Skill 工具名称和其中一个 reference_path 调用 Get_skill_reference。\n"
+            f"Get_skill_reference 参数示例：{example}"
         )
     if context:
-        output += f"\n\nCONTEXT:\n{context}"
+        output += f"\n\n上下文：\n{context}"
     return ToolResult(output=output)
 
 
 class InvokeSkillTool(Tool):
     name = "invoke_skill"
     description = (
-        "Invoke one developer-provided Business Skill workflow by exact skill_name. Use this when Runtime "
-        "Context recommendations, search_tool, Get_all_tool, or Get_tool_by_name identify a matching SKILL. "
-        "This fixed tool replaces per-skill dynamic function schemas."
+        "根据准确的 skill_name 调用一个开发者提供的 Business Skill 工作流。当 Runtime Context 推荐、"
+        "search_tool、Get_all_tool 或 Get_tool_by_name 识别出匹配的 SKILL 时使用。"
+        "本固定工具用于替代每个 Skill 各自的动态函数 schema。"
     )
     params_model = InvokeSkillParams
     category = "read"
@@ -233,11 +226,11 @@ class SkillTool(Tool):
         record = self._runtime.get_record(tool_name)
         if record:
             self.description = (
-                f"Business Skill expert workflow. If the user's task matches this skill, call it before "
-                f"using Core Tools or relying on model-only knowledge. Skill description: {record.description}"
+                f"Business Skill 专家工作流。用户任务匹配该 Skill 时，应在使用 Core Tool 或仅依赖模型知识前调用。"
+                f"Skill 描述：{record.description}"
             )
         else:
-            self.description = f"Developer-provided Business Skill expert workflow: {tool_name}"
+            self.description = f"开发者提供的 Business Skill 专家工作流：{tool_name}"
 
     async def execute(self, params: SkillInvocationParams) -> ToolResult:
         return execute_skill_workflow(self._runtime, self._tool_name, params.instruction, params.context)

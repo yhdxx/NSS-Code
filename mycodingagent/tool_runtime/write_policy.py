@@ -26,7 +26,7 @@ class WriteApprovalDecision:
 
 class WriteApprovalHook:
     async def approve(self, request: WriteApprovalRequest) -> WriteApprovalDecision:
-        return WriteApprovalDecision(allowed=True, reason="auto-approved")
+        return WriteApprovalDecision(allowed=True, reason="自动批准")
 
 
 @dataclass
@@ -37,30 +37,30 @@ class CLIWriteApprovalHook(WriteApprovalHook):
 
     async def approve(self, request: WriteApprovalRequest) -> WriteApprovalDecision:
         if request.path in self._always_allowed:
-            return WriteApprovalDecision(allowed=True, remember_file=True, reason="session-file-approved")
-        print("[File Write Approval Required]", flush=True)
-        print(f"Tool: {request.tool_name}", flush=True)
-        print(f"Path: {request.path}", flush=True)
+            return WriteApprovalDecision(allowed=True, remember_file=True, reason="本会话已批准该文件")
+        print("[需要批准文件写入]", flush=True)
+        print(f"工具：{request.tool_name}", flush=True)
+        print(f"路径：{request.path}", flush=True)
         if request.intent:
-            print(f"Intent: {request.intent}", flush=True)
+            print(f"目的：{request.intent}", flush=True)
         preview = request.preview
         if len(preview) > self.max_preview_chars:
-            preview = preview[: self.max_preview_chars] + "\n... <preview truncated>"
+            preview = preview[: self.max_preview_chars] + "\n... <预览已截断>"
         if preview:
-            print("Preview:", flush=True)
+            print("预览：", flush=True)
             print(preview, flush=True)
         try:
             answer = await self.coordinator.read_choice(
-                "Allow this write? [y/N/a]: ", allowed={"y", "yes", "a", "always"}
+                "允许本次写入吗？[y/N/a]：", allowed={"y", "yes", "a", "always"}
             )
         except PromptCancelled:
-            return WriteApprovalDecision(allowed=False, reason="user_cancelled")
+            return WriteApprovalDecision(allowed=False, reason="用户取消")
         if answer in {"a", "always"}:
             self._always_allowed.add(request.path)
-            return WriteApprovalDecision(allowed=True, remember_file=True, reason="session-file-approved")
+            return WriteApprovalDecision(allowed=True, remember_file=True, reason="本会话已批准该文件")
         if answer in {"y", "yes"}:
-            return WriteApprovalDecision(allowed=True, reason="user_allowed")
-        return WriteApprovalDecision(allowed=False, reason="user_denied")
+            return WriteApprovalDecision(allowed=True, reason="用户批准")
+        return WriteApprovalDecision(allowed=False, reason="用户拒绝")
 
 
 def write_preview(path: str, before: str, after: str) -> str:

@@ -42,7 +42,7 @@ SEARCH_HINT = (
 )
 
 CAPABILITY_SELECTION_POLICY = (
-    "Capability Selection Policy（能力选择策略）：\n"
+    "能力选择策略：\n"
     "你每轮收到用户请求后，必须先区分三类能力：Model 自身能力、Business Skill、Core Tool。\n"
     "Business Skill 是开发者定义的专家工作流，用于提供领域知识、标准流程、约束和最佳实践；"
     "Core Tool 只负责读写文件、搜索、执行命令等基础操作；Model 自身能力只用于常识问答、推理、总结、翻译和简单文本生成。\n"
@@ -412,7 +412,7 @@ class SkillRuntime:
         return {
             "hint": SEARCH_HINT,
             "count": len(skills),
-            "next_step": "Call invoke_skill with the exact skill_name when one of these workflows should be applied.",
+            "next_step": "需要应用其中某个工作流时，使用准确的 skill_name 调用 invoke_skill。",
             "skills": [
                 {
                     **skill,
@@ -440,7 +440,7 @@ class SkillRuntime:
                 }
                 for record in records
             ],
-            "next_step": "Call invoke_skill with an exact skill_name to apply a workflow, or Get_tool_by_name for details.",
+            "next_step": "使用准确的 skill_name 调用 invoke_skill 应用工作流，或调用 Get_tool_by_name 查看详情。",
         }
 
     async def get_tool_schema_by_name(self, tool_name: str) -> dict[str, Any]:
@@ -457,8 +457,8 @@ class SkillRuntime:
                 record = matches[0]
         if record is None:
             return {
-                "error": f"SKILL tool not found: {tool_name}",
-                "hint": "Call Get_all_tool to inspect exact available tool names.",
+                "error": f"未找到 SKILL 工具：{tool_name}",
+                "hint": "调用 Get_all_tool 查看准确的可用工具名称。",
             }
         self._pin_skill(record.tool_name, scope="turn")
         self.session_skill_cache.touch(
@@ -470,7 +470,7 @@ class SkillRuntime:
             **_skill_payload_from_record(record),
             "source": self._source_kind(record.source_path),
             "source_path": str(record.source_path),
-            "next_step": "Call invoke_skill with this skill_name when the workflow should be applied.",
+            "next_step": "需要应用该工作流时，使用此 skill_name 调用 invoke_skill。",
         }
 
     async def search_skill_references(self, *, query: str = "", skill_name: str = "", max_results: int = 5) -> dict[str, Any]:
@@ -479,8 +479,8 @@ class SkillRuntime:
         resolved_skill = self._resolve_skill_tool_name(skill_name) if skill_name else ""
         if skill_name and not resolved_skill:
             return {
-                "error": f"SKILL tool not found: {skill_name}",
-                "hint": "Use Get_all_tool to inspect exact available SKILL tool names.",
+                "error": f"未找到 SKILL 工具：{skill_name}",
+                "hint": "使用 Get_all_tool 查看准确的可用 SKILL 工具名称。",
                 "count": 0,
                 "references": [],
             }
@@ -506,7 +506,7 @@ class SkillRuntime:
                 return {
                     "count": 0,
                     "references": [],
-                    "hint": "query is required unless skill_name is provided. To list references for a skill, call with skill_name only.",
+                    "hint": "除非提供 skill_name，否则必须提供 query。要列出某个 Skill 的引用，只需提供 skill_name。",
                 }
         return {
             "count": len(results),
@@ -523,7 +523,7 @@ class SkillRuntime:
                 }
                 for reference, score in results
             ],
-            "next_step": "Call Get_skill_reference with skill_name and an exact reference_path from this result to read the full reference.",
+            "next_step": "使用 skill_name 和结果中的准确 reference_path 调用 Get_skill_reference，以读取完整引用。",
         }
 
     async def get_skill_reference(self, *, skill_name: str, reference_path: str) -> dict[str, Any]:
@@ -531,21 +531,21 @@ class SkillRuntime:
         skill_tool_name = self._resolve_skill_tool_name(skill_name)
         if not skill_tool_name:
             return {
-                "error": f"SKILL tool not found: {skill_name}",
-                "hint": "Use Get_all_tool to inspect exact available SKILL tool names.",
+                "error": f"未找到 SKILL 工具：{skill_name}",
+                "hint": "使用 Get_all_tool 查看准确的可用 SKILL 工具名称。",
             }
         normalized_path = _normalize_reference_path(reference_path)
         if normalized_path is None:
             return {
-                "error": f"Invalid reference path: {reference_path}",
-                "hint": "reference_path must be under references/ and must not contain '..'.",
+                "error": f"引用路径无效：{reference_path}",
+                "hint": "reference_path 必须位于 references/ 下，并且不能包含 '..'。",
             }
         ref_id = f"{skill_tool_name}:{normalized_path}"
         reference = self.references.get(ref_id)
         if reference is None:
             return {
-                "error": f"SKILL reference not found: {skill_tool_name} {normalized_path}",
-                "hint": "Use search_skill_references or call the SKILL tool to inspect available reference_path values.",
+                "error": f"未找到 SKILL 引用：{skill_tool_name} {normalized_path}",
+                "hint": "使用 search_skill_references 或调用该 SKILL 工具查看可用的 reference_path。",
             }
         return {
             "ref_id": reference.ref_id,

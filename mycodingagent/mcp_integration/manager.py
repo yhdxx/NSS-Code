@@ -93,32 +93,32 @@ class MCPClientManager:
         summary = await self._ensure_discovered(server)
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
-            return {"error": f"MCP server not found: {server}", "tools": []}
+            return {"error": f"未找到 MCP Server：{server}", "tools": []}
         if not summary.available and summary.error:
-            return {"error": f"MCP server unavailable: {summary.error}", "server": summary.to_payload(), "tools": []}
+            return {"error": f"MCP Server 不可用：{summary.error}", "server": summary.to_payload(), "tools": []}
         return {"server": summary.to_payload(), "tools": [item.to_payload() for item in entry.tools]}
 
     async def list_resources(self, server: str) -> dict[str, Any]:
         summary = await self._ensure_discovered(server)
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
-            return {"error": f"MCP server not found: {server}", "resources": []}
+            return {"error": f"未找到 MCP Server：{server}", "resources": []}
         if not summary.available and summary.error:
-            return {"error": f"MCP server unavailable: {summary.error}", "server": summary.to_payload(), "resources": []}
+            return {"error": f"MCP Server 不可用：{summary.error}", "server": summary.to_payload(), "resources": []}
         return {"server": summary.to_payload(), "resources": [item.to_payload() for item in entry.resources]}
 
     async def list_prompts(self, server: str) -> dict[str, Any]:
         summary = await self._ensure_discovered(server)
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
-            return {"error": f"MCP server not found: {server}", "prompts": []}
+            return {"error": f"未找到 MCP Server：{server}", "prompts": []}
         if not summary.available and summary.error:
-            return {"error": f"MCP server unavailable: {summary.error}", "server": summary.to_payload(), "prompts": []}
+            return {"error": f"MCP Server 不可用：{summary.error}", "server": summary.to_payload(), "prompts": []}
         return {"server": summary.to_payload(), "prompts": [item.to_payload() for item in entry.prompts]}
 
     async def call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
         if server not in self.server_configs:
-            return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP server not found: {server}", content_type="error")
+            return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"未找到 MCP Server：{server}", content_type="error")
         unavailable = self._unavailable_result(server, operation="tool", name=tool)
         if unavailable is not None:
             return unavailable
@@ -131,12 +131,12 @@ class MCPClientManager:
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
-            return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP tool call failed: {exc}", content_type="error")
+            return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP 工具调用失败：{exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="tool", name=tool, result=result)
 
     async def read_resource(self, server: str, uri: str) -> MCPExecutionResult:
         if server not in self.server_configs:
-            return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP server not found: {server}", content_type="error")
+            return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"未找到 MCP Server：{server}", content_type="error")
         unavailable = self._unavailable_result(server, operation="resource", name=uri)
         if unavailable is not None:
             return unavailable
@@ -148,12 +148,12 @@ class MCPClientManager:
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
-            return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP resource read failed: {exc}", content_type="error")
+            return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP 资源读取失败：{exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="resource", name=uri, result=result)
 
     async def get_prompt(self, server: str, prompt: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
         if server not in self.server_configs:
-            return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"MCP server not found: {server}", content_type="error")
+            return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"未找到 MCP Server：{server}", content_type="error")
         unavailable = self._unavailable_result(server, operation="prompt", name=prompt)
         if unavailable is not None:
             return unavailable
@@ -166,7 +166,7 @@ class MCPClientManager:
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
-            return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"MCP prompt get failed: {exc}", content_type="error")
+            return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"获取 MCP Prompt 失败：{exc}", content_type="error")
         return normalize_mcp_result(server=server, operation="prompt", name=prompt, result=result)
 
     def unavailable_servers(self) -> list[str]:
@@ -216,14 +216,14 @@ class MCPClientManager:
                 )
             )
             if not decision.allowed:
-                raise PermissionError(f"MCP server launch denied: {server}")
+                raise PermissionError(f"MCP Server 启动被拒绝：{server}")
         try:
             from mcp import ClientSession, StdioServerParameters
             from mcp.client.stdio import stdio_client
             from mcp.client.streamable_http import streamable_http_client
             import httpx
         except Exception as exc:
-            raise RuntimeError("Python package 'mcp' is required for real MCP discovery") from exc
+            raise RuntimeError("执行真实 MCP discovery 需要安装 Python 包 'mcp'") from exc
 
         stack = AsyncExitStack()
         try:
@@ -309,13 +309,13 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if entry is None or entry.available:
             return None
-        error = entry.error or "server is marked unavailable"
+        error = entry.error or "Server 已标记为不可用"
         return MCPExecutionResult(
             server=server,
             operation=operation,
             name=name,
             is_error=True,
-            content_text=f"MCP server unavailable: {error}",
+            content_text=f"MCP Server 不可用：{error}",
             content_type="error",
         )
 

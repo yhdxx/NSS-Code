@@ -87,10 +87,10 @@ class MCPConfigLoader:
         try:
             raw = json.loads(path.read_text(encoding="utf-8"))
         except (OSError, json.JSONDecodeError) as exc:
-            raise ValueError(f"Invalid MCP config {path}: {exc}") from exc
+            raise ValueError(f"MCP 配置无效 {path}：{exc}") from exc
         servers = raw.get("servers", raw)
         if not isinstance(servers, dict):
-            raise ValueError(f"Invalid MCP config {path}: 'servers' must be an object")
+            raise ValueError(f"MCP 配置无效 {path}：'servers' 必须是对象")
         result: dict[str, MCPServerConfig] = {}
         for name, item in servers.items():
             if not isinstance(item, dict):
@@ -107,14 +107,14 @@ def _server_config_from_dict(name: str, data: dict[str, Any]) -> MCPServerConfig
     url = str(data.get("url", "") or "").strip()
     disabled = bool(data.get("disabled", False))
     if transport not in {"stdio", "streamable_http"}:
-        raise ValueError(f"MCP server {name!r} has unsupported transport: {transport}")
+        raise ValueError(f"MCP Server {name!r} 使用了不支持的传输方式：{transport}")
     if transport == "stdio" and not command and not disabled:
-        raise ValueError(f"MCP server {name!r} is missing required field: command")
+        raise ValueError(f"MCP Server {name!r} 缺少必填字段：command")
     if transport == "streamable_http" and not url and not disabled:
-        raise ValueError(f"MCP server {name!r} is missing required field: url")
+        raise ValueError(f"MCP Server {name!r} 缺少必填字段：url")
     workspace_access = str(data.get("workspace_access", "none") or "none").strip().lower()
     if workspace_access not in {"none", "read", "write"}:
-        raise ValueError(f"MCP server {name!r} has invalid workspace_access: {workspace_access}")
+        raise ValueError(f"MCP Server {name!r} 的 workspace_access 无效：{workspace_access}")
     return MCPServerConfig(
         name=name,
         command=command,

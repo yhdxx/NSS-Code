@@ -30,7 +30,7 @@ class CodeQueryLedger:
         key = self._key(tool_name, raw_args)
         if key is not None and key in self._successful:
             return ToolExecution(
-                "Duplicate code-intelligence query skipped. Reuse the earlier evidence or change the query scope.",
+                "已跳过重复的代码智能查询。请复用已有证据或调整查询范围。",
                 is_error=True,
             )
         return None
@@ -56,9 +56,9 @@ def parse_tool_arguments_object(raw_args: str) -> tuple[dict[str, Any], str]:
     try:
         parsed = json.loads(raw_args) if raw_args else {}
     except json.JSONDecodeError as exc:
-        return {}, f"Tool execution error: invalid JSON arguments: {exc}"
+        return {}, f"工具执行错误：JSON 参数无效：{exc}"
     if not isinstance(parsed, dict):
-        return {}, "Tool execution error: tool arguments must be a JSON object"
+        return {}, "工具执行错误：工具参数必须是 JSON 对象"
     return parsed, ""
 
 
@@ -100,7 +100,7 @@ async def execute_tool(
         elif cancel_event.is_set():
             task.cancel()
             await asyncio.gather(task, return_exceptions=True)
-            execution = ToolExecution("Tool skipped because the user interrupted this turn.", is_error=True)
+            execution = ToolExecution("用户中断了本轮操作，工具未执行。", is_error=True)
             _finish_record(execution_recorder, execution_id, "interrupted", execution.output)
             return execution
         else:
@@ -109,14 +109,14 @@ async def execute_tool(
             if cancel_task in done:
                 task.cancel()
                 await asyncio.gather(task, return_exceptions=True)
-                execution = ToolExecution("Tool interrupted by the user.", is_error=True)
+                execution = ToolExecution("工具执行已被用户中断。", is_error=True)
                 _finish_record(execution_recorder, execution_id, "interrupted", execution.output)
                 return execution
             cancel_task.cancel()
             await asyncio.gather(cancel_task, return_exceptions=True)
             result = task.result()
     except Exception as exc:
-        execution = ToolExecution(f"Tool execution error: {exc}", is_error=True)
+        execution = ToolExecution(f"工具执行错误：{exc}", is_error=True)
         _finish_record(execution_recorder, execution_id, "failed", execution.output)
         return execution
     execution = ToolExecution(str(result.output), is_error=bool(result.is_error))
@@ -161,8 +161,8 @@ def _sanitize_args(value: Any, key: str = "") -> Any:
 
 class RepeatedFailureTracker:
     NOTICE = (
-        "\nRepeated tool failure with the same tool and arguments in this user turn. "
-        "Do not retry unchanged; correct the arguments or use the information already available."
+        "\n本用户轮次中，相同工具和参数已重复失败。"
+        "不要原样重试；请修正参数或使用已有信息。"
     )
 
     def __init__(self) -> None:
@@ -173,12 +173,12 @@ class RepeatedFailureTracker:
         key = self._key(tool_name, raw_args)
         if self._failures.get(key, 0) >= 2:
             return ToolExecution(
-                "Tool execution blocked after two identical failures. Change the arguments or use diagnostics.",
+                "相同调用已连续失败两次，工具执行被阻止。请修改参数或先进行诊断。",
                 is_error=True,
             )
         if is_mutation and self._consecutive_mutation_failures >= 3:
             return ToolExecution(
-                "Mutation gate is closed after three consecutive write failures. Use read-only diagnostics or ask the user before continuing.",
+                "连续三次写入失败后，修改操作门禁已关闭。请先执行只读诊断，或询问用户后再继续。",
                 is_error=True,
             )
         return None

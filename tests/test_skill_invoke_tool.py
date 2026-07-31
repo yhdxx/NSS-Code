@@ -44,10 +44,9 @@ def test_invoke_skill_executes_named_skill_workflow():
 
         assert result.is_error is False
         assert runtime.invocations == ["skill_review"]
-        assert "SKILL: Review" in result.output
-        assert "INSTRUCTIONS:" in result.output
+        assert "SKILL：Review" in result.output
+        assert "指令：" in result.output
         assert "Review this patch" in result.output
         assert "references/review.md" in result.output
 
     asyncio.run(scenario())
-

@@ -14,30 +14,30 @@ MAX_INTENT_CHARS = 160
 
 
 class CallToolParams(BaseModel):
-    server: str = Field(description="Exact MCP server name")
-    tool: str = Field(description="Exact MCP tool name exposed by the server")
-    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP tool arguments")
-    intent: str = Field(description="Short intent for this MCP tool call; required for virtualization metadata")
+    server: str = Field(description="准确的 MCP Server 名称")
+    tool: str = Field(description="Server 暴露的准确 MCP 工具名称")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP 工具参数")
+    intent: str = Field(description="本次 MCP 工具调用的简短目的，用于上下文虚拟化元数据")
 
 
 class ReadResourceParams(BaseModel):
-    server: str = Field(description="Exact MCP server name")
-    uri: str = Field(description="Exact MCP resource URI")
-    intent: str = Field(description="Short intent for this MCP resource read; required for virtualization metadata")
+    server: str = Field(description="准确的 MCP Server 名称")
+    uri: str = Field(description="准确的 MCP 资源 URI")
+    intent: str = Field(description="本次 MCP 资源读取的简短目的，用于上下文虚拟化元数据")
 
 
 class GetPromptParams(BaseModel):
-    server: str = Field(description="Exact MCP server name")
-    prompt: str = Field(description="Exact MCP prompt name")
-    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP prompt arguments")
-    intent: str = Field(description="Short intent for this MCP prompt retrieval; required for virtualization metadata")
+    server: str = Field(description="准确的 MCP Server 名称")
+    prompt: str = Field(description="准确的 MCP Prompt 名称")
+    arguments: dict[str, Any] = Field(default_factory=dict, description="MCP Prompt 参数")
+    intent: str = Field(description="本次 MCP Prompt 获取的简短目的，用于上下文虚拟化元数据")
 
 
 class CallMCPToolTool(Tool):
     name = "call_tool"
     description = (
-        "Call one tool from a configured MCP server. Provide a short intent. "
-        "Read-only tools run directly; write/dangerous/unknown tools require user approval."
+        "调用已配置 MCP Server 中的一个工具，并提供简短 intent。只读工具可以直接执行；"
+        "写入、危险或未知工具需要用户批准。"
     )
     params_model = CallToolParams
     category = "command"
@@ -57,7 +57,7 @@ class CallMCPToolTool(Tool):
     async def execute(self, params: CallToolParams) -> ToolResult:
         intent = _compact_intent(params.intent)
         if not intent:
-            return ToolResult(output="MCP tool calls require a short intent.", is_error=True)
+            return ToolResult(output="MCP 工具调用需要提供简短 intent。", is_error=True)
         config = self._manager.server_configs.get(params.server)
         try:
             live_metadata = await self._manager.live_tool_metadata(params.server, params.tool)
@@ -94,7 +94,7 @@ class CallMCPToolTool(Tool):
 
 class ReadMCPResourceTool(Tool):
     name = "read_resource"
-    description = "Read one MCP resource by URI from a configured server. Provide a short intent."
+    description = "根据 URI 从已配置的 Server 读取一个 MCP 资源，并提供简短 intent。"
     params_model = ReadResourceParams
     category = "read"
     is_concurrency_safe = False
@@ -106,7 +106,7 @@ class ReadMCPResourceTool(Tool):
     async def execute(self, params: ReadResourceParams) -> ToolResult:
         intent = _compact_intent(params.intent)
         if not intent:
-            return ToolResult(output="MCP resource reads require a short intent.", is_error=True)
+            return ToolResult(output="MCP 资源读取需要提供简短 intent。", is_error=True)
         result = await self._manager.read_resource(params.server, params.uri)
         payload = result.to_payload()
         payload["intent"] = intent
@@ -119,7 +119,7 @@ class ReadMCPResourceTool(Tool):
 
 class GetMCPPromptTool(Tool):
     name = "get_prompt"
-    description = "Get one MCP prompt by name from a configured server. Provide a short intent."
+    description = "根据名称从已配置的 Server 获取一个 MCP Prompt，并提供简短 intent。"
     params_model = GetPromptParams
     category = "read"
     is_concurrency_safe = False
@@ -131,7 +131,7 @@ class GetMCPPromptTool(Tool):
     async def execute(self, params: GetPromptParams) -> ToolResult:
         intent = _compact_intent(params.intent)
         if not intent:
-            return ToolResult(output="MCP prompt retrieval requires a short intent.", is_error=True)
+            return ToolResult(output="获取 MCP Prompt 需要提供简短 intent。", is_error=True)
         result = await self._manager.get_prompt(params.server, params.prompt, params.arguments)
         payload = result.to_payload()
         payload["intent"] = intent

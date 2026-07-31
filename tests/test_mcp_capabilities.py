@@ -34,7 +34,7 @@ def test_runtime_context_skill_recommendation_points_to_invoke_skill():
     payload = runtime_context.capabilities
 
     assert payload is not None
-    assert payload["skill_recommendation_usage"].startswith("Call invoke_skill")
+    assert "调用 invoke_skill" in payload["skill_recommendation_usage"]
     recommendation = payload["recommendations"][0]
     assert recommendation["skill_name"] == "skill_review"
     assert recommendation["recommended_action"] == "invoke_skill"
@@ -80,7 +80,7 @@ def test_capability_router_uses_skill_runtime_recommendations():
     recommendation = result.recommendations[0]
     assert recommendation.kind == "skill"
     assert recommendation.name == "skill_review"
-    assert recommendation.reasons == ("skill router",)
+    assert recommendation.reasons == ("Skill 路由匹配",)
     assert recommendation.metadata["router_source"] == "skill_router"
 
 
@@ -303,7 +303,7 @@ def test_mcp_discovery_keeps_server_unavailable_after_failed_model_probe(tmp_pat
     result = asyncio.run(manager.list_tools("github"))
 
     assert calls == 1
-    assert result["error"] == "MCP server unavailable: still unavailable"
+    assert result["error"] == "MCP Server 不可用：still unavailable"
     assert result["server"]["available"] is False
     assert result["tools"] == []
 
@@ -351,7 +351,7 @@ def test_mcp_execution_does_not_probe_unavailable_server(tmp_path):
     result = asyncio.run(manager.call_tool("github", "get_status", {}))
 
     assert result.is_error is True
-    assert result.content_text == "MCP server unavailable: temporary failure"
+    assert result.content_text == "MCP Server 不可用：temporary failure"
 
 
 def test_search_tools_uses_cached_discovery_metadata(tmp_path):

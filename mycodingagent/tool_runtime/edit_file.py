@@ -19,18 +19,17 @@ if TYPE_CHECKING:  # 根据条件决定是否执行后续分支。
 
 
 class Params(BaseModel):  # 定义用于封装相关状态和行为的类。
-    file_path: str = Field(description="Path to the file to edit")  # 保存配置值或中间计算结果。
-    old_string: str = Field(description="The exact string to find and replace (must be unique in file)")  # 保存配置值或中间计算结果。
-    new_string: str = Field(description="The replacement string")  # 保存配置值或中间计算结果。
-    intent: str = Field(default="", description="Short intent for this edit")
+    file_path: str = Field(description="要编辑的文件路径")  # 保存配置值或中间计算结果。
+    old_string: str = Field(description="要查找并替换的准确字符串，在文件中必须唯一")  # 保存配置值或中间计算结果。
+    new_string: str = Field(description="替换后的字符串")  # 保存配置值或中间计算结果。
+    intent: str = Field(default="", description="本次编辑的简短目的")
 
 
 class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
     name = "EditFile"  # 保存配置值或中间计算结果。
     description = (  # 保存配置值或中间计算结果。
-        "Replace an exact string in a file inside the sandbox. "  # 提供上方表达式需要的文本内容。
-        "The old_string must appear exactly once in the file.\n"  # 提供上方表达式需要的文本内容。
-        "You MUST read the file with ReadFile before editing. This tool will fail otherwise."  # 提供上方表达式需要的文本内容。
+        "精确替换沙箱内文件中的字符串。old_string 在文件中必须只出现一次。\n"  # 提供上方表达式需要的文本内容。
+        "编辑前必须先使用 ReadFile 读取文件，否则本工具会失败。"  # 提供上方表达式需要的文本内容。
     )  # 结束上方的多行结构。
     params_model = Params  # 保存配置值或中间计算结果。
     category = "write"  # 保存配置值或中间计算结果。
@@ -60,7 +59,7 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not path.exists():  # 根据条件决定是否执行后续分支。
-            return ToolResult(output=f"Error: file not found: {params.file_path}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"错误：文件不存在：{params.file_path}", is_error=True)  # 返回当前函数的处理结果。
 
         if self._state_cache:  # 根据条件决定是否执行后续分支。
             ok, err_msg = self._state_cache.check(str(path))  # 保存配置值或中间计算结果。
@@ -70,14 +69,14 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
         try:  # 开始可能抛出异常的保护代码块。
             content = path.read_text(encoding="utf-8")  # 保存配置值或中间计算结果。
         except Exception as e:  # 捕获并处理指定异常。
-            return ToolResult(output=f"Error reading file: {e}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"读取文件失败：{e}", is_error=True)  # 返回当前函数的处理结果。
 
         count = content.count(params.old_string)  # 保存配置值或中间计算结果。
         if count == 0:  # 根据条件决定是否执行后续分支。
-            return ToolResult(output="Error: old_string not found in file", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output="错误：文件中未找到 old_string", is_error=True)  # 返回当前函数的处理结果。
         if count > 1:  # 根据条件决定是否执行后续分支。
             return ToolResult(  # 返回当前函数的处理结果。
-                output=f"Error: old_string found {count} times, must be unique",  # 保存配置值或中间计算结果。
+                output=f"错误：old_string 在文件中出现 {count} 次，必须保持唯一",  # 保存配置值或中间计算结果。
                 is_error=True,  # 保存配置值或中间计算结果。
             )  # 结束上方的多行结构。
 
@@ -109,6 +108,6 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
             if self._checkpoint_hook is not None:
                 self._checkpoint_hook.capture_after(path)
         except Exception as e:  # 捕获并处理指定异常。
-            return ToolResult(output=f"Error writing file: {e}", is_error=True)  # 返回当前函数的处理结果。
+            return ToolResult(output=f"写入文件失败：{e}", is_error=True)  # 返回当前函数的处理结果。
 
-        return ToolResult(output=f"Successfully edited {path}")  # 返回当前函数的处理结果。
+        return ToolResult(output=f"已成功编辑 {path}")  # 返回当前函数的处理结果。
