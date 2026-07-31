@@ -26,7 +26,12 @@ class LSPParams(BaseModel):
 
 class CodeIndexTool(Tool):
     name = "code_index"
-    description = "Query the workspace symbol index for outlines, definitions, callers, and callees."
+    description = (
+        "Primary tool for code-symbol discovery and change-impact analysis. Use it before Grep "
+        "when locating definitions, listing a file outline, or finding callers/callees. Use Grep "
+        "afterward only for imports, strings, configuration, documentation, or dynamic references "
+        "that a syntax index may not capture."
+    )
     params_model = CodeIndexParams
     category = "read"
     is_concurrency_safe = True
@@ -47,7 +52,11 @@ class CodeIndexTool(Tool):
 
 class LSPTool(Tool):
     name = "lsp"
-    description = "Query a language server for definitions, references, hover information, or diagnostics."
+    description = (
+        "Verify exact semantic definitions, references, types, and diagnostics with a language server. "
+        "Use after code_index has located the relevant file and position. If the language server is "
+        "unavailable, continue with code_index, Grep, and ReadFile."
+    )
     params_model = LSPParams
     category = "read"
     is_concurrency_safe = False

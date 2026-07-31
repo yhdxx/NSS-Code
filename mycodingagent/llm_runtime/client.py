@@ -579,7 +579,10 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -搜索文件用 Glob 工具，而不是 find 或 ls
                     -了解项目功能、架构或入口时，先使用窄范围 Glob（如 "*.py"、"backend/*.py"）和 ReadFile 读取 README、入口文件、配置文件；
                      不要一开始对 /workspace 使用 "**/*" 这类全仓库递归扫描。
-                    -搜索内容用 Grep 工具，而不是 grep 或 rg
+                    -查找代码符号的定义、文件结构、调用方、被调用方，或评估修改影响范围时，优先使用 code_index；不要先用 Grep 模拟符号检索。
+                    -code_index 定位到符号文件和位置后，若需要精确语义定义、引用、类型或诊断，使用 lsp 复核；若语言服务器不可用，继续使用 code_index、Grep 和 ReadFile，不要阻塞任务。
+                    -Grep 用于补充查找 import、字符串、配置、文档和 AST 索引未覆盖的动态引用；其他文本内容搜索也使用 Grep，而不是 grep 或 rg。
+                    -不得使用 Bash 执行 grep、rg、find、ls、cat、head、tail 或 sed 来替代已有的 Grep、Glob、ReadFile、EditFile 专用工具。
                     -查询、列举或确认当前可用 SKILL/技能/能力时，必须使用 Get_all_tool、search_tool 或 Get_tool_by_name；
                      不要用 Bash、Glob、ReadFile 直接查看 skills 目录、SQLite 数据库或 .skill_runtime
                     -每一次工具调用都必须提供简短 intent 字段，用一句话说明本次调用意图；intent 应短小稳定，用于历史工具输出虚拟化后的 metadata，而不是长篇推理。

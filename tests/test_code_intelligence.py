@@ -6,6 +6,7 @@ from pathlib import Path
 import pytest
 
 from mycodingagent.code_intelligence import LSPManager, WorkspaceCodeIndex
+from mycodingagent.tool_runtime.code_intelligence import CodeIndexTool, LSPTool
 
 
 @pytest.mark.parametrize(
@@ -50,3 +51,10 @@ def test_lsp_degrades_when_language_server_is_missing(tmp_path, monkeypatch):
 
     assert result["available"] is False
     assert result["language"] == "python"
+
+
+def test_code_intelligence_tool_descriptions_define_selection_order():
+    assert "Use it before Grep" in CodeIndexTool.description
+    assert "change-impact analysis" in CodeIndexTool.description
+    assert "Use after code_index" in LSPTool.description
+    assert "language server is unavailable" in LSPTool.description

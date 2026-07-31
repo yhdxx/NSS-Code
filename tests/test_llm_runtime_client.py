@@ -147,6 +147,18 @@ def _run_stream(fake_client, tools=None):
     return result.text, result.tool_calls, result.usage
 
 
+def test_system_prompt_prioritizes_code_intelligence_for_impact_analysis():
+    source = client.ask_deepseek.__code__.co_consts
+    prompt = next(
+        value for value in source if isinstance(value, str) and "***工具使用指南***" in value
+    )
+
+    assert "评估修改影响范围时，优先使用 code_index" in prompt
+    assert "使用 lsp 复核" in prompt
+    assert "Grep 用于补充查找 import、字符串、配置、文档" in prompt
+    assert "不得使用 Bash 执行 grep、rg、find" in prompt
+
+
 # --- retry behaviour -------------------------------------------------------
 
 
