@@ -141,7 +141,12 @@ def render_metric_document(
 ) -> str:
     spec = METRIC_SPECS[metric]
     status = str(summary.get("status", "not_run"))
-    failures = [row for row in details if row.get("status") in {"failed", "blocked", "timeout", "unavailable"} or row.get("passed") is False]
+    failures = [
+        row for row in details
+        if row.get("status") in {"failed", "blocked", "timeout", "unavailable"}
+        or row.get("passed") is False
+        or int(row.get("invalid_tool_calls") or 0) > 0
+    ]
     environment = {key: metadata.get(key, "") for key in ("run_id", "generated_at", "git_commit", "git_dirty", "model", "base_url", "python", "platform", "random_seed", "repeats")}
     hashes = {key: metadata.get(key, "") for key in ("dataset_path", "dataset_sha256", "tool_schema_hash") if metadata.get(key)}
     result_payload = {key: value for key, value in summary.items() if key not in {"module", "status"}}

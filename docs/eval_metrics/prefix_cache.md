@@ -1,6 +1,6 @@
 # 前缀缓存命中率评测
 
-- 状态：`not_run`
+- 状态：`passed`
 - 指标 ID：`prefix_cache`
 
 ## 指标定义
@@ -15,7 +15,10 @@
 
 ```json
 {
-  "sample_count": 0
+  "dataset_path": "tests/eval/datasets/prefix_cache_cases.jsonl",
+  "dataset_sha256": "d392fb85d7015f02fb1a28c3b897821e4ff7454f4293e7265f15438b6abaa8a5",
+  "sample_count": 90,
+  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
 }
 ```
 
@@ -23,31 +26,45 @@
 
 ```json
 {
-  "base_url": "",
-  "generated_at": "2026-08-01T17:24:59+0800",
-  "git_commit": "",
-  "git_dirty": "",
-  "model": "",
-  "platform": "",
-  "python": "",
-  "random_seed": "",
-  "repeats": "",
-  "run_id": "not-run"
+  "base_url": "https://api.deepseek.com",
+  "generated_at": "2026-08-01T18:40:50+0800",
+  "git_commit": "1c5e2b27423b9618a1c76f0a1c4b38542011420e",
+  "git_dirty": true,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 3,
+  "run_id": "standard-prefix-20260801"
 }
 ```
 
 ## 执行命令
 
 ```bash
-python3 -m tests.eval.modern_runner run-prefix-cache
+python3 -m tests.eval.modern_runner run-prefix-cache --dataset tests/eval/datasets/prefix_cache_cases.jsonl --repeats 3
 ```
 
 ## 结果与置信区间
 
 ```json
 {
-  "reason": "尚未执行新版标准评测",
-  "status": "not_run"
+  "available_run_count": 90,
+  "case_count": 30,
+  "hit_rate_ci95": {
+    "high": 0.986615,
+    "low": 0.986586,
+    "mean": 0.986601
+  },
+  "mean_session_hit_rate": 0.986601,
+  "p50_session_hit_rate": 0.986659,
+  "p95_session_hit_rate": 0.986659,
+  "reason": "",
+  "repeats": 3,
+  "resume_conclusion": "30 个会话、每会话 1 次预热和 3 次正式测量中，服务商原生字段统计的 token 加权前缀缓存命中率为 98.66%；system prompt 与工具 schema 固定，项目图谱未常驻 message。",
+  "run_count": 90,
+  "token_weighted_hit_rate": 0.9866,
+  "warmup_excluded": true
 }
 ```
 
@@ -68,4 +85,4 @@ python3 -m tests.eval.modern_runner run-prefix-cache
 
 ## 简历可用结论
 
-不可使用量化结论（status=not_run）：尚未执行新版标准评测
+30 个会话、每会话 1 次预热和 3 次正式测量中，服务商原生字段统计的 token 加权前缀缓存命中率为 98.66%；system prompt 与工具 schema 固定，项目图谱未常驻 message。

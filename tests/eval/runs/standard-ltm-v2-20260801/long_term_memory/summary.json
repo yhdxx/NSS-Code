@@ -1,0 +1,54 @@
+{
+  "by_memory_type": {
+    "preference": {
+      "correct_memory": 1.0,
+      "distractor_memory": 0.0,
+      "without_memory": 0.033333
+    },
+    "project_fact": {
+      "correct_memory": 1.0,
+      "distractor_memory": 0.0,
+      "without_memory": 0.0
+    },
+    "workflow": {
+      "correct_memory": 0.966667,
+      "distractor_memory": 0.0,
+      "without_memory": 0.0
+    }
+  },
+  "by_variant": {
+    "correct_memory": {
+      "accuracy": 0.988889,
+      "accuracy_ci95": {
+        "high": 1.0,
+        "low": 0.966667,
+        "mean": 0.988889
+      },
+      "run_count": 90
+    },
+    "distractor_memory": {
+      "accuracy": 0.0,
+      "accuracy_ci95": {
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0
+      },
+      "run_count": 90
+    },
+    "without_memory": {
+      "accuracy": 0.011111,
+      "accuracy_ci95": {
+        "high": 0.033333,
+        "low": 0.0,
+        "mean": 0.011111
+      },
+      "run_count": 90
+    }
+  },
+  "case_count": 30,
+  "module": "long_term_memory",
+  "reason": "",
+  "resume_conclusion": "在 30 条用户偏好、项目事实与 Workflow 合成样本、每项 3 次中，模型在已提供正确检索结果时的锚点命中率为 98.89%（95% CI 96.67%–100.00%）；该实验不覆盖记忆抽取、存储和检索召回的端到端准确率。",
+  "run_count": 270,
+  "status": "passed"
+}

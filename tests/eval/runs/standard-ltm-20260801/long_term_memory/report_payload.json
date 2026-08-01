@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner run-long-term-memory --dataset tests/eval/datasets/long_term_workflow_cases.jsonl --repeats 3",
+  "metric": "long_term_memory"
+}

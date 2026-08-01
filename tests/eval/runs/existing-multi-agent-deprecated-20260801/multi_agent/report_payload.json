@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner document-multi-agent-existing",
+  "metric": "multi_agent"
+}

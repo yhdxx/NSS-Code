@@ -1,0 +1,7 @@
+{
+  "capability_count": 1200,
+  "module": "capability_routing",
+  "query_count": 200,
+  "reason": "RuntimeError: Timed out requesting BGE embedding service at http://127.0.0.1:11434/api/embed",
+  "status": "blocked"
+}

@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner run-capability-routing --dataset tests/eval/datasets/capability_routing_1200_cases.jsonl",
+  "metric": "capability_routing"
+}

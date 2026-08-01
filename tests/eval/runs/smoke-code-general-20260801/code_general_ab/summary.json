@@ -1,0 +1,52 @@
+{
+  "by_mode": {
+    "code": {
+      "duration_mean_seconds": 19.114,
+      "graph_tool_calls_mean": 1.0,
+      "invalid_tool_calls_mean": 1.0,
+      "prompt_tokens_mean": 36894.0,
+      "readfile_visible_bytes_mean": 112.0,
+      "repeated_tool_calls_mean": 0.0,
+      "run_count": 1,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 7.0,
+      "total_tokens_mean": 37622.0
+    },
+    "general": {
+      "duration_mean_seconds": 18.422,
+      "graph_tool_calls_mean": 0.0,
+      "invalid_tool_calls_mean": 1.0,
+      "prompt_tokens_mean": 28756.0,
+      "readfile_visible_bytes_mean": 112.0,
+      "repeated_tool_calls_mean": 0.0,
+      "run_count": 1,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 6.0,
+      "total_tokens_mean": 29486.0
+    }
+  },
+  "case_count": 1,
+  "code_cost_reductions": {
+    "prompt_tokens": -0.283002,
+    "readfile_visible_bytes": 0.0,
+    "tool_calls": -0.166667,
+    "total_tokens": -0.275928
+  },
+  "code_success_rate_delta": 0.0,
+  "efficiency_claim_gate_passed": false,
+  "module": "code_general_ab",
+  "reason": "requires 30 cases and 3 repeats per mode",
+  "repeats": 1,
+  "run_count": 2,
+  "status": "insufficient_sample"
+}

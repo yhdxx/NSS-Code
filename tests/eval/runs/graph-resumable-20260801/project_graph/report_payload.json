@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner run-project-graph --manifest tests/eval/manifests/public_projects.json --projects-root /tmp/mycodingagent_eval_projects --annotations tests/eval/annotations",
+  "metric": "project_graph"
+}

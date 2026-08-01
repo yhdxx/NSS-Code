@@ -1,0 +1,20 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "dataset_path": "tests/eval/datasets/multi_agent_tasks.jsonl",
+  "dataset_sha256": "5213c55b18c41f1db7c0edd33f197e479103f92ddee00793f7edda4609c4aa7a",
+  "extra": {
+    "module_lifecycle": "planned_for_removal",
+    "standard_run_stopped_by_user": true,
+    "subagent_token_accounting": "unavailable"
+  },
+  "generated_at": "2026-08-01T21:13:45+0800",
+  "git_commit": "1c5e2b27423b9618a1c76f0a1c4b38542011420e",
+  "git_dirty": true,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 3,
+  "run_id": "existing-multi-agent-deprecated-20260801",
+  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
+}

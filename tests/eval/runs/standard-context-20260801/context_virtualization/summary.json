@@ -1,0 +1,50 @@
+{
+  "by_mode": {
+    "raw": {
+      "input_reduction_vs_raw": 0.0,
+      "prompt_tokens_mean": 14585.0,
+      "prompt_tokens_p50": 14585.0,
+      "prompt_tokens_p95": 14585.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      }
+    },
+    "recent_only": {
+      "input_reduction_vs_raw": 0.92794,
+      "prompt_tokens_mean": 1051.0,
+      "prompt_tokens_p50": 1051.0,
+      "prompt_tokens_p95": 1051.0,
+      "run_count": 90,
+      "success_rate": 0.0,
+      "success_rate_ci95": {
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0
+      }
+    },
+    "virtualized": {
+      "input_reduction_vs_raw": 0.584573,
+      "prompt_tokens_mean": 6059.0,
+      "prompt_tokens_p50": 6059.0,
+      "prompt_tokens_p95": 6059.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      }
+    }
+  },
+  "case_count": 30,
+  "completed_run_count": 270,
+  "module": "context_virtualization",
+  "reason": "",
+  "resume_conclusion": "在 30 个合成长会话、每策略 3 次的受控证据恢复实验中，virtualized 保持 100% 锚点命中率，并相对 raw 减少 58.46% 输入 token；该结果不等同于真实开发任务端到端成功率。",
+  "run_count": 270,
+  "status": "passed"
+}

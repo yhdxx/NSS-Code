@@ -1,0 +1,76 @@
+{
+  "by_mode": {
+    "code": {
+      "duration_mean_seconds": 32.080078,
+      "graph_tool_calls_mean": 1.044444,
+      "invalid_tool_calls_mean": 0.7,
+      "prompt_tokens_mean": 51561.477778,
+      "readfile_visible_bytes_mean": 1167.144444,
+      "repeated_tool_calls_mean": 0.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 11.777778,
+      "total_tokens_mean": 53512.1
+    },
+    "general": {
+      "duration_mean_seconds": 31.529322,
+      "graph_tool_calls_mean": 0.444444,
+      "invalid_tool_calls_mean": 1.211111,
+      "prompt_tokens_mean": 46833.655556,
+      "readfile_visible_bytes_mean": 1110.766667,
+      "repeated_tool_calls_mean": 0.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 10.955556,
+      "total_tokens_mean": 48745.077778
+    }
+  },
+  "case_count": 30,
+  "code_cost_reduction_ci95": {
+    "prompt_tokens": {
+      "high": 0.025554,
+      "low": -0.247011,
+      "mean": -0.100949
+    },
+    "readfile_visible_bytes": {
+      "high": 0.072676,
+      "low": -0.187054,
+      "mean": -0.050756
+    },
+    "tool_calls": {
+      "high": -0.016873,
+      "low": -0.138826,
+      "mean": -0.075051
+    },
+    "total_tokens": {
+      "high": 0.026789,
+      "low": -0.240335,
+      "mean": -0.097795
+    }
+  },
+  "code_cost_reductions": {
+    "prompt_tokens": -0.100949,
+    "readfile_visible_bytes": -0.050756,
+    "tool_calls": -0.075051,
+    "total_tokens": -0.097795
+  },
+  "code_success_rate_delta": 0.0,
+  "efficiency_claim_gate_passed": false,
+  "module": "code_general_ab",
+  "paired_run_count": 90,
+  "reason": "",
+  "repeats": 3,
+  "resume_conclusion": "30 个开发任务、每模式 3 次的 A/B 中两种模式成功率均为 100%，但 Code 的工具调用、可见读取字节和 token 成本均未下降，当前不可宣称 Code 模式提高效率。",
+  "run_count": 180,
+  "status": "passed"
+}
