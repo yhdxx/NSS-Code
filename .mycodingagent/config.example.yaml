@@ -1,0 +1,142 @@
+# myCodingAgent runtime configuration example.
+# Copy this file to `.mycodingagent/config.yaml` for project-local settings, or to
+# `~/.config/myCodingAgent/config.yaml` for user-wide settings.
+# Load order: built-in defaults < user config < project config < MYCODINGAGENT_CONFIG < environment variables.
+
+api:
+  # env: DEEPSEEK_API_KEY
+  # Prefer setting secrets through the environment instead of committing them here.
+  # deepseek_api_key: ""
+  # env: DEEPSEEK_BASE_URL
+  base_url: "https://api.deepseek.com"
+  # env: DEEPSEEK_MODEL
+  model: "deepseek-v4-pro"
+
+embedding:
+  # env: MYCODINGAGENT_EMBEDDING_PROVIDER
+  # Supported: bge_http/http/ollama/openai_compatible/dashscope, local/bge, hash.
+  provider: "bge_http"
+  # env: MYCODINGAGENT_EMBEDDING_MODEL; legacy env: MYCODINGAGENT_BGE_MODEL
+  model: "bge-m3"
+  # env: MYCODINGAGENT_EMBEDDING_ENDPOINT; legacy env: MYCODINGAGENT_BGE_ENDPOINT
+  endpoint: "http://127.0.0.1:11434/api/embed"
+  # env: MYCODINGAGENT_EMBEDDING_API_FORMAT; legacy env: MYCODINGAGENT_BGE_API_FORMAT
+  # Supported: ollama, openai, dashscope.
+  api_format: "ollama"
+  # env: MYCODINGAGENT_EMBEDDING_API_KEY; legacy env: MYCODINGAGENT_BGE_API_KEY
+  # api_key: ""
+  # env: MYCODINGAGENT_EMBEDDING_TIMEOUT; legacy env: MYCODINGAGENT_BGE_TIMEOUT
+  timeout: 30.0
+  # env: MYCODINGAGENT_EMBEDDING_DIM; legacy env: MYCODINGAGENT_BGE_DIM
+  dimension: 512
+  # env: MYCODINGAGENT_EMBEDDING_QUERY_INSTRUCTION; legacy env: MYCODINGAGENT_BGE_QUERY_INSTRUCTION
+  query_instruction: "为这个句子生成表示以用于检索相关文章："
+  # env: MYCODINGAGENT_EMBEDDING_DEVICE; legacy env: MYCODINGAGENT_BGE_DEVICE
+  # device: "cpu"
+  # env: MYCODINGAGENT_EMBEDDING_BATCH_SIZE; legacy env: MYCODINGAGENT_BGE_BATCH_SIZE
+  batch_size: 16
+  # env: MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH; legacy env: MYCODINGAGENT_BGE_FALLBACK_TO_HASH
+  fallback_to_hash: false
+  # env: MYCODINGAGENT_HASH_EMBEDDING_DIM
+  hash_dimension: 256
+  # env: MYCODINGAGENT_EMBEDDING_REQUEST_EXTRA
+  # request_extra:
+  #   dimensions: 1024
+  # env: MYCODINGAGENT_EMBEDDING_HEADERS
+  # headers:
+  #   X-Custom-Header: "value"
+
+  # Example: DashScope / Tongyi Qianwen OpenAI-compatible embeddings.
+  # provider: "openai_compatible"
+  # api_format: "openai"
+  # endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
+  # model: "text-embedding-v4"
+  # dimension: 1536
+  # Put the key in env MYCODINGAGENT_EMBEDDING_API_KEY.
+
+  # Example: DashScope native embeddings.
+  # provider: "dashscope"
+  # api_format: "dashscope"
+  # endpoint: "https://dashscope.aliyuncs.com/api/v1/services/embeddings/text-embedding/text-embedding"
+  # model: "text-embedding-v4"
+
+  # Example: local sentence-transformers model.
+  # provider: "local"
+  # model: "/absolute/path/to/local/bge-m3"
+  # device: "cpu"
+
+milvus:
+  # env: MYCODINGAGENT_MILVUS_ENABLED
+  enabled: true
+  # env: MYCODINGAGENT_MILVUS_HOST
+  host: "127.0.0.1"
+  # env: MYCODINGAGENT_MILVUS_PORT
+  port: "19530"
+  # env: MYCODINGAGENT_MILVUS_URI
+  # uri: "http://127.0.0.1:19530"
+  # env: MYCODINGAGENT_MILVUS_COLLECTION
+  collection: "mycodingagent_skills"
+  # env: MYCODINGAGENT_MILVUS_TOKEN
+  # token: ""
+  # env: MYCODINGAGENT_MILVUS_RECREATE_INCOMPATIBLE
+  recreate_incompatible: true
+  # env: MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE
+  dense_index_type: "HNSW"
+  # env: MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE
+  dense_metric_type: "COSINE"
+  # env: MYCODINGAGENT_MILVUS_HNSW_M
+  hnsw_m: 16
+  # env: MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION
+  hnsw_ef_construction: 256
+  # env: MYCODINGAGENT_MILVUS_HNSW_EF
+  hnsw_ef: 64
+  # env: MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE
+  sparse_index_type: "SPARSE_INVERTED_INDEX"
+  # env: MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE
+  sparse_metric_type: "BM25"
+  # env: MYCODINGAGENT_MILVUS_SPARSE_ALGO
+  sparse_inverted_index_algo: "DAAT_MAXSCORE"
+  # env: MYCODINGAGENT_MILVUS_RRF_K
+  rrf_k: 60
+  # env: MYCODINGAGENT_MILVUS_TEXT_MAX_BYTES
+  text_max_bytes: 65535
+  # env: MYCODINGAGENT_MILVUS_ANALYZER_PARAMS
+  analyzer_params:
+    type: "chinese"
+
+docker:
+  # env: MYCODINGAGENT_DOCKER_IMAGE
+  image: "mycodingagent-sandbox:py312"
+  # env: MYCODINGAGENT_DOCKER_NETWORK
+  network: "none"
+  # env: MYCODINGAGENT_DOCKER_BUILD_NETWORK
+  build_network: "host"
+  # env: MYCODINGAGENT_DOCKER_CPUS
+  cpus: "2"
+  # env: MYCODINGAGENT_DOCKER_MEMORY
+  memory: "1g"
+  # env: MYCODINGAGENT_DOCKER_PIDS_LIMIT
+  pids_limit: "256"
+  # env: MYCODINGAGENT_DOCKER_DEFAULT_TIMEOUT
+  default_timeout: 120
+  # env: MYCODINGAGENT_DOCKER_MAX_TIMEOUT
+  max_timeout: 600
+
+mcp:
+  # env: MYCODINGAGENT_MCP_ENABLED
+  enabled: true
+  # env: MYCODINGAGENT_MCP_PROJECT_CONFIG
+  project_config_path: ".mycodingagent/mcp.json"
+  # env: MYCODINGAGENT_MCP_USER_CONFIG
+  user_config_path: "~/.config/myCodingAgent/mcp.json"
+
+skills:
+  # env: MYCODINGAGENT_SKILL_INDEX_DIR
+  # index_dir: ".mycodingagent/skill_runtime"
+  # env: MYCODINGAGENT_DEFAULT_SKILLS
+  default_tool_names:
+    - "coding-standards"
+  # env: MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE
+  vector_sync_batch_size: 2
+  # env: MYCODINGAGENT_SKILL_VECTOR_SYNC_MAX_RETRIES
+  vector_sync_max_retries: 3

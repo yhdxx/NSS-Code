@@ -16,6 +16,7 @@ DESCRIPTION_FIELD = "description"
 CONTENT_FIELD = "content"
 SOURCE_PATH_FIELD = "source_path"
 CONTENT_HASH_FIELD = "content_hash"
+EMBEDDING_SIGNATURE_FIELD = "embedding_signature"
 UPDATED_AT_FIELD = "updated_at"
 
 
@@ -80,6 +81,7 @@ class MilvusVectorStore(SkillVectorStore):
                 TEXT_FIELD: _truncate_text(_search_text(record), CONFIG.milvus.text_max_bytes),
                 SOURCE_PATH_FIELD: _truncate_text(str(record.source_path), 4096),
                 CONTENT_HASH_FIELD: record.content_hash,
+                EMBEDDING_SIGNATURE_FIELD: _truncate_text(self.embedding_signature, 1024),
                 UPDATED_AT_FIELD: float(record.updated_at),
                 DENSE_FIELD: vector,
             }
@@ -107,21 +109,24 @@ class MilvusVectorStore(SkillVectorStore):
             rows = self._client.query(
                 collection_name=self.collection_name,
                 filter=f'{TOOL_NAME_FIELD} != ""',
-                output_fields=[TOOL_NAME_FIELD, CONTENT_HASH_FIELD],
+                output_fields=[TOOL_NAME_FIELD, CONTENT_HASH_FIELD, EMBEDDING_SIGNATURE_FIELD],
                 limit=max(len(records), 1),
             )
         except Exception:
             return list(records.values())
 
-        indexed_hashes = {
-            str(row.get(TOOL_NAME_FIELD)): str(row.get(CONTENT_HASH_FIELD) or "")
+        indexed_records = {
+            str(row.get(TOOL_NAME_FIELD)): (
+                str(row.get(CONTENT_HASH_FIELD) or ""),
+                str(row.get(EMBEDDING_SIGNATURE_FIELD) or ""),
+            )
             for row in rows
             if row.get(TOOL_NAME_FIELD)
         }
         return [
             record
             for tool_name, record in records.items()
-            if indexed_hashes.get(tool_name) != record.content_hash
+            if indexed_records.get(tool_name) != (record.content_hash, self.embedding_signature)
         ]
 
     def search(
@@ -198,6 +203,7 @@ class MilvusVectorStore(SkillVectorStore):
         )
         schema.add_field(field_name=SOURCE_PATH_FIELD, datatype=DataType.VARCHAR, max_length=4096)
         schema.add_field(field_name=CONTENT_HASH_FIELD, datatype=DataType.VARCHAR, max_length=128)
+        schema.add_field(field_name=EMBEDDING_SIGNATURE_FIELD, datatype=DataType.VARCHAR, max_length=1024)
         schema.add_field(field_name=UPDATED_AT_FIELD, datatype=DataType.DOUBLE)
         schema.add_field(field_name=DENSE_FIELD, datatype=DataType.FLOAT_VECTOR, dim=self.dim)
         schema.add_field(field_name=SPARSE_FIELD, datatype=DataType.SPARSE_FLOAT_VECTOR)
@@ -251,6 +257,7 @@ class MilvusVectorStore(SkillVectorStore):
             TEXT_FIELD,
             SOURCE_PATH_FIELD,
             CONTENT_HASH_FIELD,
+            EMBEDDING_SIGNATURE_FIELD,
             UPDATED_AT_FIELD,
             DENSE_FIELD,
             SPARSE_FIELD,
