@@ -47,6 +47,7 @@ from mycodingagent.memory.models import (
     ToolInvocationMetadata,
     ToolOutputRecord,
 )
+from mycodingagent.memory.message_filters import remove_trailing_incomplete_tool_call
 from mycodingagent.memory.stores import SQLiteMemoryStore
 from mycodingagent.memory.working_context import WorkingContext
 from mycodingagent.memory.workspace_checkpoint import RewindResult, WorkspaceCheckpointManager
@@ -488,6 +489,15 @@ class MemoryRuntime:
     def load_session(self, session_id: str) -> SessionState | None:
         state = self.store.load_session(session_id)
         if state is not None:
+            if remove_trailing_incomplete_tool_call(state.messages):
+                # Persist the repaired protocol immediately so a subsequent
+                # resume/fork cannot restore the same dangling tool call.
+                self.store.save_messages(session_id=session_id, messages=state.messages)
+                self.store.save_historical_turns(
+                    session_id=session_id,
+                    turns=build_historical_turns(session_id, state.messages),
+                )
+                print("已移除上一轮未完成的工具调用，当前会话可以继续。", flush=True)
             self.store.touch_session(session_id)
             self.current_session_id = session_id
             self.work_mode = state.work_mode if state.work_mode in {"general", "code"} else CONFIG.memory.default_work_mode

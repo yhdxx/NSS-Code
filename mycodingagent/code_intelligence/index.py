@@ -14,6 +14,7 @@ from tree_sitter import Node
 from tree_sitter_language_pack import get_parser
 
 from mycodingagent.code_intelligence.agentignore import AgentIgnore
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
 CODE_INDEX_SCHEMA_VERSION = 2
@@ -831,6 +832,6 @@ class WorkspaceCodeIndex:
         return path.startswith("tests/") or "/tests/" in path or name.startswith("test_") or name.endswith("_test.go")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, timeout=30)
+        conn = sqlite3.connect(self.db_path, timeout=30, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
         return conn

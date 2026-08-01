@@ -25,6 +25,7 @@ from mycodingagent.memory.models import (
     WorkspaceCheckpoint,
     WorkspaceFileSnapshot,
 )
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
 class SQLiteMemoryStore:
@@ -34,7 +35,7 @@ class SQLiteMemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
         return conn
 

@@ -10,6 +10,7 @@ from pathlib import Path
 
 from mycodingagent.mcp_integration.config import MCPServerConfig
 from mycodingagent.mcp_integration.models import MCPItemSummary, MCPServerSummary
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
 @dataclass
@@ -129,7 +130,7 @@ class MCPMetadataCache:
     def _connect(self) -> sqlite3.Connection:
         if self._db_path is None:
             raise RuntimeError("persistent MCP cache is disabled")
-        conn = sqlite3.connect(self._db_path)
+        conn = sqlite3.connect(self._db_path, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
         return conn
 

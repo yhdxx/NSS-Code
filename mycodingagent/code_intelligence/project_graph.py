@@ -11,6 +11,7 @@ from typing import Any, Callable
 
 from mycodingagent.code_intelligence.agentignore import AgentIgnore
 from mycodingagent.code_intelligence.index import LANGUAGE_BY_SUFFIX, SKIP_DIRS, WorkspaceCodeIndex
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 UNKNOWN_DESCRIPTION = "暂未描述"
 GRAPH_SCHEMA_VERSION = 1
@@ -286,7 +287,7 @@ class ProjectGraphService:
             conn.execute("CREATE TABLE IF NOT EXISTS graph_descriptions(node_id TEXT PRIMARY KEY, description TEXT NOT NULL, content_hash TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL)")
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
         return conn
 

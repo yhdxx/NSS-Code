@@ -9,6 +9,7 @@ from typing import Any
 from mycodingagent.configuration import CONFIG
 
 from mycodingagent.multi_agent.models import MultiAgentRun, RunStatus, TERMINAL_STATUSES
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
 def default_multi_agent_db_path() -> Path:
@@ -22,7 +23,7 @@ class MultiAgentStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.path)
+        conn = sqlite3.connect(self.path, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
         return conn
 

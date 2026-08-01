@@ -16,7 +16,11 @@ from openai import AsyncOpenAI  # OpenAI Python SDK 的异步客户端；这里�
 from mycodingagent.configuration import CONFIG  # 统一读取 API、模型和客户端展示相关配置。
 from mycodingagent.memory import MemoryRuntime, TokenUsageRecord, TokenUsageSummary
 from mycodingagent.memory.budget import estimate_tokens
-from mycodingagent.memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
+from mycodingagent.memory.message_filters import (
+    is_skill_related_tool,
+    persistent_assistant_tool_message,
+    remove_trailing_incomplete_tool_call,
+)
 from mycodingagent.llm_runtime.context import (
     ContextBudgetState,
     PromptRenderer,
@@ -653,6 +657,11 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 ),  # 结束 system content 字符串拼接。
             },  # 结束 system 消息对象。
         ]  # 完成初始消息列表。
+
+    # A cancelled previous turn may have persisted an assistant tool request
+    # without all matching tool results. Remove it before the next API call.
+    if remove_trailing_incomplete_tool_call(messages):
+        print("已移除上一轮未完成的工具调用，当前会话可以继续。", flush=True)
 
     turn_start = len(messages)
     session_id = ""

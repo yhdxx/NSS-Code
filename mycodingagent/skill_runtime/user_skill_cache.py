@@ -5,6 +5,7 @@ import time
 from pathlib import Path
 
 from mycodingagent.relevance.lrfu import LRFUCache, LRFUCandidate
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
 class UserSkillCache:
@@ -332,7 +333,7 @@ class UserSkillCache:
         )
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
 
     def _get_user_skill_call_round(self, conn: sqlite3.Connection, *, user_id: str) -> int:
         row = conn.execute(

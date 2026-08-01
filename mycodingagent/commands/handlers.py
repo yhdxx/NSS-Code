@@ -7,6 +7,7 @@ from mycodingagent.commands.registry import CommandContext, CommandRegistry, Com
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime import client
 from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
+from mycodingagent.memory.message_filters import remove_trailing_incomplete_tool_call
 from mycodingagent.terminal_ui.confirm import (
     confirm_force_rewind,
     confirm_cross_workspace_action,
@@ -309,6 +310,8 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         if not resume_session_id:
             return CommandResult()
     if resume_session_id == current_session_id and has_conversation_content(context.messages):
+        if remove_trailing_incomplete_tool_call(context.messages):
+            memory_runtime.save_messages_now(resume_session_id, context.messages)
         memory_runtime.touch_session(resume_session_id)
         render_conversation_history(context.messages)
         print(f"已恢复会话：{resume_session_id}（{len(context.messages)} 条消息）", flush=True)
@@ -321,6 +324,8 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         if not confirm_cross_workspace_restore(state.workspace_root, memory_runtime.workspace_root):
             print("已取消跨工作目录恢复。", flush=True)
             return CommandResult()
+    if remove_trailing_incomplete_tool_call(state.messages):
+        memory_runtime.save_messages_now(resume_session_id, state.messages)
     memory_runtime.load_lrfu_snapshot(resume_session_id, context.skill_runtime)
     memory_runtime.load_file_state_snapshot(
         resume_session_id,
@@ -376,6 +381,8 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
     fork_messages = source_state.messages
     if source_session_id == current_session_id and has_conversation_content(context.messages):
         fork_messages = context.messages
+    if remove_trailing_incomplete_tool_call(fork_messages):
+        memory_runtime.save_messages_now(source_session_id, fork_messages)
     fork_session_id = memory_runtime.fork_session(
         source_session_id,
         model=client.MODEL,

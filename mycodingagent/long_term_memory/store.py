@@ -24,6 +24,7 @@ from mycodingagent.long_term_memory.namespaces import (
     validate_type_namespace,
     validate_type_scope,
 )
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
 class SQLiteLongTermMemoryStore:
@@ -33,7 +34,7 @@ class SQLiteLongTermMemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path)
+        conn = sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
         return conn
 

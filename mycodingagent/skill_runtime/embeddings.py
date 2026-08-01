@@ -12,6 +12,7 @@ from pathlib import Path
 from typing import Protocol
 
 from mycodingagent.configuration import CONFIG
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]")
 
@@ -307,7 +308,7 @@ class EmbeddingCache:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path)
+        return sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
 
     def _init_db(self) -> None:
         with self._connect() as conn:
