@@ -54,7 +54,8 @@ class SQLiteMemoryStore:
                     latest_file_state_json TEXT NOT NULL DEFAULT '{}',
                     workspace_root TEXT NOT NULL DEFAULT '',
                     workspace_label TEXT NOT NULL DEFAULT '',
-                    workspace_fingerprint TEXT NOT NULL DEFAULT ''
+                    workspace_fingerprint TEXT NOT NULL DEFAULT '',
+                    work_mode TEXT NOT NULL DEFAULT 'general'
                 )
                 """
             )
@@ -64,6 +65,7 @@ class SQLiteMemoryStore:
             self._ensure_column(conn, "sessions", "workspace_root", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "sessions", "workspace_label", "TEXT NOT NULL DEFAULT ''")
             self._ensure_column(conn, "sessions", "workspace_fingerprint", "TEXT NOT NULL DEFAULT ''")
+            self._ensure_column(conn, "sessions", "work_mode", "TEXT NOT NULL DEFAULT 'general'")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS session_messages (
@@ -363,6 +365,7 @@ class SQLiteMemoryStore:
         workspace_root: str = "",
         workspace_label: str = "",
         workspace_fingerprint: str = "",
+        work_mode: str | None = None,
     ) -> None:
         now = time()
         with self._connect() as conn:
@@ -370,9 +373,9 @@ class SQLiteMemoryStore:
                 """
                 INSERT INTO sessions(
                     session_id, created_at, updated_at, last_accessed_at, model, status,
-                    workspace_root, workspace_label, workspace_fingerprint
+                    workspace_root, workspace_label, workspace_fingerprint, work_mode
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     last_accessed_at=excluded.last_accessed_at,
@@ -383,7 +386,8 @@ class SQLiteMemoryStore:
                     END,
                     workspace_root=CASE WHEN excluded.workspace_root != '' THEN excluded.workspace_root ELSE sessions.workspace_root END,
                     workspace_label=CASE WHEN excluded.workspace_label != '' THEN excluded.workspace_label ELSE sessions.workspace_label END,
-                    workspace_fingerprint=CASE WHEN excluded.workspace_fingerprint != '' THEN excluded.workspace_fingerprint ELSE sessions.workspace_fingerprint END
+                    workspace_fingerprint=CASE WHEN excluded.workspace_fingerprint != '' THEN excluded.workspace_fingerprint ELSE sessions.workspace_fingerprint END,
+                    work_mode=CASE WHEN ? IN ('general', 'code') THEN excluded.work_mode ELSE sessions.work_mode END
                 """,
                 (
                     session_id,
@@ -395,8 +399,25 @@ class SQLiteMemoryStore:
                     workspace_root,
                     workspace_label,
                     workspace_fingerprint,
+                    work_mode if work_mode in {"general", "code"} else "general",
+                    work_mode,
                 ),
             )
+
+    def set_session_work_mode(self, session_id: str, work_mode: str) -> None:
+        if work_mode not in {"general", "code"}:
+            raise ValueError("work_mode must be general or code")
+        now = time()
+        with self._connect() as conn:
+            conn.execute(
+                "UPDATE sessions SET work_mode = ?, updated_at = ?, last_accessed_at = ? WHERE session_id = ?",
+                (work_mode, now, now, session_id),
+            )
+
+    def get_session_work_mode(self, session_id: str) -> str:
+        with self._connect() as conn:
+            row = conn.execute("SELECT work_mode FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
+        return str(row["work_mode"] or "general") if row is not None else "general"
 
     def save_messages(self, *, session_id: str, messages: list[dict]) -> None:
         now = time()
@@ -1073,7 +1094,8 @@ class SQLiteMemoryStore:
                     last_accessed_at,
                     workspace_root,
                     workspace_label,
-                    workspace_fingerprint
+                    workspace_fingerprint,
+                    work_mode
                 FROM sessions
                 WHERE session_id = ?
                 """,
@@ -1092,6 +1114,7 @@ class SQLiteMemoryStore:
             workspace_root=row["workspace_root"],
             workspace_label=row["workspace_label"],
             workspace_fingerprint=row["workspace_fingerprint"],
+            work_mode=row["work_mode"] or "general",
             token_usage=self.load_token_usage_summary(session_id),
             context_epoch=self.load_active_context_epoch(session_id),
         )

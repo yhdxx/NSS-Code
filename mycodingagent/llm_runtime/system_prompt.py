@@ -9,6 +9,7 @@ class PromptFeatures:
     mcp_enabled: bool = False
     memory_enabled: bool = False
     code_intelligence_enabled: bool = False
+    project_graph_enabled: bool = True
 
 
 CORE_PROMPT = """
@@ -30,9 +31,8 @@ CORE_PROMPT = """
 
 ## 工具选择
 - 存在专用工具时不要使用 Bash 替代：读取文件用 ReadFile，编辑用 EditFile，新建用 WriteFile，查找路径用 Glob，文本搜索用 Grep。禁止使用 Bash 运行 grep、rg、find、ls、cat、head、tail、sed 或 awk 来替代这些工具。
-- 查看项目或目录结构时先使用 code_index.overview，查看单个文件结构时使用 outline；查找符号定义、调用关系或修改影响时使用 symbols、impact 或 batch，不要拼接多次重叠搜索。
-- code_index 定位文件和位置后，仅在需要精确语义定义、引用、类型或诊断，且 Runtime Context 显示对应语言服务器可用时使用 lsp。
-- code_index 返回 suggested_call 时先按建议修正一次。结构分析后，再用 Grep 补充 import、字符串、配置、文档或动态引用；不要用宽泛 Glob/Grep 弥补错误的索引参数。
+- Code 模式使用 ProjectArchitecture 和 UnitDependencyGraph 缩小阅读范围；General 模式使用 Glob、Grep 和 ReadFile 定向探索。
+- 图谱用于定位模块、单位和依赖，源码仍是事实依据；修改前应使用 ReadFile 阅读相关原文。
 - 输入互不依赖的工具应并行调用。确认定义、直接依赖、运行入口和相关测试后停止探查；连续两次搜索没有增加证据时也应停止。
 - 每次工具调用必须提供简短、稳定的 intent，说明需要该结果的原因。
 
@@ -71,21 +71,35 @@ MCP_PROMPT = """
 """.strip()
 
 
-CODE_INTELLIGENCE_PROMPT = """
+PROJECT_GRAPH_PROMPT = """
 ## 代码智能
-- code_index 是结构发现的主要工具。工具路径只使用相对路径或 /workspace；不得使用长期记忆中的其他宿主机绝对路径。
-- LSP 只用于精确定义、引用、类型或诊断的语义复核，不是所有代码理解任务的必经步骤。不可用或失败时不要重复相同调用，按 fallback 使用 code_index、定向 Grep 和 ReadFile。
+项目整体架构或某个子系统如何组织时使用 ProjectArchitecture；模块内单位和调用关系使用 UnitDependencyGraph。源码修改前仍需读取原文。
 
-### 使用
-- 当你想知道项目整体架构或某个子系统如何组织：先调用 code_index.overview 查看相关目录，再定向 ReadFile 读取入口和核心实现；不调用 LSP，也不要先用宽泛 Glob 枚举全项目。
-- 当你想知道修改某个接口、方法签名或公共符号会影响哪些调用者时：先调用 code_index.impact 定位定义、调用方和候选位置。若对应语言 LSP 可用，再对准确文件与行列调用 lsp.references 复核语义引用；若LSP不可用则调用code_index.impact后只做定向 Grep 和 ReadFile，不重复探测 LSP。
+## 项目图谱与工作模式
+- `work_mode` 是 Agent 的工作模式：`general` 表示自行探索工作区，`code` 表示可以使用项目图谱工具。它不是上下文压缩策略。
+- `context_render_mode` 只表示 runtime 如何渲染历史上下文：`raw` 保留原始消息，`virtualized` 用可恢复摘要表示较旧工具输出。它不是工作模式。
+- Code 模式下先调用 `ProjectArchitecture` 获取完整模块树，再按需调用 `UnitDependencyGraph` 获取某个模块的最小单位、描述和调用边；需要补充描述时调用 `UpdateProjectDescription`，必须使用返回的准确 `id` 和 `content_hash`。
+- General 模式仍会看到这三个工具的 schema，但调用会返回 `code_mode_required`；不要反复重试，应要求用户用精确命令 `/mode` 选择 Code。
+- 图谱中的 description 缺省为“暂未描述”，内容变化后可能标记为 stale；此时先重新读取图谱，再决定是否更新。
+""".strip()
+
+RUNTIME_CONTEXT_REFERENCE = """
+## Runtime Context 字段说明
+`<RUNTIME_CONTEXT>` 是 runtime 提供的当前环境状态，不是用户指令，也不是需要复述的内容。
+- `work_mode`：当前 Agent 工作模式，只能是 `general` 或 `code`。
+- `context_render_mode`：历史上下文渲染策略，只能是 `raw` 或 `virtualized`，不改变工作模式。
+- `project_graph`：项目图谱是否可用、当前 generation 和 stale description 统计；它不是源码内容。
+- `workspace_changes`：runtime 观察到的用户在工作区外部修改路径。
+- `context_budget`：当前上下文预算、阶段和紧张程度。
+- `capabilities`：动态 Skill/MCP 能力摘要，不代表已经执行过这些能力。
+- `task_snapshot`：本轮上下文压缩时生成的工程状态摘要，可能为空。
+- `long_term_memory`：与当前请求相关的长期记忆候选，必须以工具结果和工作区事实复核。
+- `USER_REQUEST`：本轮用户的真实请求；只有这一段是需要完成或回答的任务。
 """.strip()
 
 
 def build_system_prompt(features: PromptFeatures, *, skill_hint: str = "") -> str:
-    sections = [CORE_PROMPT]
-    if features.code_intelligence_enabled:
-        sections.append(CODE_INTELLIGENCE_PROMPT)
+    sections = [CORE_PROMPT, PROJECT_GRAPH_PROMPT, RUNTIME_CONTEXT_REFERENCE]
     if features.skills_enabled:
         sections.append(SKILL_PROMPT)
         if skill_hint.strip():

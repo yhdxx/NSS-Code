@@ -203,6 +203,13 @@ class MemoryConfig:
     prompt_path: Path | None = field(default_factory=lambda: _env_path("MYCODINGAGENT_MEMORY_SUMMARY_PROMPT"))
     default_context_window: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MODEL_CONTEXT_WINDOW", 1_000_000))
     session_ttl_days: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS", 30))
+    default_work_mode: str = field(
+        default_factory=lambda: (
+            os.getenv("MYCODINGAGENT_DEFAULT_WORK_MODE", "general").strip().lower()
+            if os.getenv("MYCODINGAGENT_DEFAULT_WORK_MODE", "general").strip().lower() in {"general", "code"}
+            else "general"
+        )
+    )
     workspace_snapshot_ttl_days: int = field(
         default_factory=lambda: _env_int("MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS", 30)
     )

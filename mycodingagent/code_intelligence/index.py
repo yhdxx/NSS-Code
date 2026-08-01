@@ -140,6 +140,21 @@ class WorkspaceCodeIndex:
             result.setdefault("evidence_count", self._evidence_count(result))
             return result
 
+    def static_graph_snapshot(self) -> dict[str, list[dict[str, Any]]]:
+        """Return parser facts for internal graph builders after one index refresh."""
+        with self._lock:
+            if self._ready:
+                self._reconcile_indexed_paths()
+            self.refresh()
+            with self._connect() as conn:
+                symbols = [dict(row) for row in conn.execute(
+                    "SELECT * FROM code_symbols ORDER BY path, start_line, start_column"
+                )]
+                calls = [dict(row) for row in conn.execute(
+                    "SELECT * FROM code_calls ORDER BY path, line"
+                )]
+        return {"symbols": symbols, "calls": calls}
+
     def _reconcile_indexed_paths(self) -> None:
         """Catch edits that race the workspace watcher without rereading file contents."""
         with self._connect() as conn:

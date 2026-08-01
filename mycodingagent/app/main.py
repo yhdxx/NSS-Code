@@ -18,7 +18,7 @@ import pyfiglet  # 导入当前模块需要的依赖。
 from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
 
 from mycodingagent.capability_discovery import CapabilityRouter
-from mycodingagent.code_intelligence import LSPManager, WorkspaceCodeIndex
+from mycodingagent.code_intelligence import ProjectGraphService, WorkspaceCodeIndex
 from mycodingagent.terminal_ui.input import read_user_prompt
 from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
 from mycodingagent.commands import CommandContext
@@ -88,7 +88,14 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
     workspace_tracker.subscribe(code_index.mark_dirty)
-    lsp_manager = LSPManager(get_sandbox_root())
+    project_graph = ProjectGraphService(
+        get_sandbox_root(),
+        CONFIG.memory.db_path.with_name("project_graph.sqlite3"),
+        code_index,
+    )
+    project_graph.set_work_mode_provider(
+        lambda: memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode
+    )
     if memory_runtime is not None:
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
@@ -113,8 +120,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         command_approval_hook=command_approval_hook,
         write_approval_hook=write_approval_hook,
         terminal_input_coordinator=terminal_input,
-        code_index_service=code_index,
-        lsp_service=lsp_manager,
+        project_graph_service=project_graph,
     )
     multi_agent_store = MultiAgentStore()
     long_term_memory_runtime = None
@@ -270,24 +276,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                         workspace_tracker=workspace_tracker,
                         memory_runtime=memory_runtime,
                         capability_router=capability_router,
-                        code_intelligence={
-                            "index": code_index.status(),
-                            "lsp": lsp_manager.runtime_payload(),
-                            "path_policy": {
-                                "tool_root": "/workspace",
-                                "allow_relative_paths": True,
-                                "reject_recalled_host_paths": True,
-                            },
-                            "operation_guide": {
-                                "workspace_or_directory_structure": "code_index.overview",
-                                "single_file_structure": "code_index.outline",
-                                "symbol_location": "code_index.symbols_or_definition_candidates",
-                                "call_graph_or_impact": "code_index.impact_or_batch",
-                                "exact_definition_references_types_diagnostics": "lsp_if_available_after_index",
-                                "dynamic_text_or_config": "targeted_Grep_then_ReadFile",
-                            },
-                            "soft_budget": {"code_index_calls": 2, "lsp_calls": 1, "supplemental_grep_calls": 2},
-                        },
+                        project_graph=project_graph,
+                        work_mode=memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode,
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=turn_watcher.triggered,
                     )  # 结束上方的多行结构。
@@ -317,7 +307,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 if mcp_user_rounds % CONFIG.mcp.reconnect_server_step == 0:
                     mcp_manager.schedule_reconnect_unavailable_servers()
     finally:  # 执行无论是否异常都需要收尾的逻辑。
-        await lsp_manager.close()
         if long_term_memory_runtime is not None and memory_runtime is not None:
             session_id = memory_runtime.get_current_session_id()
             if session_id and messages:

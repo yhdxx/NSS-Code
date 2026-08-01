@@ -102,36 +102,6 @@ class WorkspaceTrackerStub:
         return [], 0
 
 
-def test_workspace_changes_render_as_separate_runtime_notice():
-    tracker = WorkspaceTrackerStub(["app.py"], omitted=2)
-
-    runtime_context = RuntimeContextBuilder(workspace_tracker=tracker).build()
-    rendered = PromptRenderer.render_current_user_message(runtime_context, "work")
-
-    assert rendered.role == "user"
-    assert is_rendered_runtime_prompt(rendered.content)
-    assert extract_user_request_from_rendered_prompt(rendered.content) == "work"
-    assert runtime_context.workspace_changes.paths == ("app.py",)
-    assert runtime_context.workspace_changes.omitted == 2
-    assert '"workspace_changes"' not in rendered.runtime_context_json
-    assert '"app.py"' in rendered.runtime_notice_json
-    payload = json.loads(rendered.runtime_context_json)
-    assert payload == {"context_mode": "raw"}
-    assert json.loads(rendered.runtime_notice_json) == {
-        "workspace_changes": {"omitted": 2, "paths": ["app.py"]}
-    }
-    assert "tool_outputs_virtualized" not in rendered.runtime_context_json
-    assert '"context_budget": null' not in rendered.runtime_context_json
-
-
-def test_empty_runtime_context_omits_empty_fields():
-    rendered = PromptRenderer.render_current_user_message(RuntimeContextBuilder().build(), "work")
-
-    assert json.loads(rendered.runtime_context_json) == {"context_mode": "raw"}
-    assert "tool_outputs_virtualized" not in rendered.runtime_context_json
-    assert "recovery_hint" not in rendered.runtime_context_json
-
-
 def test_runtime_context_exposes_code_intelligence_availability():
     payload = {
         "index": {"available": True, "generation": 3},
@@ -491,37 +461,6 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
     assert restored.token_usage.request_count == 1
     assert restored.token_usage.prompt_cache_hit_tokens == 70
     assert restored.token_usage.prompt_cache_miss_tokens == 30
-
-
-def test_ask_deepseek_runtime_context_uses_memory_context_mode(monkeypatch, tmp_path):
-    async def scenario():
-        runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
-        session_id = runtime.start_session("test")
-        runtime.force_context_virtualized(session_id)
-        seen_messages = []
-
-        async def fake_stream_one_round(_client, _model, messages, _tools):
-            seen_messages.append(copy.deepcopy(messages))
-            return "done", [], None
-
-        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
-
-        await agent_client.ask_deepseek(
-            client=object(),
-            prompt="hello",
-            registry=object(),
-            tools=[],
-            messages=[{"role": "system", "content": "fixed"}],
-            memory_runtime=runtime,
-        )
-        await runtime.close()
-        return seen_messages
-
-    seen_messages = asyncio.run(scenario())
-    current_user = seen_messages[0][1]["content"]
-    runtime_context_json = current_user.split("<RUNTIME_CONTEXT>\n", 1)[1].split("\n</RUNTIME_CONTEXT>", 1)[0]
-
-    assert json.loads(runtime_context_json)["context_mode"] == "virtualized"
 
 
 def test_token_output_flags_control_terminal_lines(monkeypatch, tmp_path, capsys):

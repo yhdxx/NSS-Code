@@ -71,8 +71,9 @@ class ToolRegistry:  # 定义用于封装相关状态和行为的类。
             if hasattr(tool, "_checkpoint_hook"):
                 saved.append((tool, "_checkpoint_hook", getattr(tool, "_checkpoint_hook")))
                 setattr(tool, "_checkpoint_hook", None)
-        self.disable("code_index")
-        self.disable("lsp")
+        self.disable("ProjectArchitecture")
+        self.disable("UnitDependencyGraph")
+        self.disable("UpdateProjectDescription")
         try:
             yield
         finally:
@@ -92,6 +93,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     terminal_input_coordinator: Any = None,
     code_index_service: Any = None,
     lsp_service: Any = None,
+    project_graph_service: Any = None,
 ) -> ToolRegistry:
     from mycodingagent.tool_runtime.ask_user import AskUser
     from mycodingagent.tool_runtime.bash import Bash  # 导入当前模块需要的依赖。
@@ -113,6 +115,11 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
 
     file_state_cache = file_state_cache or FileStateCache()  # 保存配置值或中间计算结果。
     sandbox_root = get_sandbox_root()  # 保存配置值或中间计算结果。
+    if project_graph_service is None:
+        # Keep graph schemas stable for every runtime, including lightweight test/embedded callers.
+        from mycodingagent.tool_runtime.project_graph import UnavailableProjectGraphService
+
+        project_graph_service = UnavailableProjectGraphService()
 
     registry = ToolRegistry()  # 保存配置值或中间计算结果。
     registry.register(AskUser(terminal_input_coordinator))
@@ -148,14 +155,16 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     registry.register(Bash(sandbox_root=sandbox_root, approval_hook=command_approval_hook))  # 注入审批钩子后，高危命令会先征求用户同意。
     registry.register(Glob(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
     registry.register(Grep(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
-    if code_index_service is not None:
-        from mycodingagent.tool_runtime.code_intelligence import CodeIndexTool
+    if project_graph_service is not None:
+        from mycodingagent.tool_runtime.project_graph import (
+            ProjectArchitectureTool,
+            UnitDependencyGraphTool,
+            UpdateProjectDescriptionTool,
+        )
 
-        registry.register(CodeIndexTool(code_index_service))
-    if lsp_service is not None:
-        from mycodingagent.tool_runtime.code_intelligence import LSPTool
-
-        registry.register(LSPTool(lsp_service))
+        registry.register(ProjectArchitectureTool(project_graph_service))
+        registry.register(UnitDependencyGraphTool(project_graph_service))
+        registry.register(UpdateProjectDescriptionTool(project_graph_service))
     if memory_runtime is not None:
         registry.register(CommitWorkingContext(memory_runtime))
         registry.register(BatchRecoverContext(memory_runtime))

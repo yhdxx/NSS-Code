@@ -133,6 +133,7 @@ class MemoryRuntime:
         self._current_turn_summaries: dict[str, dict[str, Any]] = {}
         self._current_turn_summary_calls: int = 0
         self._closed = False
+        self.work_mode = CONFIG.memory.default_work_mode
         self.start_async_writer()
 
     def start_async_writer(self) -> None:
@@ -204,12 +205,22 @@ class MemoryRuntime:
                 workspace_root=self.workspace_root,
                 workspace_label=self.workspace_label,
                 workspace_fingerprint=self.workspace_fingerprint,
+                work_mode=self.work_mode,
             ),
         )
         return self.current_session_id
 
     def get_current_session_id(self) -> str | None:
         return self.current_session_id
+
+    def set_work_mode(self, work_mode: str) -> str:
+        normalized = work_mode.strip().lower()
+        if normalized not in {"general", "code"}:
+            raise ValueError("work_mode must be general or code")
+        self.work_mode = normalized
+        if self.current_session_id:
+            self.store.set_session_work_mode(self.current_session_id, normalized)
+        return normalized
 
     def begin_workspace_checkpoint(self, *, prompt: str, message_index: int) -> None:
         session_id = self.get_current_session_id()
@@ -479,6 +490,7 @@ class MemoryRuntime:
         if state is not None:
             self.store.touch_session(session_id)
             self.current_session_id = session_id
+            self.work_mode = state.work_mode if state.work_mode in {"general", "code"} else CONFIG.memory.default_work_mode
             epoch = state.context_epoch or self.ensure_context_epoch(
                 session_id=session_id,
                 messages=state.messages,
@@ -1494,6 +1506,8 @@ def render_historical_tool_message(
 
 def historical_tool_content(metadata: ToolInvocationMetadata | None, message: dict[str, Any]) -> str:
     raw_metadata = message.get("metadata")
+    if isinstance(raw_metadata, dict) and raw_metadata.get("persistent_kind") == "project_graph":
+        return message_content_text(message)
     if isinstance(raw_metadata, dict) and raw_metadata.get("archive_snapshot"):
         return message_content_text(message)
     if metadata is not None and metadata.metadata.get("archive_snapshot"):

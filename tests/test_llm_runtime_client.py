@@ -148,30 +148,6 @@ def _run_stream(fake_client, tools=None):
     return result.text, result.tool_calls, result.usage
 
 
-def test_system_prompt_prioritizes_code_intelligence_for_impact_analysis():
-    prompt = build_system_prompt(
-        PromptFeatures(code_intelligence_enabled=True)
-    )
-
-    assert "先使用 code_index" in prompt
-    assert "impact 或 batch" in prompt
-    assert "使用 lsp" in prompt
-    assert "code_index.overview" in prompt
-    assert "不要用宽泛 Glob/Grep 弥补错误的索引参数" in prompt
-    assert "禁止使用 Bash 运行 grep、rg、find" in prompt
-
-
-def test_system_prompt_contrasts_when_lsp_is_and_is_not_needed():
-    prompt = build_system_prompt(PromptFeatures(code_intelligence_enabled=True))
-
-    assert "项目整体架构或某个子系统如何组织" in prompt
-    assert "不调用 LSP" in prompt
-    assert "修改某个接口、方法签名或公共符号" in prompt
-    assert "lsp.references" in prompt
-    assert "若LSP不可用" in prompt
-    assert "code_index.impact后只做定向 Grep 和 ReadFile" in prompt
-
-
 def test_system_prompt_requires_mcp_tool_discovery_before_execution():
     prompt = build_system_prompt(PromptFeatures(mcp_enabled=True))
 

@@ -302,6 +302,7 @@ class CheckpointManager:
             workspace_root=self.memory_runtime.workspace_root,
             workspace_label=self.memory_runtime.workspace_label,
             workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
+            work_mode=self.memory_runtime.work_mode,
         )
         self.memory_runtime.store.save_messages(session_id=new_session_id, messages=new_messages)
         self.last_rollover_turn_index = self.previous_checkpoint_index

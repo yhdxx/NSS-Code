@@ -496,6 +496,56 @@ async def execute_local_tool(
 
 
 
+async def sync_project_graph_messages(
+    messages: list[dict[str, Any]],
+    project_graph: Any | None,
+    work_mode: str,
+) -> None:
+    """Keep one pinned architecture tool-result pair in the durable message list."""
+    marker = "project_graph"
+    indexes = [
+        index for index, message in enumerate(messages)
+        if isinstance(message.get("metadata"), dict)
+        and message["metadata"].get("persistent_kind") == marker
+    ]
+    if work_mode != "code" or project_graph is None:
+        for index in reversed(indexes):
+            del messages[index]
+        return
+    if not messages or messages[0].get("role") != "system":
+        return
+    payload = await asyncio.to_thread(project_graph.architecture, "")
+    generation = payload.get("generation", 0) if isinstance(payload, dict) else 0
+    fingerprint = hashlib.sha256(
+        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
+    ).hexdigest()[:16]
+    metadata = {
+        "persistent_kind": marker,
+        "generation": generation,
+        "fingerprint": fingerprint,
+    }
+    call_id = "project_architecture_pinned"
+    assistant = {
+        "role": "assistant",
+        "tool_calls": [{
+            "id": call_id,
+            "type": "function",
+            "function": {"name": "ProjectArchitecture", "arguments": json.dumps({"module": ""}, ensure_ascii=False)},
+        }],
+        "metadata": metadata,
+    }
+    tool = {
+        "role": "tool",
+        "tool_call_id": call_id,
+        "content": json.dumps(payload, ensure_ascii=False, indent=2),
+        "metadata": metadata,
+    }
+    insert_at = indexes[0] if indexes else 1
+    for index in reversed(indexes):
+        del messages[index]
+    messages[insert_at:insert_at] = [assistant, tool]
+
+
 async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
     client: AsyncOpenAI,  # 已打开连接的异步 API 客户端，由调用方负责创建和关闭。
     prompt: str,  # 当前用户输入的自然语言需求。
@@ -508,6 +558,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     memory_runtime: MemoryRuntime | None = None,
     capability_router: Any | None = None,
     code_intelligence: Any | None = None,
+    project_graph: Any | None = None,
+    work_mode: str = "general",
     long_term_memory_runtime: Any | None = None,
     cancel_event: asyncio.Event | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:  # 返回 `(最终模型文本, 更新后的消息历史)`，供 CLI 继续保持上下文。
@@ -529,9 +581,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                         skills_enabled=skill_runtime is not None,
                         mcp_enabled=capability_router is not None,
                         memory_enabled=memory_runtime is not None,
-                        code_intelligence_enabled=registry.get("code_index") is not None
+                        project_graph_enabled=registry.get("ProjectArchitecture") is not None
                         if hasattr(registry, "get")
-                        else False,
+                        else True,
                     ),
                     skill_hint=skill_hint,
                 ) if not CONFIG.client.legacy_system_prompt else (  # 临时保留一个版本的兼容回退。
@@ -592,8 +644,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     -搜索文件用 Glob 工具，而不是 find 或 ls
                     -了解项目功能、架构或入口时，先使用窄范围 Glob（如 "*.py"、"backend/*.py"）和 ReadFile 读取 README、入口文件、配置文件；
                      不要一开始对 /workspace 使用 "**/*" 这类全仓库递归扫描。
-                    -查找代码符号的定义、文件结构、调用方、被调用方，或评估修改影响范围时，优先使用 code_index；不要先用 Grep 模拟符号检索。
-                    -code_index 定位到符号文件和位置后，若需要精确语义定义、引用、类型或诊断，使用 lsp 复核；若语言服务器不可用，继续使用 code_index、Grep 和 ReadFile，不要阻塞任务。
+                    -需要项目结构时优先使用 ProjectArchitecture；需要某个模块的单位、描述和调用关系时使用 UnitDependencyGraph。
                     -Grep 用于补充查找 import、字符串、配置、文档和 AST 索引未覆盖的动态引用；其他文本内容搜索也使用 Grep，而不是 grep 或 rg。
                     -不得使用 Bash 执行 grep、rg、find、ls、cat、head、tail 或 sed 来替代已有的 Grep、Glob、ReadFile、EditFile 专用工具。
                     -查询、列举或确认当前可用 SKILL/技能/能力时，必须使用 Get_all_tool、search_tool 或 Get_tool_by_name；
@@ -655,6 +706,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 ),  # 结束 system content 字符串拼接。
             },  # 结束 system 消息对象。
         ]  # 完成初始消息列表。
+
+    await sync_project_graph_messages(messages, project_graph, work_mode)
 
     turn_start = len(messages)
     session_id = ""
@@ -731,7 +784,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     base_runtime_context = RuntimeContextBuilder(
         workspace_tracker=workspace_tracker,
         context_mode=current_context_mode(),
+        work_mode=work_mode,
         capabilities=capability_result,
+        project_graph=project_graph,
         code_intelligence=code_intelligence,
         long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else None,
     ).build()
@@ -758,7 +813,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             )
         runtime_context = replace(
             base_runtime_context,
-            context_mode=current_context_mode(),
+            context_render_mode=current_context_mode(),
             task_snapshot=summary_text or None,
             context_budget=previous_budget_state,
         )

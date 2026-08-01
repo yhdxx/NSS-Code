@@ -27,11 +27,14 @@ class ContextBudgetState:
 
 @dataclass(frozen=True)
 class RuntimeContext:
-    context_mode: str = "raw"
+    work_mode: str = "general"
+    context_render_mode: str = "raw"
     workspace_changes: WorkspaceChanges = field(default_factory=WorkspaceChanges)
     context_budget: ContextBudgetState | None = None
     capabilities: dict[str, Any] | None = None
-    code_intelligence: dict[str, Any] | None = None
+    project_graph: dict[str, Any] | None = None
+    # Kept only for callers using the pre-project-graph builder API.
+    legacy_code_intelligence: dict[str, Any] | None = None
     task_snapshot: str | None = None
     long_term_memory: dict[str, Any] | None = None
 
@@ -39,11 +42,16 @@ class RuntimeContext:
         return {**self.stable_payload(), **self.notice_payload()}
 
     def stable_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {"context_mode": self.context_mode}
+        payload: dict[str, Any] = {
+            "work_mode": self.work_mode,
+            "context_render_mode": self.context_render_mode,
+        }
         if self.capabilities:
             payload["capabilities"] = self.capabilities
-        if self.code_intelligence:
-            payload["code_intelligence"] = self.code_intelligence
+        if self.project_graph:
+            payload["project_graph"] = self.project_graph
+        if self.legacy_code_intelligence:
+            payload["code_intelligence"] = self.legacy_code_intelligence
         if self.long_term_memory:
             payload["long_term_memory"] = self.long_term_memory
         return payload
@@ -91,22 +99,28 @@ class RuntimeContextBuilder:
         *,
         workspace_tracker: Any | None = None,
         context_mode: str = "raw",
+        work_mode: str = "general",
         capabilities: Any | None = None,
+        project_graph: Any | None = None,
         code_intelligence: Any | None = None,
         long_term_memory: dict[str, Any] | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
+        self.work_mode = work_mode
         self.capabilities = capabilities
-        self.code_intelligence = code_intelligence
+        self.project_graph = project_graph
+        self.legacy_code_intelligence = code_intelligence
         self.long_term_memory = long_term_memory
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
-            context_mode=self.context_mode,
+            work_mode=self.work_mode,
+            context_render_mode=self.context_mode,
             workspace_changes=self._workspace_changes(),
             capabilities=self._capability_payload(),
-            code_intelligence=self._code_intelligence_payload(),
+            project_graph=self._project_graph_payload(),
+            legacy_code_intelligence=self._legacy_code_intelligence_payload(),
             long_term_memory=self.long_term_memory,
         )
 
@@ -129,11 +143,17 @@ class RuntimeContextBuilder:
             payload = self.capabilities
         return payload if isinstance(payload, dict) else None
 
-    def _code_intelligence_payload(self) -> dict[str, Any] | None:
-        if self.code_intelligence is None:
+    def _project_graph_payload(self) -> dict[str, Any] | None:
+        if self.project_graph is None:
             return None
-        runtime_payload = getattr(self.code_intelligence, "runtime_payload", None)
-        payload = runtime_payload() if callable(runtime_payload) else self.code_intelligence
+        runtime_payload = getattr(self.project_graph, "runtime_payload", None)
+        payload = runtime_payload() if callable(runtime_payload) else self.project_graph
+        return payload if isinstance(payload, dict) else None
+
+    def _legacy_code_intelligence_payload(self) -> dict[str, Any] | None:
+        if self.legacy_code_intelligence is None:
+            return None
+        payload = self.legacy_code_intelligence
         return payload if isinstance(payload, dict) else None
 
 

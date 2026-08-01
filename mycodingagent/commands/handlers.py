@@ -36,9 +36,19 @@ def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
     registry.register(
         CommandSpec(
+            name="/mode",
+            aliases=("mode", "工作模式"),
+            description="交互选择 General 或 Code 工作模式",
+            usages=(("", "显示并选择 General 或 Code"),),
+            handler=handle_mode_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/rewind",
             aliases=("rewind", "回退"),
             description="选择用户轮次，并恢复该轮前的代码、会话或两者",
+            usages=(("", "先选择轮次 ID，再选择 code/conversation/both 范围"),),
             handler=handle_rewind_command,
         )
     )
@@ -83,6 +93,26 @@ def build_command_registry() -> CommandRegistry:
         )
     )
     return registry
+
+
+async def handle_mode_command(context: CommandContext, arguments: str) -> CommandResult:
+    memory_runtime = context.memory_runtime
+    if memory_runtime is None:
+        print("记忆模块未启用，无法持久化工作模式。", flush=True)
+        return CommandResult()
+    try:
+        answer = coordinated_input(
+            f"当前工作模式：{memory_runtime.work_mode}。请选择 General 或 Code [general/code]："
+        ).strip().lower()
+    except (PromptCancelled, EOFError, KeyboardInterrupt):
+        print("已取消模式切换。", flush=True)
+        return CommandResult()
+    if answer not in {"general", "code"}:
+        print("已取消模式切换；请输入 general 或 code。", flush=True)
+        return CommandResult()
+    memory_runtime.set_work_mode(answer)
+    print(f"工作模式已切换为 {answer.title()}，将在下一次模型调用生效。", flush=True)
+    return CommandResult(messages=context.messages)
 
 
 async def handle_rewind_command(context: CommandContext, arguments: str) -> CommandResult:
