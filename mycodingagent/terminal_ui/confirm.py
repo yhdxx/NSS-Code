@@ -5,6 +5,15 @@ from mycodingagent.terminal_ui.interrupt import PromptCancelled, coordinated_inp
 from mycodingagent.terminal_ui.session_selector import print_session_options
 
 
+def confirm_force_rewind(conflicts: tuple[str, ...]) -> bool:
+    print("检测到外部修改：" + "、".join(conflicts), flush=True)
+    try:
+        answer = coordinated_input("确认覆盖这些修改？输入 y 确认，其它任意键取消：").strip().lower()
+    except PromptCancelled:
+        return False
+    return answer in {"y", "yes"}
+
+
 def confirm_cross_workspace_restore(source_workspace: str, current_workspace: str) -> bool:
     return confirm_cross_workspace_action("恢复", source_workspace, current_workspace)
 

@@ -73,10 +73,7 @@ class CommandRegistry:
 
     def exact_command(self, buffer: str) -> CommandSpec | None:
         text = buffer.strip()
-        if not text.startswith("/"):
-            return None
-        command = text.split(maxsplit=1)[0]
-        return self._commands.get(command)
+        return self._commands.get(text)
 
     def match(self, text: str) -> tuple[CommandSpec, str] | None:
         stripped = text.strip()
@@ -84,8 +81,6 @@ class CommandRegistry:
             for name in spec.names():
                 if stripped == name:
                     return spec, ""
-                if stripped.startswith(name + " "):
-                    return spec, stripped[len(name) :].strip()
         return None
 
     async def execute(self, text: str, context: CommandContext) -> CommandResult:

@@ -259,9 +259,15 @@ class SQLiteMemoryStore:
                 """
                 CREATE TABLE IF NOT EXISTS workspace_snapshot_blobs (
                     content_hash TEXT PRIMARY KEY,
-                    content BLOB NOT NULL
+                    content BLOB NOT NULL,
+                    created_at REAL NOT NULL
                 )
                 """
+            )
+            self._ensure_column(conn, "workspace_snapshot_blobs", "created_at", "REAL NOT NULL DEFAULT 0")
+            conn.execute(
+                "UPDATE workspace_snapshot_blobs SET created_at = ? WHERE created_at = 0",
+                (time(),),
             )
             conn.execute(
                 """
@@ -1237,8 +1243,11 @@ class SQLiteMemoryStore:
         with self._connect() as conn:
             if snapshot.before_hash and content is not None:
                 conn.execute(
-                    "INSERT OR IGNORE INTO workspace_snapshot_blobs(content_hash, content) VALUES (?, ?)",
-                    (snapshot.before_hash, content),
+                    """
+                    INSERT OR IGNORE INTO workspace_snapshot_blobs(content_hash, content, created_at)
+                    VALUES (?, ?, ?)
+                    """,
+                    (snapshot.before_hash, content, time()),
                 )
             conn.execute(
                 """
@@ -1329,6 +1338,33 @@ class SQLiteMemoryStore:
                 "DELETE FROM workspace_checkpoints WHERE session_id = ? AND turn_index >= ?",
                 (session_id, from_turn),
             )
+
+    def cleanup_expired_workspace_snapshots(self, *, max_age_seconds: float) -> tuple[int, int]:
+        cutoff = time() - max_age_seconds
+        with self._connect() as conn:
+            checkpoint_rows = conn.execute(
+                "SELECT checkpoint_id FROM workspace_checkpoints WHERE created_at < ?",
+                (cutoff,),
+            ).fetchall()
+            checkpoint_ids = [row["checkpoint_id"] for row in checkpoint_rows]
+            for checkpoint_id in checkpoint_ids:
+                conn.execute(
+                    "DELETE FROM workspace_checkpoint_files WHERE checkpoint_id = ?",
+                    (checkpoint_id,),
+                )
+            conn.execute("DELETE FROM workspace_checkpoints WHERE created_at < ?", (cutoff,))
+            blob_cursor = conn.execute(
+                """
+                DELETE FROM workspace_snapshot_blobs
+                WHERE created_at < ?
+                  AND NOT EXISTS (
+                      SELECT 1 FROM workspace_checkpoint_files
+                      WHERE workspace_checkpoint_files.before_hash = workspace_snapshot_blobs.content_hash
+                  )
+                """,
+                (cutoff,),
+            )
+        return len(checkpoint_ids), blob_cursor.rowcount
 
     def mark_session_historical(
         self,

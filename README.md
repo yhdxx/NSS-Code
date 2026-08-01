@@ -12,7 +12,7 @@ myCodingAgent 是一个本地 Coding Agent 运行框架。用户在终端用自�
 启动 CLI
   -> 初始化配置、Docker 沙箱、MemoryRuntime、SkillRuntime、MCP、工具注册表
   -> 读取用户输入
-  -> 命令分流：/resume、/multiAgent、/clear、/delete 等命令直接由 Runtime 处理
+  -> 命令分流：仅当输入完整匹配 /resume、/multiAgent、/clear、/delete 等命令时由 Runtime 处理
   -> 普通用户请求进入模型执行流程
   -> 能力路由与长期记忆检索
   -> 构造 Runtime Context + 当前用户请求
@@ -78,6 +78,7 @@ myAgent --upgrade
 - 上下文窗口、压缩阈值、热工作区阈值
 - Skill 检索、Milvus、Embedding、LRFU 参数
 - MCP 配置路径和后台重连频率
+- `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS`：workspace checkpoint/blob 保留天数，默认 30 天
 - `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT=1`：临时切回旧版系统提示词；默认使用按运行时能力组装的精简提示词
 - `MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND`：覆盖某语言的 LSP 启动命令，例如 `MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"`
 
@@ -316,9 +317,10 @@ MCP 工具执行分为 discovery 和 execution：
 
 ### 6.4 Rewind 与执行恢复
 
-- 每个用户回合建立工作区 checkpoint，`/rewind` 可恢复 `code`、`conversation` 或 `both`。
+- 每个用户回合建立工作区 checkpoint；输入精确命令 `/rewind` 后先按 `turn` 选择轮次，再选择恢复 `code`、`conversation` 或 `both`。带其他文本的输入不会触发命令，而会交给模型。
+- workspace checkpoint/blob 默认保留 30 天；清理时只删除已过期且不再被任何 checkpoint 引用的 blob。
 - 恢复前校验当前文件 hash，外部修改不会被静默覆盖。
-- Bash 和远程 MCP 副作用不属于文件 rewind；高自治任务可用 `/multiAgent --worktree <task>` 隔离。
+- Bash 和远程 MCP 副作用不属于文件 rewind；高自治任务可输入 `/multiAgent`，再在任务提示中使用 `--worktree <task>` 隔离。
 - 所有工具执行记录 `running/succeeded/failed/interrupted`，重启时不会自动重放未完成变更。
 
 ---

@@ -93,6 +93,12 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
             print(f"已清理 {deleted_count} 个超过 {CONFIG.memory.session_ttl_days} 天未访问的会话。", flush=True)
+        expired_checkpoints, expired_blobs = memory_runtime.cleanup_expired_workspace_snapshots()
+        if expired_checkpoints or expired_blobs:
+            print(
+                f"已清理 {expired_checkpoints} 个过期 workspace checkpoint 和 {expired_blobs} 个 snapshot blob。",
+                flush=True,
+            )
     # 创建 OpenAI 客户端（复用连接）
     api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
     # 对话历史记录，跨轮次保持记忆

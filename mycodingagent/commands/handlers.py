@@ -1,15 +1,23 @@
 from __future__ import annotations
 
+import sys
+
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime import client
 from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
 from mycodingagent.terminal_ui.confirm import (
+    confirm_force_rewind,
     confirm_cross_workspace_action,
     confirm_cross_workspace_restore,
     confirm_delete_sessions,
 )
+from mycodingagent.terminal_ui.checkpoint_selector import (
+    select_checkpoint_interactively,
+    select_rewind_scope_interactively,
+)
 from mycodingagent.terminal_ui.history import render_conversation_history
+from mycodingagent.terminal_ui.interrupt import PromptCancelled, coordinated_input
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.multi_agent.context import run_summary_for_main_context
@@ -30,8 +38,7 @@ def build_command_registry() -> CommandRegistry:
         CommandSpec(
             name="/rewind",
             aliases=("rewind", "回退"),
-            description="恢复某个用户回合前的代码、会话或两者",
-            usage="[checkpoint_id|latest] [code|conversation|both] [--force]",
+            description="选择用户轮次，并恢复该轮前的代码、会话或两者",
             handler=handle_rewind_command,
         )
     )
@@ -39,20 +46,7 @@ def build_command_registry() -> CommandRegistry:
         CommandSpec(
             name="/resume",
             aliases=("resume", "恢复会话"),
-            description="恢复历史会话；默认仅显示当前工作目录会话",
-            usage="[session_id|--all|--help]",
-            usages=(
-                ("", "显示当前工作目录下的历史会话，并通过 ↑/↓ 选择恢复"),
-                (" --all", "显示所有工作目录下的历史会话；跨目录恢复前会要求确认"),
-                (" <session_id>", "直接恢复指定会话 id；可用于非交互终端"),
-                (" --help", "显示 /resume 的完整参数说明"),
-            ),
-            examples=(
-                "/resume",
-                "/resume --all",
-                "/resume <session_id>",
-                "/resume --help",
-            ),
+            description="选择并恢复当前工作目录的历史会话",
             handler=handle_resume_command,
         )
     )
@@ -60,20 +54,7 @@ def build_command_registry() -> CommandRegistry:
         CommandSpec(
             name="/fork",
             aliases=("fork", "分叉会话"),
-            description="从历史会话创建分叉，并切换到新的分叉会话",
-            usage="[session_id|--all|--help]",
-            usages=(
-                ("", "显示当前工作目录下的历史会话，并通过 ↑/↓ 选择分叉"),
-                (" --all", "显示所有工作目录下的历史会话；跨目录分叉前会要求确认"),
-                (" <session_id>", "直接分叉指定会话 id；可用于非交互终端"),
-                (" --help", "显示 /fork 的完整参数说明"),
-            ),
-            examples=(
-                "/fork",
-                "/fork --all",
-                "/fork <session_id>",
-                "/fork --help",
-            ),
+            description="选择历史会话创建分叉，并切换到新会话",
             handler=handle_fork_command,
         )
     )
@@ -82,15 +63,6 @@ def build_command_registry() -> CommandRegistry:
             name="/clear",
             aliases=("clear", "清空会话"),
             description="保存当前会话，清空上下文，并启动新的空会话",
-            usage="[--help]",
-            usages=(
-                ("", "保存当前会话后清空当前上下文，并立即启动新的空会话"),
-                (" --help", "显示 /clear 的完整参数说明"),
-            ),
-            examples=(
-                "/clear",
-                "/clear --help",
-            ),
             handler=handle_clear_command,
         )
     )
@@ -98,26 +70,7 @@ def build_command_registry() -> CommandRegistry:
         CommandSpec(
             name="/delete",
             aliases=("delete", "删除会话"),
-            description="删除本地历史会话；默认通过 ↑/↓ 选择删除",
-            usage="[session_id|--all|--workspace-all|--all-workspaces|--expired|--help]",
-            usages=(
-                ("", "显示当前工作目录下的历史会话，并通过 ↑/↓ 选择删除"),
-                (" --all", "显示所有工作目录下的历史会话；跨目录删除前会要求确认"),
-                (" --workspace-all", "删除当前工作目录下的全部会话"),
-                (" --all-workspaces", "删除全部工作目录下的全部会话"),
-                (" <session_id>", "直接删除指定会话 id；可用于非交互终端"),
-                (" --expired", "立即清理超过有效期未访问的会话"),
-                (" --help", "显示 /delete 的完整参数说明"),
-            ),
-            examples=(
-                "/delete",
-                "/delete --all",
-                "/delete --workspace-all",
-                "/delete --all-workspaces",
-                "/delete <session_id>",
-                "/delete --expired",
-                "/delete --help",
-            ),
+            description="选择并删除当前工作目录的历史会话",
             handler=handle_delete_command,
         )
     )
@@ -125,22 +78,7 @@ def build_command_registry() -> CommandRegistry:
         CommandSpec(
             name="/multiAgent",
             aliases=("/multiagent", "multiAgent", "multiagent", "多智能体"),
-            description="显式使用隔离的 plan/review/scheduling/execute/test 多智能体工作流执行复杂任务",
-            usage="[status|resume <run_id>|inspect <run_id>|<task>]",
-            usages=(
-                (" <task>", "创建并运行新的多智能体任务"),
-                (" status", "列出最近未完成的多智能体任务"),
-                (" resume <run_id>", "从持久化状态恢复指定任务"),
-                (" inspect <run_id>", "查看任务摘要"),
-                (" --worktree <task>", "在临时 Git worktree 中执行，成功后交付补丁"),
-            ),
-            examples=(
-                "/multiAgent 按上一轮计划修改代码",
-                "/multiagent 按上一轮计划修改代码",
-                "/multiAgent status",
-                "/multiAgent resume <run_id>",
-                "/multiAgent inspect <run_id>",
-            ),
+            description="输入任务或操作后启动多智能体工作流",
             handler=handle_multi_agent_command,
         )
     )
@@ -152,24 +90,17 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
     if memory_runtime is None:
         print("记忆模块未启用，无法回退。", flush=True)
         return CommandResult()
-    parts = [part for part in arguments.split() if part]
-    force = "--force" in parts
-    parts = [part for part in parts if part != "--force"]
     checkpoints = memory_runtime.list_workspace_checkpoints()
     if not checkpoints:
         print("当前会话没有可用的工作区 checkpoint。", flush=True)
         return CommandResult()
-    if not parts:
-        for checkpoint in checkpoints[-10:]:
-            print(
-                f"{checkpoint.checkpoint_id} | turn {checkpoint.turn_index} | {checkpoint.prompt[:80]}",
-                flush=True,
-            )
+    checkpoint_id = select_checkpoint_interactively(checkpoints)
+    if not checkpoint_id:
+        print("已取消回退。", flush=True)
         return CommandResult()
-    checkpoint_id = checkpoints[-1].checkpoint_id if parts[0] == "latest" else parts[0]
-    scope = parts[1] if len(parts) > 1 else "both"
-    if scope not in {"code", "conversation", "both"}:
-        print("scope 必须是 code、conversation 或 both。", flush=True)
+    scope = select_rewind_scope_interactively()
+    if not scope:
+        print("已取消回退。", flush=True)
         return CommandResult()
     selected = next((item for item in checkpoints if item.checkpoint_id == checkpoint_id), None)
     if selected is None:
@@ -178,11 +109,12 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
 
     updated_messages = context.messages
     if scope in {"code", "both"}:
-        result = memory_runtime.rewind_workspace(checkpoint_id, force=force)
+        result = memory_runtime.rewind_workspace(checkpoint_id)
         if result.conflicts:
-            print("检测到外部修改，未覆盖：" + "、".join(result.conflicts), flush=True)
-            print("确认覆盖时使用 --force。", flush=True)
-            return CommandResult()
+            if not confirm_force_rewind(result.conflicts):
+                print("已取消回退，未覆盖外部修改。", flush=True)
+                return CommandResult()
+            result = memory_runtime.rewind_workspace(checkpoint_id, force=True)
         if result.errors:
             print("回退失败：" + "; ".join(result.errors), flush=True)
             return CommandResult()
@@ -199,10 +131,24 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
 async def handle_multi_agent_command(context: CommandContext, arguments: str) -> CommandResult:
     store = context.multi_agent_store or MultiAgentStore()
     argument = arguments.strip()
+    if not argument:
+        if not sys.stdin.isatty():
+            print("当前终端不支持交互输入多智能体任务。", flush=True)
+            return CommandResult()
+        try:
+            argument = coordinated_input(
+                "请输入多智能体任务，或 status / resume <run_id> / inspect <run_id>："
+            ).strip()
+        except (PromptCancelled, EOFError, KeyboardInterrupt):
+            print("已取消多智能体操作。", flush=True)
+            return CommandResult()
     use_worktree = argument.startswith("--worktree ")
     if use_worktree:
         argument = argument[len("--worktree ") :].strip()
-    if not argument or argument in {"--help", "-h", "help"}:
+    if not argument:
+        print("已取消多智能体操作。", flush=True)
+        return CommandResult()
+    if argument in {"--help", "-h", "help"}:
         print(build_command_registry().match("/multiAgent")[0].help_text(), flush=True)
         return CommandResult()
 

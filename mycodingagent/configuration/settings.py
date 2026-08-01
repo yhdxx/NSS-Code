@@ -203,6 +203,9 @@ class MemoryConfig:
     prompt_path: Path | None = field(default_factory=lambda: _env_path("MYCODINGAGENT_MEMORY_SUMMARY_PROMPT"))
     default_context_window: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MODEL_CONTEXT_WINDOW", 1_000_000))
     session_ttl_days: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS", 30))
+    workspace_snapshot_ttl_days: int = field(
+        default_factory=lambda: _env_int("MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS", 30)
+    )
     tool_preview_chars: int = field(default_factory=lambda: _env_int("MYCODINGAGENT_MEMORY_TOOL_PREVIEW_CHARS", 2000))
     context_preview_threshold_tokens: int = field(
         default_factory=lambda: _env_int("MYCODINGAGENT_CONTEXT_PREVIEW_THRESHOLD_TOKENS", 12000)

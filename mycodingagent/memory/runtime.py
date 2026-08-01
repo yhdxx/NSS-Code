@@ -215,6 +215,7 @@ class MemoryRuntime:
         session_id = self.get_current_session_id()
         if not session_id:
             return
+        self.cleanup_expired_workspace_snapshots()
         checkpoints = self.workspace_checkpoint_manager.list(session_id)
         self.workspace_checkpoint_manager.begin_turn(
             session_id=session_id,
@@ -607,6 +608,14 @@ class MemoryRuntime:
         if ttl_days == 0:
             return 0
         return self.store.delete_expired_sessions(max_age_seconds=ttl_days * 24 * 60 * 60)
+
+    def cleanup_expired_workspace_snapshots(self) -> tuple[int, int]:
+        ttl_days = max(0, CONFIG.memory.workspace_snapshot_ttl_days)
+        if ttl_days == 0:
+            return 0, 0
+        return self.store.cleanup_expired_workspace_snapshots(
+            max_age_seconds=ttl_days * 24 * 60 * 60
+        )
 
     def list_sessions(self, *, limit: int = 20, include_all: bool = False) -> list[SessionListItem]:
         if include_all:

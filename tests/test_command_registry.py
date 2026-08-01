@@ -10,7 +10,7 @@ async def noop_handler(context: CommandContext, arguments: str) -> CommandResult
     return CommandResult(messages=[{"role": "user", "content": arguments}])
 
 
-def test_command_registry_matches_command_and_alias():
+def test_command_registry_only_matches_exact_command_and_alias():
     registry = CommandRegistry()
     registry.register(
         CommandSpec(
@@ -22,9 +22,11 @@ def test_command_registry_matches_command_and_alias():
     )
 
     assert registry.match("/resume") is not None
-    assert registry.match("/resume abc") is not None
-    assert registry.match("resume abc") is not None
-    assert registry.match("恢复会话 abc") is not None
+    assert registry.exact_command("/resume") is not None
+    assert registry.match("/resume abc") is None
+    assert registry.exact_command("/resume abc") is None
+    assert registry.match("resume abc") is None
+    assert registry.match("恢复会话 abc") is None
     registry.register(
         CommandSpec(
             name="/delete",
@@ -33,9 +35,9 @@ def test_command_registry_matches_command_and_alias():
             handler=noop_handler,
         )
     )
-    assert registry.match("/delete abc") is not None
-    assert registry.match("delete abc") is not None
-    assert registry.match("删除会话 abc") is not None
+    assert registry.match("/delete abc") is None
+    assert registry.match("delete abc") is None
+    assert registry.match("删除会话 abc") is None
     registry.register(
         CommandSpec(
             name="/fork",
@@ -44,9 +46,9 @@ def test_command_registry_matches_command_and_alias():
             handler=noop_handler,
         )
     )
-    assert registry.match("/fork abc") is not None
-    assert registry.match("fork abc") is not None
-    assert registry.match("分叉会话 abc") is not None
+    assert registry.match("/fork abc") is None
+    assert registry.match("fork abc") is None
+    assert registry.match("分叉会话 abc") is None
     registry.register(
         CommandSpec(
             name="/clear",
@@ -96,14 +98,20 @@ def test_command_suggestions_do_not_block_path_like_input():
     assert registry.suggestions("/resume abc") == []
 
 
-def test_command_registry_executes_handler():
+def test_command_registry_executes_only_exact_command():
     registry = CommandRegistry()
     registry.register(CommandSpec(name="/resume", description="恢复历史会话", handler=noop_handler))
 
-    result = asyncio.run(registry.execute("/resume session-1", CommandContext(None, None, [])))
+    result = asyncio.run(registry.execute("/resume", CommandContext(None, None, [])))
 
     assert result.handled
-    assert result.messages == [{"role": "user", "content": "session-1"}]
+    assert result.messages == [{"role": "user", "content": ""}]
+
+    model_input = asyncio.run(
+        registry.execute("/resume session-1", CommandContext(None, None, []))
+    )
+
+    assert not model_input.handled
 
 
 def test_history_message_formatting_skips_system_and_folds_tool_output():
