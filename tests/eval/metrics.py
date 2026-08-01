@@ -66,6 +66,40 @@ def reduction_rate(baseline: float, candidate: float) -> float | None:
     return round((baseline - candidate) / baseline, 6)
 
 
+def bootstrap_reduction_ci(
+    baseline: Iterable[float | int],
+    candidate: Iterable[float | int],
+    *,
+    confidence: float = 0.95,
+    samples: int = 2_000,
+    seed: int = 20260801,
+) -> dict[str, float | None]:
+    """Bootstrap candidate-mean reduction while preserving paired runs."""
+    baseline_items = [float(value) for value in baseline]
+    candidate_items = [float(value) for value in candidate]
+    if not baseline_items or len(baseline_items) != len(candidate_items):
+        return {"mean": None, "low": None, "high": None}
+    point = reduction_rate(statistics.mean(baseline_items), statistics.mean(candidate_items))
+    rng = random.Random(seed)
+    reductions: list[float] = []
+    for _ in range(max(100, samples)):
+        indices = [rng.randrange(len(baseline_items)) for _ in baseline_items]
+        value = reduction_rate(
+            statistics.mean(baseline_items[index] for index in indices),
+            statistics.mean(candidate_items[index] for index in indices),
+        )
+        if value is not None:
+            reductions.append(value)
+    if not reductions:
+        return {"mean": point, "low": None, "high": None}
+    alpha = (1 - confidence) / 2
+    return {
+        "mean": point,
+        "low": percentile(reductions, alpha),
+        "high": percentile(reductions, 1 - alpha),
+    }
+
+
 def sha256_file(path: Path) -> str:
     digest = hashlib.sha256()
     with path.open("rb") as handle:

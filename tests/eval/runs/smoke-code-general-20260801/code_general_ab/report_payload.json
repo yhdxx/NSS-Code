@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner run-code-general-ab --dataset tests/eval/datasets/multi_agent_tasks.jsonl --repeats 1",
+  "metric": "code_general_ab"
+}

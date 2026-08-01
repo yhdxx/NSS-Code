@@ -1,0 +1,20 @@
+{
+  "available_run_count": 90,
+  "case_count": 30,
+  "hit_rate_ci95": {
+    "high": 0.986615,
+    "low": 0.986586,
+    "mean": 0.986601
+  },
+  "mean_session_hit_rate": 0.986601,
+  "module": "prefix_cache",
+  "p50_session_hit_rate": 0.986659,
+  "p95_session_hit_rate": 0.986659,
+  "reason": "",
+  "repeats": 3,
+  "resume_conclusion": "30 个会话、每会话 1 次预热和 3 次正式测量中，服务商原生字段统计的 token 加权前缀缓存命中率为 98.66%；system prompt 与工具 schema 固定，项目图谱未常驻 message。",
+  "run_count": 90,
+  "status": "passed",
+  "token_weighted_hit_rate": 0.9866,
+  "warmup_excluded": true
+}

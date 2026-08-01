@@ -409,7 +409,9 @@ def run_multi_agent_ab(dataset_path: Path, *, limit: int | None = None, project_
     return summary
 
 
-async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int) -> dict[str, Any]:
+async def _run_multi_agent_case(
+    case: dict[str, Any], *, mode: str, ordinal: int, capture_stdout: bool = True,
+) -> dict[str, Any]:
     os.environ.setdefault("STEP_TOKEN", "0")
     os.environ.setdefault("ROUND_TOKEN", "0")
     os.environ.setdefault("CONVERSATION_TOKEN", "0")
@@ -452,8 +454,11 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
         registry = _workspace_registry(workspace, memory_runtime)
         multi_store = MultiAgentStore(state_dir / f"{mode}_multi_agent.sqlite3")
         run_log = io.StringIO()
+        output_context = (
+            contextlib.redirect_stdout(run_log) if capture_stdout else contextlib.nullcontext()
+        )
         try:
-            with contextlib.redirect_stdout(run_log):
+            with output_context:
                 if mode == "direct":
                     prompt = (
                         f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
@@ -510,7 +515,8 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
                 "pytest_stderr_tail": verify.stderr[-1000:],
                 "prompt_tokens": token_summary.get("prompt_tokens", 0),
                 "completion_tokens": token_summary.get("completion_tokens", 0),
-                "total_tokens": token_summary.get("total_tokens", 0),
+                "total_tokens": token_summary.get("total_tokens", 0) if mode == "direct" else None,
+                "token_accounting_status": "available" if mode == "direct" else "unavailable_subagent_aggregation",
                 "multi_agent_status": multi_agent_payload.get("status", "") if multi_agent_payload else "",
                 "multi_agent_run_id": run_id,
                 "subagent_rounds": run.subagent_rounds_used if run else {},
@@ -535,7 +541,7 @@ async def _run_multi_agent_case(case: dict[str, Any], *, mode: str, ordinal: int
             await api_client.close()
 
 
-def _workspace_registry(workspace: Path, memory_runtime: Any) -> Any:
+def _workspace_registry(workspace: Path, memory_runtime: Any, project_graph_service: Any | None = None) -> Any:
     from mycodingagent.tool_runtime import ToolRegistry
     from mycodingagent.tool_runtime.bash import Bash
     from mycodingagent.tool_runtime.edit_file import EditFile
@@ -564,6 +570,13 @@ def _workspace_registry(workspace: Path, memory_runtime: Any) -> Any:
     registry.register(Bash(sandbox_root=workspace))
     registry.register(Glob(sandbox_root=workspace))
     registry.register(Grep(sandbox_root=workspace))
+    if project_graph_service is not None:
+        from mycodingagent.tool_runtime.project_graph import (
+            ProjectArchitectureTool, UnitDependencyGraphTool, UpdateProjectDescriptionTool,
+        )
+        registry.register(ProjectArchitectureTool(project_graph_service))
+        registry.register(UnitDependencyGraphTool(project_graph_service))
+        registry.register(UpdateProjectDescriptionTool(project_graph_service))
     registry.register(CommitWorkingContext(memory_runtime))
     registry.register(BatchRecoverContext(memory_runtime))
     registry.register(RestoreSession(memory_runtime))

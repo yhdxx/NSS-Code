@@ -1,6 +1,6 @@
 # 项目图谱评测
 
-- 状态：`deferred_by_user`
+- 状态：`passed`
 - 指标 ID：`project_graph`
 
 ## 指标定义
@@ -17,8 +17,10 @@
 
 ```json
 {
-  "sample_count": 0,
-  "tool_schema_hash": "353c3c21365b3bc5bc32e362728d51213a4566946b7bc4d0d809a82de93d9360"
+  "dataset_path": "tests/eval/manifests/public_projects.json",
+  "dataset_sha256": "729dd3c888e44412f935fe87e567c165774a5a135682259aae4e4f803a2d33dc",
+  "sample_count": 10,
+  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
 }
 ```
 
@@ -27,29 +29,82 @@
 ```json
 {
   "base_url": "https://api.deepseek.com",
-  "generated_at": "2026-08-01T17:24:59+0800",
-  "git_commit": "ec48e4dafbce640241eb0dd4ebc5d527870098f3",
+  "generated_at": "2026-08-01T18:24:02+0800",
+  "git_commit": "1c5e2b27423b9618a1c76f0a1c4b38542011420e",
   "git_dirty": true,
   "model": "deepseek-v4-pro",
   "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
   "python": "3.12.6",
   "random_seed": 20260801,
   "repeats": 1,
-  "run_id": "deferred-graph-redesign-docs-20260801"
+  "run_id": "graph-resumable-20260801"
 }
 ```
 
 ## 执行命令
 
 ```bash
-python3 -m tests.eval.modern_runner defer-project-graph
+python3 -m tests.eval.modern_runner run-project-graph --manifest tests/eval/manifests/public_projects.json --projects-root /tmp/mycodingagent_eval_projects --annotations tests/eval/annotations
 ```
 
 ## 结果与置信区间
 
 ```json
 {
-  "reason": "用户正在修改项目图谱逻辑；图谱与 Code/General 实测已显式延期。"
+  "accuracy_reason": "manual symbol/call annotations are absent",
+  "accuracy_status": "not_run",
+  "annotation_projects": 0,
+  "call_precision": null,
+  "call_recall": null,
+  "completed_projects": 10,
+  "first_build_seconds": {
+    "ci95": {
+      "high": 340.004863,
+      "low": 72.390524,
+      "mean": 178.562325
+    },
+    "mean": 178.562325,
+    "p50": 92.057782,
+    "p95": 587.058589,
+    "sample_count": 10
+  },
+  "incremental_refresh_seconds": {
+    "ci95": {
+      "high": 2.5734,
+      "low": 0.202692,
+      "mean": 1.087932
+    },
+    "mean": 1.087932,
+    "p50": 0.186056,
+    "p95": 4.640171,
+    "sample_count": 10
+  },
+  "peak_memory_mib": {
+    "ci95": {
+      "high": 31.414068,
+      "low": 8.819115,
+      "mean": 17.458593
+    },
+    "mean": 17.458593,
+    "p50": 10.178424,
+    "p95": 50.464661,
+    "sample_count": 10
+  },
+  "performance_status": "passed",
+  "project_count": 10,
+  "resume_conclusion": "在 10 个固定 commit 项目上完成图谱性能评测；符号覆盖率及调用边精确率/召回率尚无人工标注，不作为准确性证据。",
+  "symbol_coverage": null,
+  "warm_read_seconds": {
+    "ci95": {
+      "high": 0.00297,
+      "low": 0.001001,
+      "mean": 0.001898
+    },
+    "mean": 0.001898,
+    "p50": 0.000991,
+    "p95": 0.004621,
+    "sample_count": 10
+  }
 }
 ```
 
@@ -70,4 +125,4 @@ python3 -m tests.eval.modern_runner defer-project-graph
 
 ## 简历可用结论
 
-不可使用量化结论（status=deferred_by_user）：用户正在修改项目图谱逻辑；图谱与 Code/General 实测已显式延期。
+在 10 个固定 commit 项目上完成图谱性能评测；符号覆盖率及调用边精确率/召回率尚无人工标注，不作为准确性证据。

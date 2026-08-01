@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import json
+import shutil
 import sqlite3
 import time
 import tracemalloc
@@ -20,13 +21,31 @@ def run_project_graph_benchmark(
     run_dir: Path,
     annotations_dir: Path | None = None,
 ) -> dict[str, Any]:
-    details = []
+    run_dir.mkdir(parents=True, exist_ok=True)
+    details_path = run_dir / "project_graph_details.jsonl"
+    details = _read_jsonl(details_path) if details_path.exists() else []
+    completed_ids = {row.get("project_id") for row in details if row.get("status") == "passed"}
     for project in projects:
+        if project.project_id in completed_ids:
+            continue
         workspace = projects_root / project.project_id
         if not workspace.exists():
             details.append({"project_id": project.project_id, "status": "blocked", "reason": "project_not_prepared"})
+            _write_jsonl(details_path, details)
             continue
-        details.append(_benchmark_project(project, workspace, run_dir / "state", annotations_dir))
+        project_state = run_dir / "state" / project.project_id
+        if project_state.exists():
+            shutil.rmtree(project_state)
+        try:
+            row = _benchmark_project(project, workspace, run_dir / "state", annotations_dir)
+        except Exception as exc:
+            row = {
+                "project_id": project.project_id, "status": "failed",
+                "reason": f"{type(exc).__name__}: {exc}",
+            }
+        details = [item for item in details if item.get("project_id") != project.project_id]
+        details.append(row)
+        _write_jsonl(details_path, details)
     completed = [row for row in details if row.get("status") == "passed"]
     summary = {
         "module": "project_graph",
@@ -42,8 +61,7 @@ def run_project_graph_benchmark(
         "call_precision": _optional_mean(row.get("call_precision") for row in completed),
         "call_recall": _optional_mean(row.get("call_recall") for row in completed),
     }
-    run_dir.mkdir(parents=True, exist_ok=True)
-    _write_jsonl(run_dir / "project_graph_details.jsonl", details)
+    _write_jsonl(details_path, details)
     _write_jsonl(run_dir / "project_graph.jsonl", [summary])
     return summary
 
@@ -110,9 +128,6 @@ def _measure_incremental_refresh(
         return time.perf_counter() - started
     finally:
         source.write_bytes(original)
-        index.mark_dirty(source)
-        graph.mark_dirty(source)
-        graph.architecture("")
 
 
 def _evaluate_annotations(
@@ -166,3 +181,7 @@ def _optional_mean(values) -> float | None:
 
 def _write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
     path.write_text("".join(json.dumps(row, ensure_ascii=False, sort_keys=True) + "\n" for row in rows), encoding="utf-8")
+
+
+def _read_jsonl(path: Path) -> list[dict[str, Any]]:
+    return [json.loads(line) for line in path.read_text(encoding="utf-8").splitlines() if line.strip()]

@@ -21,15 +21,19 @@ PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-capability-routing
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-prefix-cache --repeats 3
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-context --repeats 3
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-long-term-memory --repeats 3
-PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-multi-agent --repeats 3
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner report
 ```
 
-项目图谱与 Code/General A/B 当前按用户要求延期：图谱逻辑修改完成前，不运行这两项，也不生成量化结论。当前延期状态可通过以下命令复现：
+Multi-Agent 模块计划废弃，不再纳入标准评测，也不得继续运行其效果实验。
+现有历史与中止实验只通过 `document-multi-agent-existing` 归档，状态固定为
+`deprecated_incomplete`，不能用于声明成功率或效率提升。
+
+项目图谱逻辑修改完成后，可准备固定项目快照并运行图谱与 Code/General A/B：
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner defer-project-graph
-PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner defer-code-general-ab
+PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner prepare-projects
+PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-project-graph
+PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-code-general-ab --repeats 3
 ```
 
 ## 每份指标文档的强制内容

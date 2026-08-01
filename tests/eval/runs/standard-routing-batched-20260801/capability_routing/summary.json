@@ -1,0 +1,45 @@
+{
+  "avg_unrelated_top_5": 1.6,
+  "capability_count": 1200,
+  "duration_seconds": 249.147,
+  "embedding_batch_size": 32,
+  "mcp_count": 300,
+  "metric_ci95": {
+    "mrr": {
+      "high": 0.834811,
+      "low": 0.731949,
+      "mean": 0.784274
+    },
+    "ndcg_at_5": {
+      "high": 0.73598,
+      "low": 0.633749,
+      "mean": 0.686539
+    },
+    "recall_at_1": {
+      "high": 0.79,
+      "low": 0.665,
+      "mean": 0.73
+    },
+    "recall_at_3": {
+      "high": 0.87,
+      "low": 0.77,
+      "mean": 0.825
+    },
+    "recall_at_5": {
+      "high": 0.89,
+      "low": 0.795,
+      "mean": 0.845
+    }
+  },
+  "module": "capability_routing",
+  "mrr": 0.784274,
+  "ndcg_at_5": 0.686539,
+  "query_count": 200,
+  "reason": "Embedding retrieval core only; full MCP execution routing is separately integration-tested.",
+  "recall_at_1": 0.73,
+  "recall_at_3": 0.825,
+  "recall_at_5": 0.845,
+  "resume_conclusion": "在 1200 项 Skill/MCP 混合语料与 200 条改写查询上完成 BGE 检索评测；结论仅覆盖候选召回与排序，不等同于工具执行正确率。",
+  "skill_count": 900,
+  "status": "passed"
+}

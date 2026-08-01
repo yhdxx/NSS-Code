@@ -1,6 +1,6 @@
 # Skill / MCP 能力路由评测
 
-- 状态：`not_run`
+- 状态：`passed`
 - 指标 ID：`capability_routing`
 
 ## 指标定义
@@ -17,7 +17,10 @@
 
 ```json
 {
-  "sample_count": 0
+  "dataset_path": "tests/eval/datasets/capability_routing_1200_cases.jsonl",
+  "dataset_sha256": "bd9135b3b12a5243a509528799ccc60d424c7807b731a332c1152fa8d9b503a8",
+  "sample_count": 200,
+  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
 }
 ```
 
@@ -25,31 +28,70 @@
 
 ```json
 {
-  "base_url": "",
-  "generated_at": "2026-08-01T17:24:59+0800",
-  "git_commit": "",
-  "git_dirty": "",
-  "model": "",
-  "platform": "",
-  "python": "",
-  "random_seed": "",
-  "repeats": "",
-  "run_id": "not-run"
+  "base_url": "https://api.deepseek.com",
+  "generated_at": "2026-08-01T19:37:25+0800",
+  "git_commit": "1c5e2b27423b9618a1c76f0a1c4b38542011420e",
+  "git_dirty": true,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 1,
+  "run_id": "standard-routing-batched-20260801"
 }
 ```
 
 ## 执行命令
 
 ```bash
-python3 -m tests.eval.modern_runner run-capability-routing
+python3 -m tests.eval.modern_runner run-capability-routing --dataset tests/eval/datasets/capability_routing_1200_cases.jsonl
 ```
 
 ## 结果与置信区间
 
 ```json
 {
-  "reason": "尚未执行新版标准评测",
-  "status": "not_run"
+  "avg_unrelated_top_5": 1.6,
+  "capability_count": 1200,
+  "duration_seconds": 249.147,
+  "embedding_batch_size": 32,
+  "mcp_count": 300,
+  "metric_ci95": {
+    "mrr": {
+      "high": 0.834811,
+      "low": 0.731949,
+      "mean": 0.784274
+    },
+    "ndcg_at_5": {
+      "high": 0.73598,
+      "low": 0.633749,
+      "mean": 0.686539
+    },
+    "recall_at_1": {
+      "high": 0.79,
+      "low": 0.665,
+      "mean": 0.73
+    },
+    "recall_at_3": {
+      "high": 0.87,
+      "low": 0.77,
+      "mean": 0.825
+    },
+    "recall_at_5": {
+      "high": 0.89,
+      "low": 0.795,
+      "mean": 0.845
+    }
+  },
+  "mrr": 0.784274,
+  "ndcg_at_5": 0.686539,
+  "query_count": 200,
+  "reason": "Embedding retrieval core only; full MCP execution routing is separately integration-tested.",
+  "recall_at_1": 0.73,
+  "recall_at_3": 0.825,
+  "recall_at_5": 0.845,
+  "resume_conclusion": "在 1200 项 Skill/MCP 混合语料与 200 条改写查询上完成 BGE 检索评测；结论仅覆盖候选召回与排序，不等同于工具执行正确率。",
+  "skill_count": 900
 }
 ```
 
@@ -70,4 +112,4 @@ python3 -m tests.eval.modern_runner run-capability-routing
 
 ## 简历可用结论
 
-不可使用量化结论（status=not_run）：尚未执行新版标准评测
+在 1200 项 Skill/MCP 混合语料与 200 条改写查询上完成 BGE 检索评测；结论仅覆盖候选召回与排序，不等同于工具执行正确率。

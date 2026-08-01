@@ -1,0 +1,16 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "dataset_path": "tests/eval/datasets/capability_routing_1200_cases.jsonl",
+  "dataset_sha256": "bd9135b3b12a5243a509528799ccc60d424c7807b731a332c1152fa8d9b503a8",
+  "extra": {},
+  "generated_at": "2026-08-01T19:37:25+0800",
+  "git_commit": "1c5e2b27423b9618a1c76f0a1c4b38542011420e",
+  "git_dirty": true,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 1,
+  "run_id": "standard-routing-batched-20260801",
+  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
+}

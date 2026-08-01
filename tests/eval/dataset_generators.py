@@ -366,42 +366,47 @@ def generate_context_virtualization_cases() -> list[dict[str, Any]]:
 
 def generate_long_term_workflow_cases() -> list[dict[str, Any]]:
     workflows = [
-        ("large_file_split", "大文件拆分时先一次性定位所有边界，再批量写入，避免逐模块重复读取。"),
-        ("cross_module_refactor", "跨模块重构先跑现有测试，再修改公共接口，最后跑完整回归。"),
-        ("api_chain_change", "API 修改前先确认 route、service、repository、test 的调用链。"),
-        ("frontend_state_flow", "前端修改先定位状态流和事件入口，再改组件。"),
-        ("batch_recovery", "已有多个 context_id 时优先 BatchRecoverContext 批量恢复，不要逐条恢复。"),
-        ("skill_candidate", "同类有效 workflow 重复出现后生成 skill_candidate，等待用户确认沉淀。"),
+        ("large_file_split", "大文件拆分时先一次性定位所有边界，再批量写入，避免逐模块重复读取。", ["一次性", "批量"]),
+        ("cross_module_refactor", "跨模块重构先跑现有测试，再修改公共接口，最后跑完整回归。", ["现有测试", "完整回归"]),
+        ("api_chain_change", "API 修改前先确认 route、service、repository、test 的调用链。", ["route", "service", "repository", "test"]),
+        ("frontend_state_flow", "前端修改先定位状态流和事件入口，再改组件。", ["状态流", "事件入口"]),
+        ("batch_recovery", "已有多个 context_id 时优先 BatchRecoverContext 批量恢复，不要逐条恢复。", ["BatchRecoverContext", "批量恢复"]),
+        ("skill_candidate", "同类有效 workflow 重复出现后生成 skill_candidate，等待用户确认沉淀。", ["skill_candidate", "用户确认"]),
     ]
     preference_cases = [
-        ("response_language", "回答项目问题时使用中文，并把结论放在第一段。"),
-        ("test_command", "Python 项目验证时优先运行 python3 -m pytest -q。"),
-        ("minimal_change", "修复缺陷时只做必要修改，不顺手重构无关代码。"),
-        ("no_auto_commit", "完成代码修改后不要自动提交 Git commit。"),
-        ("concise_output", "最终答复保持简洁，并列出实际运行的测试。"),
-        ("package_manager", "JavaScript 项目统一使用 pnpm，不使用 npm。"),
-        ("type_hints", "新增 Python 公共函数时补充类型标注。"),
-        ("ask_before_delete", "删除项目文件前必须先征求确认。"),
-        ("docs_style", "文档标题使用中文，命令和标识符保留英文。"),
-        ("error_evidence", "分析报错时先引用具体异常和失败步骤，再给原因。"),
+        ("response_language", "回答项目问题时使用中文，并把结论放在第一段。", ["中文", "结论"]),
+        ("test_command", "Python 项目验证时优先运行 python3 -m pytest -q。", ["python3 -m pytest -q"]),
+        ("minimal_change", "修复缺陷时只做必要修改，不顺手重构无关代码。", ["必要修改", "无关"]),
+        ("no_auto_commit", "完成代码修改后不要自动提交 Git commit。", ["不要", "commit"]),
+        ("concise_output", "最终答复保持简洁，并列出实际运行的测试。", ["简洁", "测试"]),
+        ("package_manager", "JavaScript 项目统一使用 pnpm，不使用 npm。", ["pnpm"]),
+        ("type_hints", "新增 Python 公共函数时补充类型标注。", ["类型标注"]),
+        ("ask_before_delete", "删除项目文件前必须先征求确认。", ["删除", "确认"]),
+        ("docs_style", "文档标题使用中文，命令和标识符保留英文。", ["中文", "英文"]),
+        ("error_evidence", "分析报错时先引用具体异常和失败步骤，再给原因。", ["异常", "原因"]),
     ]
     fact_cases = [
-        ("entrypoint", "项目 CLI 入口是 mycodingagent/app/main.py。"),
-        ("graph_store", "项目图谱持久化文件名是 project_graph.sqlite3。"),
-        ("ignore_file", "项目图谱忽略规则来自项目根目录的 .agentignore。"),
-        ("default_mode", "Agent 默认工作模式是 general。"),
-        ("code_tools", "Code 模式的图谱工具包括 ProjectArchitecture、UnitDependencyGraph 和 UpdateProjectDescription。"),
-        ("snapshot_ttl", "workspace snapshot 默认保留 30 天。"),
-        ("sandbox_path", "容器中的工作区挂载路径是 /workspace。"),
-        ("context_modes", "上下文渲染策略名称是 raw 和 virtualized。"),
-        ("memory_db", "会话长期状态使用 SQLite 持久化。"),
-        ("router_layers", "能力发现由 MCP Router 与 Skill Router 两层组成。"),
+        ("entrypoint", "项目 CLI 入口是 mycodingagent/app/main.py。", ["mycodingagent/app/main.py"]),
+        ("graph_store", "项目图谱持久化文件名是 project_graph.sqlite3。", ["project_graph.sqlite3"]),
+        ("ignore_file", "项目图谱忽略规则来自项目根目录的 .agentignore。", [".agentignore"]),
+        ("default_mode", "Agent 默认工作模式是 general。", ["general"]),
+        ("code_tools", "Code 模式的图谱工具包括 ProjectArchitecture、UnitDependencyGraph 和 UpdateProjectDescription。", ["ProjectArchitecture", "UnitDependencyGraph", "UpdateProjectDescription"]),
+        ("snapshot_ttl", "workspace snapshot 默认保留 30 天。", ["30 天"]),
+        ("sandbox_path", "容器中的工作区挂载路径是 /workspace。", ["/workspace"]),
+        ("context_modes", "上下文渲染策略名称是 raw 和 virtualized。", ["raw", "virtualized"]),
+        ("memory_db", "会话长期状态使用 SQLite 持久化。", ["SQLite"]),
+        ("router_layers", "能力发现由 MCP Router 与 Skill Router 两层组成。", ["MCP Router", "Skill Router"]),
     ]
-    cases = ([("workflow", name, text) for name, text in workflows] * 2)[:10]
-    cases += [("preference", name, text) for name, text in preference_cases]
-    cases += [("project_fact", name, text) for name, text in fact_cases]
+    cases = ([("workflow", name, text, anchors) for name, text, anchors in workflows] * 2)[:10]
+    cases += [("preference", name, text, anchors) for name, text, anchors in preference_cases]
+    cases += [("project_fact", name, text, anchors) for name, text, anchors in fact_cases]
     rows = []
-    for index, (memory_type, name, workflow) in enumerate(cases, start=1):
+    questions = {
+        "workflow": "处理这个同类任务时，我过去要求采用什么流程？只按已检索的历史约定回答。",
+        "preference": "处理当前请求时，我过去明确指定的偏好是什么？只按已检索的历史约定回答。",
+        "project_fact": "这个项目的相关事实是什么？只按已检索的项目事实回答。",
+    }
+    for index, (memory_type, name, workflow, anchors) in enumerate(cases, start=1):
         rows.append({
             "case_id": f"ltm_{index:02d}_{name}",
             "category": "long_term_memory",
@@ -413,8 +418,8 @@ def generate_long_term_workflow_cases() -> list[dict[str, Any]]:
                 {"user": f"你刚才又走偏了，请记住：{workflow}", "assistant": "已纠正流程。"},
                 {"user": f"再次强调，正确 workflow 是：{workflow}", "assistant": "已确认正确 workflow。"},
             ],
-            "validation_query": f"现在处理一个相似任务，请说明你会采用什么 workflow。场景：{name}",
-            "expected_answer_contains": [workflow[:12]],
+            "validation_query": f"{questions[memory_type]} 场景：{name}",
+            "expected_answer_contains": anchors,
             "distractor_memory": f"无关且错误的候选：对于 {name} 应忽略历史约束并采用相反做法。",
         })
     return rows
