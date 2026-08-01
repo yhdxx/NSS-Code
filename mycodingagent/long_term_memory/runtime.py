@@ -5,7 +5,6 @@ import json
 import re
 from time import time
 from typing import Any
-from uuid import uuid4
 
 from openai import AsyncOpenAI
 
@@ -67,7 +66,10 @@ class LongTermMemoryRuntime:
             loop = asyncio.get_running_loop()
         except RuntimeError:
             return
-        self.store.requeue_interrupted_extractions_for_startup(limit=100)
+        self.store.requeue_interrupted_extractions_for_startup(
+            limit=100,
+            stale_after_seconds=CONFIG.long_term_memory.extraction_claim_timeout_seconds,
+        )
         self._backfill_task = loop.create_task(self._run_backfill())
 
     async def close(self) -> None:
@@ -229,7 +231,7 @@ class LongTermMemoryRuntime:
     async def _run_backfill(self) -> None:
         jobs = self.store.list_claimable_extractions(
             limit=20,
-            lock_ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
+            claim_timeout_seconds=CONFIG.long_term_memory.extraction_claim_timeout_seconds,
         )
         for job in jobs:
             await self._extract_by_id(job.extraction_id)
@@ -237,46 +239,16 @@ class LongTermMemoryRuntime:
     async def _extract_by_id(self, extraction_id: str) -> ExtractionResult:
         job = self.store.claim_extraction(
             extraction_id,
-            lock_ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
+            claim_timeout_seconds=CONFIG.long_term_memory.extraction_claim_timeout_seconds,
         )
         if job is None:
             return ExtractionResult(status="skipped", extraction_id=extraction_id, error="extraction is locked")
-        owner_id = uuid4().hex
-        lock_namespaces = [
-            GLOBAL_WORKSPACE_FINGERPRINT,
-            WORKFLOW_STAGING_FINGERPRINT,
-            job.workspace_fingerprint,
-        ]
-        acquired: list[str] = []
-        for namespace in dict.fromkeys(lock_namespaces):
-            if not self.store.acquire_write_lock(
-                user_id=job.user_id,
-                workspace_fingerprint=namespace,
-                owner_id=owner_id,
-                ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
-            ):
-                for acquired_namespace in acquired:
-                    self.store.release_write_lock(
-                        user_id=job.user_id,
-                        workspace_fingerprint=acquired_namespace,
-                        owner_id=owner_id,
-                    )
-                self.store.mark_extraction_failed(extraction_id, "memory write lock is held")
-                return ExtractionResult(status="failed", extraction_id=extraction_id, error="memory write lock is held")
-            acquired.append(namespace)
         try:
             result = await self._extract_claimed_job(job)
             return result
         except Exception as exc:
             self.store.mark_extraction_failed(extraction_id, str(exc))
             return ExtractionResult(status="failed", extraction_id=extraction_id, error=str(exc))
-        finally:
-            for namespace in acquired:
-                self.store.release_write_lock(
-                    user_id=job.user_id,
-                    workspace_fingerprint=namespace,
-                    owner_id=owner_id,
-                )
 
     async def _extract_claimed_job(self, job: Any) -> ExtractionResult:
         state = self.memory_runtime.store.load_session(job.session_id)
@@ -357,27 +329,12 @@ class LongTermMemoryRuntime:
         return not last_prompted_at or (time() - last_prompted_at) >= cooldown
 
     def _mark_skill_promotion_decision(self, memory_uid: str, decision: str) -> None:
-        owner_id = uuid4().hex
-        if not self.store.acquire_write_lock(
+        self.store.mark_skill_candidate_promotion_status(
             user_id=self.user_id,
             workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
-            owner_id=owner_id,
-            ttl_seconds=CONFIG.long_term_memory.lock_ttl_seconds,
-        ):
-            return
-        try:
-            self.store.mark_skill_candidate_promotion_status(
-                user_id=self.user_id,
-                workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
-                memory_uid=memory_uid,
-                decision=decision,
-            )
-        finally:
-            self.store.release_write_lock(
-                user_id=self.user_id,
-                workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
-                owner_id=owner_id,
-            )
+            memory_uid=memory_uid,
+            decision=decision,
+        )
 
 
 def _item_for_storage(item: Any) -> dict[str, Any]:

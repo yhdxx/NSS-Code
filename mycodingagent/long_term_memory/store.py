@@ -27,6 +27,10 @@ from mycodingagent.long_term_memory.namespaces import (
 from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
+class LongTermMemoryVersionConflict(RuntimeError):
+    """A writer prepared a patch from a version that is no longer current."""
+
+
 class SQLiteLongTermMemoryStore:
     def __init__(self, db_path: Path | str) -> None:
         self.db_path = Path(db_path).expanduser()
@@ -34,12 +38,15 @@ class SQLiteLongTermMemoryStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        conn = sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
+        conn = sqlite3.connect(self.db_path, timeout=30, factory=SQLITE_CONNECTION_FACTORY)
         conn.row_factory = sqlite3.Row
+        conn.execute("PRAGMA busy_timeout = 30000")
         return conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            conn.execute("PRAGMA journal_mode = WAL")
+            conn.execute("PRAGMA synchronous = NORMAL")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS long_term_memory_versions (
@@ -114,16 +121,13 @@ class SQLiteLongTermMemoryStore:
                 )
                 """
             )
-            conn.execute(
-                """
-                CREATE TABLE IF NOT EXISTS long_term_memory_locks (
-                    lock_key TEXT PRIMARY KEY,
-                    owner_id TEXT NOT NULL,
-                    acquired_at REAL NOT NULL,
-                    expires_at REAL NOT NULL
-                )
-                """
-            )
+            for legacy_table in ("long_term_memory_locks", "long_term_memory_write_leases"):
+                exists = conn.execute(
+                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
+                    (legacy_table,),
+                ).fetchone()
+                if exists is not None:
+                    conn.execute(f"DROP TABLE {legacy_table}")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ltm_versions_lookup "
                 "ON long_term_memory_versions(user_id, workspace_fingerprint, status, committed_at)"
@@ -160,6 +164,30 @@ class SQLiteLongTermMemoryStore:
             ).fetchone()
         return _version_from_row(row) if row is not None else None
 
+    @staticmethod
+    def _assert_current_parent(
+        conn: sqlite3.Connection,
+        *,
+        user_id: str,
+        workspace_fingerprint: str,
+        parent_version_id: str,
+    ) -> None:
+        row = conn.execute(
+            """
+            SELECT version_id FROM long_term_memory_versions
+            WHERE user_id = ? AND workspace_fingerprint = ? AND status = ?
+            ORDER BY committed_at DESC, created_at DESC
+            LIMIT 1
+            """,
+            (user_id, workspace_fingerprint, MemoryVersionStatus.COMMITTED.value),
+        ).fetchone()
+        current_version_id = str(row["version_id"]) if row is not None else ""
+        if current_version_id != parent_version_id:
+            raise LongTermMemoryVersionConflict(
+                f"memory version changed for {workspace_fingerprint}: "
+                f"expected {parent_version_id or '<empty>'}, found {current_version_id or '<empty>'}"
+            )
+
     def load_latest_active_items(self, *, user_id: str, workspace_fingerprint: str) -> tuple[LongTermMemoryVersion | None, list[LongTermMemoryItem]]:
         version = self.latest_committed_version(user_id=user_id, workspace_fingerprint=workspace_fingerprint)
         if version is None:
@@ -191,6 +219,7 @@ class SQLiteLongTermMemoryStore:
         now = time()
         extraction_id = uuid4().hex
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 INSERT OR IGNORE INTO long_term_memory_extractions(
@@ -222,10 +251,11 @@ class SQLiteLongTermMemoryStore:
             ).fetchone()
         return str(row["extraction_id"]) if row is not None else extraction_id
 
-    def claim_extraction(self, extraction_id: str, *, lock_ttl_seconds: int) -> ExtractionJob | None:
+    def claim_extraction(self, extraction_id: str, *, claim_timeout_seconds: int) -> ExtractionJob | None:
         now = time()
-        stale_before = now - max(1, lock_ttl_seconds)
+        stale_before = now - max(1, claim_timeout_seconds)
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             cursor = conn.execute(
                 """
                 UPDATE long_term_memory_extractions
@@ -255,9 +285,9 @@ class SQLiteLongTermMemoryStore:
             ).fetchone()
         return _extraction_from_row(row) if row is not None else None
 
-    def list_claimable_extractions(self, *, limit: int, lock_ttl_seconds: int) -> list[ExtractionJob]:
+    def list_claimable_extractions(self, *, limit: int, claim_timeout_seconds: int) -> list[ExtractionJob]:
         now = time()
-        stale_before = now - max(1, lock_ttl_seconds)
+        stale_before = now - max(1, claim_timeout_seconds)
         with self._connect() as conn:
             rows = conn.execute(
                 """
@@ -277,32 +307,22 @@ class SQLiteLongTermMemoryStore:
             ).fetchall()
         return [_extraction_from_row(row) for row in rows]
 
-    def requeue_interrupted_extractions_for_startup(self, *, limit: int = 100) -> int:
+    def requeue_interrupted_extractions_for_startup(self, *, limit: int = 100, stale_after_seconds: int = 60) -> int:
         now = time()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             rows = conn.execute(
                 """
                 SELECT e.extraction_id
                 FROM long_term_memory_extractions e
                 WHERE e.status = ?
-                  AND NOT EXISTS (
-                    SELECT 1
-                    FROM long_term_memory_locks l
-                    WHERE l.expires_at >= ?
-                      AND l.lock_key IN (
-                        'user:' || e.user_id || ':workspace:' || ?,
-                        'user:' || e.user_id || ':workspace:' || ?,
-                        'user:' || e.user_id || ':workspace:' || e.workspace_fingerprint
-                      )
-                  )
+                  AND e.started_at < ?
                 ORDER BY e.updated_at ASC
                 LIMIT ?
                 """,
                 (
                     ExtractionStatus.EXTRACTING.value,
-                    now,
-                    GLOBAL_WORKSPACE_FINGERPRINT,
-                    WORKFLOW_STAGING_FINGERPRINT,
+                    now - max(1, stale_after_seconds),
                     max(1, limit),
                 ),
             ).fetchall()
@@ -330,6 +350,7 @@ class SQLiteLongTermMemoryStore:
     def mark_extraction_failed(self, extraction_id: str, error_text: str) -> None:
         now = time()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 UPDATE long_term_memory_extractions
@@ -342,6 +363,7 @@ class SQLiteLongTermMemoryStore:
     def mark_extraction_committed(self, extraction_id: str, committed_version_id: str = "") -> None:
         now = time()
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 UPDATE long_term_memory_extractions
@@ -349,39 +371,6 @@ class SQLiteLongTermMemoryStore:
                 WHERE extraction_id = ?
                 """,
                 (ExtractionStatus.COMMITTED.value, committed_version_id, now, now, extraction_id),
-            )
-
-    def acquire_write_lock(self, *, user_id: str, workspace_fingerprint: str, owner_id: str, ttl_seconds: int) -> bool:
-        lock_key = self.lock_key(user_id=user_id, workspace_fingerprint=workspace_fingerprint)
-        now = time()
-        expires_at = now + max(1, ttl_seconds)
-        with self._connect() as conn:
-            try:
-                conn.execute(
-                    """
-                    INSERT INTO long_term_memory_locks(lock_key, owner_id, acquired_at, expires_at)
-                    VALUES (?, ?, ?, ?)
-                    """,
-                    (lock_key, owner_id, now, expires_at),
-                )
-                return True
-            except sqlite3.IntegrityError:
-                cursor = conn.execute(
-                    """
-                    UPDATE long_term_memory_locks
-                    SET owner_id = ?, acquired_at = ?, expires_at = ?
-                    WHERE lock_key = ? AND expires_at < ?
-                    """,
-                    (owner_id, now, expires_at, lock_key, now),
-                )
-                return cursor.rowcount > 0
-
-    def release_write_lock(self, *, user_id: str, workspace_fingerprint: str, owner_id: str) -> None:
-        lock_key = self.lock_key(user_id=user_id, workspace_fingerprint=workspace_fingerprint)
-        with self._connect() as conn:
-            conn.execute(
-                "DELETE FROM long_term_memory_locks WHERE lock_key = ? AND owner_id = ?",
-                (lock_key, owner_id),
             )
 
     def apply_patch_as_new_version(
@@ -462,8 +451,14 @@ class SQLiteLongTermMemoryStore:
             )
 
         with self._connect() as conn:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE")
             try:
+                self._assert_current_parent(
+                    conn,
+                    user_id=user_id,
+                    workspace_fingerprint=workspace_fingerprint,
+                    parent_version_id=parent_version_id,
+                )
                 conn.execute(
                     """
                     INSERT INTO long_term_memory_versions(
@@ -600,6 +595,7 @@ class SQLiteLongTermMemoryStore:
         prompted: dict[str, Any] | None = None,
     ) -> None:
         with self._connect() as conn:
+            conn.execute("BEGIN IMMEDIATE")
             conn.execute(
                 """
                 INSERT INTO long_term_memory_turn_usage(
@@ -748,8 +744,14 @@ class SQLiteLongTermMemoryStore:
         now = time()
         version_id = uuid4().hex
         with self._connect() as conn:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE")
             try:
+                self._assert_current_parent(
+                    conn,
+                    user_id=user_id,
+                    workspace_fingerprint=workspace_fingerprint,
+                    parent_version_id=latest.version_id,
+                )
                 conn.execute(
                     """
                     INSERT INTO long_term_memory_versions(
@@ -937,8 +939,14 @@ class SQLiteLongTermMemoryStore:
             for item in items
         ]
         with self._connect() as conn:
-            conn.execute("BEGIN")
+            conn.execute("BEGIN IMMEDIATE")
             try:
+                self._assert_current_parent(
+                    conn,
+                    user_id=user_id,
+                    workspace_fingerprint=workspace_fingerprint,
+                    parent_version_id=parent_version_id,
+                )
                 conn.execute(
                     """
                     INSERT INTO long_term_memory_versions(
@@ -977,10 +985,6 @@ class SQLiteLongTermMemoryStore:
                 conn.rollback()
                 raise
         return version_id
-
-    @staticmethod
-    def lock_key(*, user_id: str, workspace_fingerprint: str) -> str:
-        return f"user:{user_id}:workspace:{workspace_fingerprint}"
 
     @staticmethod
     def _validate_patch(

@@ -5,9 +5,10 @@ import asyncio
 import os
 import sqlite3
 import tempfile
+import threading
 from dataclasses import dataclass, field
 from pathlib import Path
-from time import time
+from time import monotonic, time
 from typing import Awaitable, Callable, Literal
 
 from tree_sitter_language_pack import get_parser
@@ -21,6 +22,8 @@ from pydantic import BaseModel
 CommandRisk = Literal["normal", "dangerous"]
 ExecutionRisk = Literal["read", "write", "network", "process", "dangerous", "unknown"]
 PolicyLevel = Literal["low", "approval", "high"]
+LOCK_KEY = "bash_policy:global"
+DEFAULT_LOCK_TTL_SECONDS = 120
 
 USER_DENIED_COMMAND_MESSAGE = "用户拒绝执行该命令"
 
@@ -59,7 +62,7 @@ _WRITE_COMMANDS = {"mkdir", "touch", "cp", "mv", "rm", "install", "chmod", "chow
 _NETWORK_COMMANDS = {"curl", "wget", "ssh", "scp", "rsync", "git"}
 
 DEFAULT_HIGH_COMMANDS = {
-    "su", "doas", "eval", "mkfs", "shred", "dd", "shutdown", "reboot",
+    "sudo", "su", "doas", "eval", "mkfs", "shred", "dd", "shutdown", "reboot", "history",
 }
 DEFAULT_APPROVAL_COMMANDS = {
     "bash", "sh", "zsh", "python", "python3", "node", "npm", "pytest", "pip", "pip3",
@@ -162,6 +165,48 @@ class SubmitBashHighRisk(_BashClassificationSubmission):
         super().__init__("SubmitBashHighRisk", "high", sink)
 
 
+class BashPolicyLease:
+    """A database-backed expiring lease with a background renewal heartbeat."""
+
+    def __init__(self, store: "BashPolicyStore", lock_key: str, owner_id: str, ttl_seconds: int) -> None:
+        self.store = store
+        self.lock_key = lock_key
+        self.owner_id = owner_id
+        self.ttl_seconds = max(3, int(ttl_seconds))
+        self._stop = threading.Event()
+        self._lost = threading.Event()
+        self._thread: threading.Thread | None = None
+
+    @property
+    def lost(self) -> bool:
+        return self._lost.is_set()
+
+    def start(self) -> None:
+        self._thread = threading.Thread(target=self._heartbeat, name="bash-policy-lease-heartbeat", daemon=True)
+        self._thread.start()
+
+    def _heartbeat(self) -> None:
+        interval = max(1.0, self.ttl_seconds / 3)
+        while not self._stop.wait(interval):
+            if not self.store.renew_lease(self.lock_key, self.owner_id, self.ttl_seconds):
+                self._lost.set()
+                return
+
+    def stop(self) -> None:
+        self._stop.set()
+        if self._thread is not None:
+            self._thread.join(timeout=max(1.0, self.ttl_seconds / 3) + 1)
+            self._thread = None
+
+    def __enter__(self) -> "BashPolicyLease":
+        self.start()
+        return self
+
+    def __exit__(self, _exc_type, _exc, _traceback) -> None:
+        self.stop()
+        self.store.release_lease(self.lock_key, self.owner_id)
+
+
 class BashPolicyStore:
     """Persistent three-table command/event policy store."""
 
@@ -178,7 +223,9 @@ class BashPolicyStore:
         self._init_db()
 
     def _connect(self) -> sqlite3.Connection:
-        return sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
+        conn = sqlite3.connect(self.db_path, timeout=30, factory=SQLITE_CONNECTION_FACTORY)
+        conn.execute("PRAGMA busy_timeout = 30000")
+        return conn
 
     def _init_db(self) -> None:
         with self._connect() as conn:
@@ -187,39 +234,161 @@ class BashPolicyStore:
                     f"CREATE TABLE IF NOT EXISTS {table} ("
                     "policy_key TEXT PRIMARY KEY, entry_type TEXT NOT NULL, name TEXT NOT NULL, "
                     "source TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 1.0, "
-                    "created_at REAL NOT NULL, updated_at REAL NOT NULL)"
+                    "created_at REAL NOT NULL, updated_at REAL NOT NULL, version_id TEXT NOT NULL DEFAULT '')"
                 )
+                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
+                if "version_id" not in columns:
+                    conn.execute(f"ALTER TABLE {table} ADD COLUMN version_id TEXT NOT NULL DEFAULT ''")
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bash_policy_versions ("
+                "version_id TEXT PRIMARY KEY, parent_version_id TEXT NOT NULL, status TEXT NOT NULL, "
+                "owner_id TEXT NOT NULL, source_session_id TEXT NOT NULL DEFAULT '', created_at REAL NOT NULL, "
+                "committed_at REAL NOT NULL DEFAULT 0, error_text TEXT NOT NULL DEFAULT '')"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bash_policy_heads (scope TEXT PRIMARY KEY, version_id TEXT NOT NULL, updated_at REAL NOT NULL)"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bash_policy_version_entries ("
+                "version_id TEXT NOT NULL, policy_key TEXT NOT NULL, level TEXT NOT NULL, entry_type TEXT NOT NULL, "
+                "name TEXT NOT NULL, source TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 1.0, "
+                "created_at REAL NOT NULL, updated_at REAL NOT NULL, PRIMARY KEY(version_id, policy_key))"
+            )
+            conn.execute(
+                "CREATE TABLE IF NOT EXISTS bash_policy_locks ("
+                "lock_key TEXT PRIMARY KEY, owner_id TEXT NOT NULL, acquired_at REAL NOT NULL, "
+                "expires_at REAL NOT NULL, heartbeat_at REAL NOT NULL)"
+            )
             now = time()
+            head = conn.execute("SELECT version_id FROM bash_policy_heads WHERE scope = 'global'").fetchone()
+            if head is None:
+                version_id = f"bootstrap-{int(now * 1000)}"
+                conn.execute(
+                    "INSERT INTO bash_policy_versions(version_id, parent_version_id, status, owner_id, created_at, committed_at) VALUES (?, '', 'committed', 'bootstrap', ?, ?)",
+                    (version_id, now, now),
+                )
+                conn.execute("INSERT INTO bash_policy_heads(scope, version_id, updated_at) VALUES ('global', ?, ?)", (version_id, now))
             for level, names in (("high", DEFAULT_HIGH_COMMANDS), ("approval", DEFAULT_APPROVAL_COMMANDS), ("low", DEFAULT_LOW_COMMANDS)):
-                self._seed(conn, level, names, "command", "builtin", now)
+                self._seed(conn, level, names, "command", "builtin", now, head_version=head[0] if head else version_id)
             for level, names in (("high", DEFAULT_HIGH_EVENTS), ("approval", DEFAULT_APPROVAL_EVENTS), ("low", DEFAULT_LOW_EVENTS)):
-                self._seed(conn, level, names, "event", "builtin", now)
+                self._seed(conn, level, names, "event", "builtin", now, head_version=head[0] if head else version_id)
 
-    def _seed(self, conn: sqlite3.Connection, level: str, names: set[str], entry_type: str, source: str, now: float) -> None:
+    def _seed(self, conn: sqlite3.Connection, level: str, names: set[str], entry_type: str, source: str, now: float, *, head_version: str) -> None:
         table = self.TABLES[level]
         for name in names:
             key = f"{entry_type}:{name}"
             conn.execute(
-                f"INSERT OR IGNORE INTO {table}(policy_key, entry_type, name, source, reason, created_at, updated_at) VALUES (?, ?, ?, ?, '', ?, ?)",
-                (key, entry_type, name, source, now, now),
+                f"INSERT OR IGNORE INTO {table}(policy_key, entry_type, name, source, reason, created_at, updated_at, version_id) VALUES (?, ?, ?, ?, '', ?, ?, ?)",
+                (key, entry_type, name, source, now, now, head_version),
             )
 
     def lookup(self, policy_key: str) -> PolicyLevel | None:
         with self._connect() as conn:
-            for level, table in self.TABLES.items():
-                if conn.execute(f"SELECT 1 FROM {table} WHERE policy_key = ?", (policy_key,)).fetchone():
-                    return level  # type: ignore[return-value]
+            row = conn.execute(
+                "SELECT level FROM ("
+                "SELECT 'high' AS level FROM bash_high_risk_commands WHERE policy_key = ? UNION ALL "
+                "SELECT 'approval' FROM bash_approval_commands WHERE policy_key = ? UNION ALL "
+                "SELECT 'low' FROM bash_low_risk_commands WHERE policy_key = ?"
+                ") LIMIT 1",
+                (policy_key, policy_key, policy_key),
+            ).fetchone()
+            if row is not None:
+                return str(row[0])  # type: ignore[return-value]
         return None
 
-    def put(self, policy_key: str, level: PolicyLevel, *, entry_type: str, name: str, source: str, reason: str = "", confidence: float = 1.0) -> None:
+    def acquire_lease(self, lock_key: str = LOCK_KEY, *, owner_id: str, ttl_seconds: int = DEFAULT_LOCK_TTL_SECONDS) -> BashPolicyLease | None:
+        now = time()
+        expires = now + max(3, int(ttl_seconds))
+        with self._connect() as conn:
+            try:
+                conn.execute(
+                    "INSERT INTO bash_policy_locks(lock_key, owner_id, acquired_at, expires_at, heartbeat_at) VALUES (?, ?, ?, ?, ?)",
+                    (lock_key, owner_id, now, expires, now),
+                )
+            except sqlite3.IntegrityError:
+                cursor = conn.execute(
+                    "UPDATE bash_policy_locks SET owner_id = ?, acquired_at = ?, expires_at = ?, heartbeat_at = ? "
+                    "WHERE lock_key = ? AND expires_at < ?",
+                    (owner_id, now, expires, now, lock_key, now),
+                )
+                if cursor.rowcount != 1:
+                    return None
+        return BashPolicyLease(self, lock_key, owner_id, ttl_seconds)
+
+    def renew_lease(self, lock_key: str, owner_id: str, ttl_seconds: int) -> bool:
         now = time()
         with self._connect() as conn:
-            for table in self.TABLES.values():
-                conn.execute(f"DELETE FROM {table} WHERE policy_key = ?", (policy_key,))
-            conn.execute(
-                f"INSERT INTO {self.TABLES[level]}(policy_key, entry_type, name, source, reason, confidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
-                (policy_key, entry_type, name, source, reason, max(0.0, min(1.0, confidence)), now, now),
+            cursor = conn.execute(
+                "UPDATE bash_policy_locks SET expires_at = ?, heartbeat_at = ? "
+                "WHERE lock_key = ? AND owner_id = ? AND expires_at >= ?",
+                (now + max(3, int(ttl_seconds)), now, lock_key, owner_id, now),
             )
+            return cursor.rowcount == 1
+
+    def release_lease(self, lock_key: str, owner_id: str) -> None:
+        with self._connect() as conn:
+            conn.execute("DELETE FROM bash_policy_locks WHERE lock_key = ? AND owner_id = ?", (lock_key, owner_id))
+
+    def current_version(self) -> str:
+        with self._connect() as conn:
+            row = conn.execute("SELECT version_id FROM bash_policy_heads WHERE scope = 'global'").fetchone()
+            return str(row[0]) if row else ""
+
+    def put(self, policy_key: str, level: PolicyLevel, *, entry_type: str, name: str, source: str, reason: str = "", confidence: float = 1.0) -> None:
+        owner_id = f"put-{os.getpid()}-{threading.get_ident()}-{int(monotonic() * 1_000_000)}"
+        lease = self.acquire_lease(owner_id=owner_id)
+        if lease is None:
+            raise sqlite3.OperationalError("bash policy lease is held")
+        try:
+            lease.start()
+            parent_version = self.current_version()
+            now = time()
+            version_id = f"policy-{os.getpid()}-{threading.get_ident()}-{int(now * 1_000_000)}"
+            with self._connect() as conn:
+                conn.execute("BEGIN IMMEDIATE")
+                if lease.lost:
+                    raise sqlite3.OperationalError("bash policy lease lost")
+                current = conn.execute("SELECT version_id FROM bash_policy_heads WHERE scope = 'global'").fetchone()
+                if current is None or str(current[0]) != parent_version:
+                    raise sqlite3.OperationalError("bash policy version conflict")
+                conn.execute(
+                    "INSERT INTO bash_policy_versions(version_id, parent_version_id, status, owner_id, created_at) VALUES (?, ?, 'staging', ?, ?)",
+                    (version_id, parent_version, owner_id, now),
+                )
+                snapshot: dict[str, tuple] = {}
+                for snapshot_level, table in self.TABLES.items():
+                    rows = conn.execute(
+                        f"SELECT policy_key, entry_type, name, source, reason, confidence, created_at, updated_at FROM {table}"
+                    ).fetchall()
+                    for row in rows:
+                        if row[0] != policy_key:
+                            snapshot.setdefault(row[0], (snapshot_level, *row[1:]))
+                conn.executemany(
+                    "INSERT INTO bash_policy_version_entries(version_id, policy_key, level, entry_type, name, source, reason, confidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    [(version_id, key, *value) for key, value in snapshot.items()],
+                )
+                for table in self.TABLES.values():
+                    conn.execute(f"DELETE FROM {table} WHERE policy_key = ?", (policy_key,))
+                conn.execute(
+                    f"INSERT INTO {self.TABLES[level]}(policy_key, entry_type, name, source, reason, confidence, created_at, updated_at, version_id) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (policy_key, entry_type, name, source, reason, max(0.0, min(1.0, confidence)), now, now, version_id),
+                )
+                conn.execute("DELETE FROM bash_policy_version_entries WHERE version_id = ? AND policy_key = ?", (version_id, policy_key))
+                conn.execute(
+                    "INSERT INTO bash_policy_version_entries(version_id, policy_key, level, entry_type, name, source, reason, confidence, created_at, updated_at) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)",
+                    (version_id, policy_key, level, entry_type, name, source, reason, max(0.0, min(1.0, confidence)), now, now),
+                )
+                head_cursor = conn.execute(
+                    "UPDATE bash_policy_heads SET version_id = ?, updated_at = ? WHERE scope = 'global' AND version_id = ?",
+                    (version_id, now, parent_version),
+                )
+                if head_cursor.rowcount != 1:
+                    raise sqlite3.OperationalError("bash policy head conflict")
+                conn.execute("UPDATE bash_policy_versions SET status = 'committed', committed_at = ? WHERE version_id = ?", (now, version_id))
+                conn.commit()
+        finally:
+            lease.stop()
+            self.release_lease(LOCK_KEY, owner_id)
 
 
 class BashPolicyEvaluator:
@@ -359,8 +528,11 @@ def extract_policy_evidence(command: str) -> tuple[BashPolicyEvidence, ...]:
                     items.append(BashPolicyEvidence(f"command:{command_name}", "command", command_name, text))
         stack.extend(node.named_children)
     lowered = command.lower()
-    if re.search(r"\b(rm)\b[^|;&]*-[a-zA-Z]*[rf][a-zA-Z]*", lowered):
-        items.append(BashPolicyEvidence("event:recursive_delete", "event", "recursive_delete", command, "递归或强制删除"))
+    delete_match = re.search(r"\brm\b[^|;&]*-[a-zA-Z]*[rf][a-zA-Z]*[^|;&]*\s(\S+)", lowered)
+    if delete_match:
+        target = delete_match.group(1).strip("'\"")
+        if target in {"/", "/workspace", "/root", "/etc", "/usr", "/var", "/home"} or target.startswith(("/dev/", "/proc/", "/sys/")):
+            items.append(BashPolicyEvidence("event:recursive_delete", "event", "recursive_delete", command, "递归或强制删除系统目录、工作区根目录或设备"))
     if re.search(r"\b(curl|wget)\b[^|;&]*\|\s*(ba)?sh\b", lowered):
         items.append(BashPolicyEvidence("event:network_to_shell", "event", "network_to_shell", command, "网络内容直接交给 Shell"))
     if re.search(r"\beval\b", lowered):

@@ -1,7 +1,9 @@
 from __future__ import annotations
 
 import json
+import sqlite3
 from pathlib import Path
+from time import time
 
 import pytest
 
@@ -15,7 +17,7 @@ from mycodingagent.long_term_memory.models import (
 )
 from mycodingagent.long_term_memory.namespaces import GLOBAL_WORKSPACE_FINGERPRINT, WORKFLOW_STAGING_FINGERPRINT
 from mycodingagent.long_term_memory.session_serializer import build_storage_payload, session_source_hash
-from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
+from mycodingagent.long_term_memory.store import LongTermMemoryVersionConflict, SQLiteLongTermMemoryStore
 from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch, SubmitLongTermMemoryQueryResult
 from mycodingagent.memory.models import SessionState
 
@@ -80,7 +82,7 @@ def test_store_uses_staging_commit_and_latest_committed_version(tmp_path: Path):
         source_hash="hash1",
         source_message_count=2,
     )
-    claimed = store.claim_extraction(extraction_id, lock_ttl_seconds=60)
+    claimed = store.claim_extraction(extraction_id, claim_timeout_seconds=60)
     assert claimed is not None
 
     version_id = store.apply_patch_as_new_version(
@@ -114,16 +116,22 @@ def test_store_uses_staging_commit_and_latest_committed_version(tmp_path: Path):
     assert items[0].status == MemoryItemStatus.ACTIVE
 
 
-def test_write_lock_blocks_second_owner_until_expired(tmp_path: Path):
+def test_store_uses_wal_and_removes_obsolete_lock_tables(tmp_path: Path):
     store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
 
-    assert store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="a", ttl_seconds=60)
-    assert not store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="b", ttl_seconds=60)
-    store.release_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="a")
-    assert store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="b", ttl_seconds=60)
+    with sqlite3.connect(store.db_path) as conn:
+        journal_mode = conn.execute("PRAGMA journal_mode").fetchone()[0]
+        tables = {
+            row[0]
+            for row in conn.execute("SELECT name FROM sqlite_master WHERE type = 'table'").fetchall()
+        }
+
+    assert journal_mode == "wal"
+    assert "long_term_memory_locks" not in tables
+    assert "long_term_memory_write_leases" not in tables
 
 
-def test_startup_requeues_interrupted_extracting_jobs_without_waiting_for_ttl(tmp_path: Path):
+def test_startup_requeues_only_stale_extracting_jobs(tmp_path: Path):
     store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
     extraction_id = store.mark_extraction_pending(
         session_id="s1",
@@ -134,57 +142,105 @@ def test_startup_requeues_interrupted_extracting_jobs_without_waiting_for_ttl(tm
         source_hash="hash1",
         source_message_count=2,
     )
-    claimed = store.claim_extraction(extraction_id, lock_ttl_seconds=3600)
+    claimed = store.claim_extraction(extraction_id, claim_timeout_seconds=3600)
     assert claimed is not None
     assert claimed.status == ExtractionStatus.EXTRACTING
-    assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
+    assert store.list_claimable_extractions(limit=10, claim_timeout_seconds=3600) == []
 
-    assert store.requeue_interrupted_extractions_for_startup() == 1
+    assert store.requeue_interrupted_extractions_for_startup(stale_after_seconds=3600) == 0
+    with store._connect() as conn:
+        conn.execute(
+            "UPDATE long_term_memory_extractions SET started_at = ? WHERE extraction_id = ?",
+            (time() - 10, extraction_id),
+        )
+    assert store.requeue_interrupted_extractions_for_startup(stale_after_seconds=1) == 1
 
-    claimable = store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600)
+    claimable = store.list_claimable_extractions(limit=10, claim_timeout_seconds=3600)
     assert [job.extraction_id for job in claimable] == [extraction_id]
     assert claimable[0].status == ExtractionStatus.PENDING
 
 
-def test_startup_does_not_requeue_extracting_job_with_active_write_lock(tmp_path: Path):
+def test_reader_can_read_snapshot_while_write_transaction_is_open(tmp_path: Path):
     store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
-    extraction_id = store.mark_extraction_pending(
-        session_id="s1",
-        user_id="u1",
-        workspace_fingerprint="wf",
-        workspace_label="repo",
-        workspace_root="/repo",
-        source_hash="hash1",
-        source_message_count=2,
-    )
-    store.claim_extraction(extraction_id, lock_ttl_seconds=3600)
-    assert store.acquire_write_lock(user_id="u1", workspace_fingerprint="wf", owner_id="owner", ttl_seconds=60)
+    writer = store._connect()
+    try:
+        writer.execute("BEGIN IMMEDIATE")
+        writer.execute(
+            """
+            INSERT INTO long_term_memory_extractions(
+                extraction_id, session_id, user_id, workspace_fingerprint,
+                status, source_hash, created_at, updated_at
+            ) VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            """,
+            ("pending-write", "s1", "u1", "wf", ExtractionStatus.PENDING.value, "hash1", time(), time()),
+        )
 
-    assert store.requeue_interrupted_extractions_for_startup() == 0
-    assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
+        assert store.latest_committed_version(user_id="u1", workspace_fingerprint="wf") is None
+        assert store.list_claimable_extractions(limit=10, claim_timeout_seconds=60) == []
+    finally:
+        writer.rollback()
+        writer.close()
 
 
-def test_startup_does_not_requeue_extracting_job_with_global_or_workflow_lock(tmp_path: Path):
+def test_stale_parent_version_is_rejected_at_commit(tmp_path: Path):
     store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
-    extraction_id = store.mark_extraction_pending(
-        session_id="s1",
-        user_id="u1",
-        workspace_fingerprint="wf",
-        workspace_label="repo",
-        workspace_root="/repo",
-        source_hash="hash1",
-        source_message_count=2,
-    )
-    store.claim_extraction(extraction_id, lock_ttl_seconds=3600)
-    assert store.acquire_write_lock(
+    first_version = store.apply_patch_as_new_version(
         user_id="u1",
         workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
-        owner_id="owner",
-        ttl_seconds=60,
+        workspace_label="User Global Memory",
+        source_session_id="s1",
+        parent_version_id="",
+        existing_items=[],
+        new_items=[
+            {
+                "memory_type": "user_preference",
+                "scope": "user",
+                "content": "Prefers concise answers.",
+                "confidence": 0.9,
+                "evidence": ["message:1"],
+                "metadata": {},
+            }
+        ],
+        update_items=[],
+        retire_items=[],
+        extraction_id="e1",
+    )
+    stale_items = store.load_items(first_version)
+    store.apply_patch_as_new_version(
+        user_id="u1",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        workspace_label="User Global Memory",
+        source_session_id="s2",
+        parent_version_id=first_version,
+        existing_items=stale_items,
+        new_items=[
+            {
+                "memory_type": "user_profile",
+                "scope": "user",
+                "content": "Maintains this project.",
+                "confidence": 0.9,
+                "evidence": ["message:2"],
+                "metadata": {},
+            }
+        ],
+        update_items=[],
+        retire_items=[],
+        extraction_id="e2",
     )
 
-    assert store.requeue_interrupted_extractions_for_startup() == 0
-    assert store.list_claimable_extractions(limit=10, lock_ttl_seconds=3600) == []
+    with pytest.raises(LongTermMemoryVersionConflict):
+        store.apply_patch_as_new_version(
+            user_id="u1",
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+            workspace_label="User Global Memory",
+            source_session_id="s3",
+            parent_version_id=first_version,
+            existing_items=stale_items,
+            new_items=[],
+            update_items=[],
+            retire_items=[],
+            extraction_id="e3",
+        )
 
 
 def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
@@ -198,7 +254,7 @@ def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
         source_hash="hash1",
         source_message_count=2,
     )
-    store.claim_extraction(extraction_id, lock_ttl_seconds=60)
+    store.claim_extraction(extraction_id, claim_timeout_seconds=60)
     version_id = store.apply_patch_as_new_version(
         user_id="u1",
         workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
@@ -423,7 +479,7 @@ def test_store_rejects_legacy_content_only_workflow(tmp_path: Path):
         source_hash="hash-legacy",
         source_message_count=2,
     )
-    store.claim_extraction(extraction_id, lock_ttl_seconds=60)
+    store.claim_extraction(extraction_id, claim_timeout_seconds=60)
 
     with pytest.raises(ValueError, match="metadata.workflow is required"):
         store.apply_patch_as_new_version(
@@ -487,7 +543,7 @@ def _create_workflow_candidate(store: SQLiteLongTermMemoryStore, *, origin_works
         source_hash=f"hash-{origin_workspace}",
         source_message_count=2,
     )
-    store.claim_extraction(extraction_id, lock_ttl_seconds=60)
+    store.claim_extraction(extraction_id, claim_timeout_seconds=60)
     version_id = store.apply_patch_as_new_version(
         user_id="u1",
         workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,

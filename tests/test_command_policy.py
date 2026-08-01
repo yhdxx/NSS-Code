@@ -18,6 +18,7 @@ from mycodingagent.tool_runtime.command_policy import (
     SubmitBashApproval,
     SubmitBashHighRisk,
     SubmitBashLowRisk,
+    LOCK_KEY,
 )
 
 
@@ -235,3 +236,24 @@ def test_classifier_submission_tools_have_no_parameters():
     ):
         schema = tool.get_schema()
         assert schema["input_schema"] == {"type": "object", "properties": {}, "additionalProperties": False}
+
+
+def test_policy_lease_heartbeat_and_owner_release(tmp_path):
+    store = BashPolicyStore(tmp_path / "policy.sqlite3")
+    lease = store.acquire_lease(owner_id="owner-a", ttl_seconds=3)
+    assert lease is not None
+    lease.start()
+    assert store.renew_lease(LOCK_KEY, "owner-a", 3)
+    assert store.acquire_lease(owner_id="owner-b", ttl_seconds=3) is None
+    lease.stop()
+    store.release_lease(LOCK_KEY, "owner-a")
+    assert store.acquire_lease(owner_id="owner-b", ttl_seconds=3) is not None
+
+
+def test_policy_put_advances_version_and_moves_key_atomically(tmp_path):
+    store = BashPolicyStore(tmp_path / "policy.sqlite3")
+    before = store.current_version()
+    store.put("command:custom", "approval", entry_type="command", name="custom", source="test")
+    after = store.current_version()
+    assert after and after != before
+    assert store.lookup("command:custom") == "approval"

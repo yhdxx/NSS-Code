@@ -114,7 +114,7 @@ _ENV_CONFIG_PATHS = {
     "MYCODINGAGENT_LONG_TERM_MEMORY_MAX_SKILL_CANDIDATES": "long_term_memory.max_skill_candidates",
     "MYCODINGAGENT_LONG_TERM_MEMORY_SKILL_SUCCESS_THRESHOLD": "long_term_memory.skill_candidate_success_threshold",
     "MYCODINGAGENT_LONG_TERM_MEMORY_SKILL_PROMPT_COOLDOWN_DAYS": "long_term_memory.skill_candidate_prompt_cooldown_days",
-    "MYCODINGAGENT_LONG_TERM_MEMORY_LOCK_TTL_SECONDS": "long_term_memory.lock_ttl_seconds",
+    "MYCODINGAGENT_LONG_TERM_MEMORY_EXTRACTION_CLAIM_TIMEOUT_SECONDS": "long_term_memory.extraction_claim_timeout_seconds",
     "MYCODINGAGENT_LONG_TERM_MEMORY_GRACEFUL_EXIT_TIMEOUT_SECONDS": "long_term_memory.graceful_exit_extract_timeout_seconds",
     "MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED": "long_term_memory.startup_backfill_enabled",
     "MYCODINGAGENT_MEMORY_ENABLED": "memory.enabled",
@@ -526,8 +526,8 @@ class LongTermMemoryConfig:
     skill_candidate_prompt_cooldown_days: int = field(
         default_factory=lambda: max(0, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_SKILL_PROMPT_COOLDOWN_DAYS", 7))
     )
-    lock_ttl_seconds: int = field(
-        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_LOCK_TTL_SECONDS", 600))
+    extraction_claim_timeout_seconds: int = field(
+        default_factory=lambda: max(1, _env_int("MYCODINGAGENT_LONG_TERM_MEMORY_EXTRACTION_CLAIM_TIMEOUT_SECONDS", 600))
     )
     graceful_exit_extract_timeout_seconds: int = field(
         default_factory=lambda: max(
