@@ -59,12 +59,12 @@ _WRITE_COMMANDS = {"mkdir", "touch", "cp", "mv", "rm", "install", "chmod", "chow
 _NETWORK_COMMANDS = {"curl", "wget", "ssh", "scp", "rsync", "git"}
 
 DEFAULT_HIGH_COMMANDS = {
-    "sudo", "su", "doas", "eval", "mkfs", "shred", "dd", "shutdown", "reboot",
+    "su", "doas", "eval", "mkfs", "shred", "dd", "shutdown", "reboot",
 }
 DEFAULT_APPROVAL_COMMANDS = {
     "bash", "sh", "zsh", "python", "python3", "node", "npm", "pytest", "pip", "pip3",
     "make", "cargo", "curl", "wget", "ssh", "scp", "rsync", "rm", "mv", "cp", "chmod",
-    "chown", "sed", "tee", "install", "touch", "mkdir", "docker",
+    "chown", "sed", "tee", "install", "touch", "mkdir", "docker","sudo",
 }
 DEFAULT_LOW_COMMANDS = {
     "pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "stat", "wc", "file",
