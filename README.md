@@ -79,7 +79,8 @@ myAgent --upgrade
 3. `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG=1` 时，当前工作区 `.mycodingagent/config.yaml`
 4. `MYCODINGAGENT_CONFIG` 指定的一个或多个文件（多个路径用系统路径分隔符分隔）
 
-可复制 `.mycodingagent/config.example.yaml` 作为本地配置模板；模板里每个常用字段都用注释标出对应环境变量名。
+可复制 `.mycodingagent/config.example.yaml` 作为本地配置模板；模板里每个常用字段都用中文注释标出对应环境变量名。
+完整配置说明、环境变量表、按场景可复制示例、Embedding、Milvus 和 MCP Server 示例见 `docs/configuration.md`。
 如果希望在任意目录启动都使用同一套配置，把配置放在 `~/.config/myCodingAgent/config.yaml`
 或 Agent 安装目录 `.mycodingagent/config.yaml`，不要开启 `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG`。
 所有核心参数都可以放入配置文件，也仍然支持环境变量临时覆盖，包括：
@@ -395,6 +396,8 @@ MCP 配置加载顺序：
 ```
 
 后加载的同名 server 覆盖前者。
+
+MCP 配置模板见 `.mycodingagent/mcp.example.json`；完整字段说明和 GitHub token 配置示例见 `docs/configuration.md`。
 
 ### 8.1 Discovery
 

@@ -11,8 +11,9 @@
 5. `MYCODINGAGENT_CONFIG` 指定的 YAML/JSON 文件
 6. 环境变量
 
-项目提供 `.mycodingagent/config.example.yaml` 作为模板。新增外部依赖配置时，优先加入
-`settings.py` 的配置文件映射和示例 YAML，并保留环境变量覆盖能力。
+项目提供 `.mycodingagent/config.example.yaml` 作为主配置模板，模板注释统一使用中文。
+完整配置说明、环境变量表、按场景可复制示例、Embedding、Milvus 和 MCP 配置示例见根目录 `docs/configuration.md`。
+新增外部依赖配置时，优先加入 `settings.py` 的配置文件映射、示例 YAML 和配置文档，并保留环境变量覆盖能力。
 
 Embedding 配置支持本地 sentence-transformers、Ollama HTTP、OpenAI-compatible 在线接口、DashScope 原生接口和
 hash fallback。Skill 向量索引会记录 embedding signature；模型、接口或请求参数变化后会重新嵌入。
