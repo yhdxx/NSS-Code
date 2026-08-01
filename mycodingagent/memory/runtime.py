@@ -1506,8 +1506,6 @@ def render_historical_tool_message(
 
 def historical_tool_content(metadata: ToolInvocationMetadata | None, message: dict[str, Any]) -> str:
     raw_metadata = message.get("metadata")
-    if isinstance(raw_metadata, dict) and raw_metadata.get("persistent_kind") == "project_graph":
-        return message_content_text(message)
     if isinstance(raw_metadata, dict) and raw_metadata.get("archive_snapshot"):
         return message_content_text(message)
     if metadata is not None and metadata.metadata.get("archive_snapshot"):

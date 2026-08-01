@@ -493,59 +493,6 @@ async def execute_local_tool(
         execution_recorder=execution_recorder,
         session_id=session_id,
     )
-
-
-
-async def sync_project_graph_messages(
-    messages: list[dict[str, Any]],
-    project_graph: Any | None,
-    work_mode: str,
-) -> None:
-    """Keep one pinned architecture tool-result pair in the durable message list."""
-    marker = "project_graph"
-    indexes = [
-        index for index, message in enumerate(messages)
-        if isinstance(message.get("metadata"), dict)
-        and message["metadata"].get("persistent_kind") == marker
-    ]
-    if work_mode != "code" or project_graph is None:
-        for index in reversed(indexes):
-            del messages[index]
-        return
-    if not messages or messages[0].get("role") != "system":
-        return
-    payload = await asyncio.to_thread(project_graph.architecture, "")
-    generation = payload.get("generation", 0) if isinstance(payload, dict) else 0
-    fingerprint = hashlib.sha256(
-        json.dumps(payload, ensure_ascii=False, sort_keys=True, default=str).encode("utf-8")
-    ).hexdigest()[:16]
-    metadata = {
-        "persistent_kind": marker,
-        "generation": generation,
-        "fingerprint": fingerprint,
-    }
-    call_id = "project_architecture_pinned"
-    assistant = {
-        "role": "assistant",
-        "tool_calls": [{
-            "id": call_id,
-            "type": "function",
-            "function": {"name": "ProjectArchitecture", "arguments": json.dumps({"module": ""}, ensure_ascii=False)},
-        }],
-        "metadata": metadata,
-    }
-    tool = {
-        "role": "tool",
-        "tool_call_id": call_id,
-        "content": json.dumps(payload, ensure_ascii=False, indent=2),
-        "metadata": metadata,
-    }
-    insert_at = indexes[0] if indexes else 1
-    for index in reversed(indexes):
-        del messages[index]
-    messages[insert_at:insert_at] = [assistant, tool]
-
-
 async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
     client: AsyncOpenAI,  # 已打开连接的异步 API 客户端，由调用方负责创建和关闭。
     prompt: str,  # 当前用户输入的自然语言需求。
@@ -706,8 +653,6 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                 ),  # 结束 system content 字符串拼接。
             },  # 结束 system 消息对象。
         ]  # 完成初始消息列表。
-
-    await sync_project_graph_messages(messages, project_graph, work_mode)
 
     turn_start = len(messages)
     session_id = ""

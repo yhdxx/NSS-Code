@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner defer-project-graph",
+  "metric": "project_graph"
+}

@@ -73,14 +73,17 @@ MCP_PROMPT = """
 
 PROJECT_GRAPH_PROMPT = """
 ## 代码智能
-项目整体架构或某个子系统如何组织时使用 ProjectArchitecture；模块内单位和调用关系使用 UnitDependencyGraph。源码修改前仍需读取原文。
+项目整体架构或某个子系统如何组织时可使用 ProjectArchitecture；缺少某个模块的单位、描述或调用关系时可使用 UnitDependencyGraph。图谱用于缩小探索范围，源码仍是修改和结论的最终事实依据。
 
 ## 项目图谱与工作模式
 - `work_mode` 是 Agent 的工作模式：`general` 表示自行探索工作区，`code` 表示可以使用项目图谱工具。它不是上下文压缩策略。
 - `context_render_mode` 只表示 runtime 如何渲染历史上下文：`raw` 保留原始消息，`virtualized` 用可恢复摘要表示较旧工具输出。它不是工作模式。
-- Code 模式下先调用 `ProjectArchitecture` 获取完整模块树，再按需调用 `UnitDependencyGraph` 获取某个模块的最小单位、描述和调用边；需要补充描述时调用 `UpdateProjectDescription`，必须使用返回的准确 `id` 和 `content_hash`。
+- Code 模式不要求每轮先读取完整架构。先判断当前可见上下文是否足以完成任务；只有缺少会影响正确性的模块边界、单位集合或依赖关系证据时，才调用 `ProjectArchitecture` 或 `UnitDependencyGraph`。
+- `workspace_changes` 只是历史图谱可能变化的提示，不是强制刷新信号。若变化范围明确、只涉及已知文件内容、由你刚刚完成，或当前任务不依赖项目结构，应继续使用现有上下文，不要形式化地重查图谱。只有新增、删除、移动文件/目录，改变符号集合或跨模块依赖，且这些结构事实会影响当前任务正确性或影响范围仍不明确时，才重新获取相关图谱。
+- 图谱工具结果和其他工具结果使用相同的上下文生命周期：热上下文中完整可见，历史虚拟化后按需重新调用或恢复。不要因为结果被虚拟化就自动重新获取；仍应先进行工作上下文充分性判断。
+- 需要补充 description 时调用 `UpdateProjectDescription`，必须使用图谱返回的准确 `id` 和 `content_hash`。只在已阅读源码并有充分证据时更新，不要猜测。
 - General 模式仍会看到这三个工具的 schema，但调用会返回 `code_mode_required`；不要反复重试，应要求用户用精确命令 `/mode` 选择 Code。
-- 图谱中的 description 缺省为“暂未描述”，内容变化后可能标记为 stale；此时先重新读取图谱，再决定是否更新。
+- 图谱中的 description 缺省为“暂未描述”，内容变化后可能标记为 stale。stale 只表示描述需要复核；仅当当前任务需要该描述且现有证据不足时读取相关源码或图谱。
 """.strip()
 
 RUNTIME_CONTEXT_REFERENCE = """

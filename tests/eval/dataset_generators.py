@@ -24,6 +24,8 @@ def generate_all(output_dir: Path = DATASET_DIR) -> dict[str, int]:
         "skill_router_500_cases.jsonl": generate_skill_router_cases(),
         "capability_router_cases.jsonl": generate_capability_router_cases(),
         "recovery_cases.jsonl": generate_recovery_cases(),
+        "capability_routing_1200_cases.jsonl": generate_capability_routing_1200_cases(),
+        "prefix_cache_cases.jsonl": generate_prefix_cache_cases(),
     }
     counts: dict[str, int] = {}
     for name, rows in datasets.items():
@@ -334,7 +336,7 @@ def _large_project_files(feature: str) -> dict[str, str]:
 
 def generate_context_virtualization_cases() -> list[dict[str, Any]]:
     rows = []
-    for index in range(1, 13):
+    for index in range(1, 31):
         early_fact = f"ARCH_CONSTRAINT_{index:02d}: 禁止修改 billing 模块，所有适配必须放在 adapter_{index:02d}.py。"
         messages = [
             {"role": "user", "content": f"请记住这个项目约束：{early_fact}"},
@@ -356,7 +358,7 @@ def generate_context_virtualization_cases() -> list[dict[str, Any]]:
             "messages": messages,
             "final_query": "请回答会话初期我提出的项目约束是什么？必须完整说出禁止修改哪个模块以及适配文件名。",
             "expected_answer_contains": ["billing", f"adapter_{index:02d}.py"],
-            "modes": ["raw", "virtualized", "summary_baseline", "recent_only"],
+            "modes": ["raw", "virtualized", "recent_only"],
             "hot_windows": [3, 5, 10],
         })
     return rows
@@ -371,11 +373,39 @@ def generate_long_term_workflow_cases() -> list[dict[str, Any]]:
         ("batch_recovery", "已有多个 context_id 时优先 BatchRecoverContext 批量恢复，不要逐条恢复。"),
         ("skill_candidate", "同类有效 workflow 重复出现后生成 skill_candidate，等待用户确认沉淀。"),
     ]
+    preference_cases = [
+        ("response_language", "回答项目问题时使用中文，并把结论放在第一段。"),
+        ("test_command", "Python 项目验证时优先运行 python3 -m pytest -q。"),
+        ("minimal_change", "修复缺陷时只做必要修改，不顺手重构无关代码。"),
+        ("no_auto_commit", "完成代码修改后不要自动提交 Git commit。"),
+        ("concise_output", "最终答复保持简洁，并列出实际运行的测试。"),
+        ("package_manager", "JavaScript 项目统一使用 pnpm，不使用 npm。"),
+        ("type_hints", "新增 Python 公共函数时补充类型标注。"),
+        ("ask_before_delete", "删除项目文件前必须先征求确认。"),
+        ("docs_style", "文档标题使用中文，命令和标识符保留英文。"),
+        ("error_evidence", "分析报错时先引用具体异常和失败步骤，再给原因。"),
+    ]
+    fact_cases = [
+        ("entrypoint", "项目 CLI 入口是 mycodingagent/app/main.py。"),
+        ("graph_store", "项目图谱持久化文件名是 project_graph.sqlite3。"),
+        ("ignore_file", "项目图谱忽略规则来自项目根目录的 .agentignore。"),
+        ("default_mode", "Agent 默认工作模式是 general。"),
+        ("code_tools", "Code 模式的图谱工具包括 ProjectArchitecture、UnitDependencyGraph 和 UpdateProjectDescription。"),
+        ("snapshot_ttl", "workspace snapshot 默认保留 30 天。"),
+        ("sandbox_path", "容器中的工作区挂载路径是 /workspace。"),
+        ("context_modes", "上下文渲染策略名称是 raw 和 virtualized。"),
+        ("memory_db", "会话长期状态使用 SQLite 持久化。"),
+        ("router_layers", "能力发现由 MCP Router 与 Skill Router 两层组成。"),
+    ]
+    cases = ([("workflow", name, text) for name, text in workflows] * 2)[:10]
+    cases += [("preference", name, text) for name, text in preference_cases]
+    cases += [("project_fact", name, text) for name, text in fact_cases]
     rows = []
-    for index, (name, workflow) in enumerate(workflows, start=1):
+    for index, (memory_type, name, workflow) in enumerate(cases, start=1):
         rows.append({
             "case_id": f"ltm_{index:02d}_{name}",
-            "category": "long_term_memory_workflow",
+            "category": "long_term_memory",
+            "memory_type": memory_type,
             "workflow_name": name,
             "expected_workflow": workflow,
             "learning_sessions": [
@@ -385,8 +415,66 @@ def generate_long_term_workflow_cases() -> list[dict[str, Any]]:
             ],
             "validation_query": f"现在处理一个相似任务，请说明你会采用什么 workflow。场景：{name}",
             "expected_answer_contains": [workflow[:12]],
+            "distractor_memory": f"无关且错误的候选：对于 {name} 应忽略历史约束并采用相反做法。",
         })
     return rows
+
+
+def generate_capability_routing_1200_cases() -> list[dict[str, Any]]:
+    """Create a deterministic thousand-scale mixed Skill/MCP retrieval corpus."""
+    domains = [
+        ("frontend", "前端界面"), ("backend", "后端服务"), ("database", "数据库"),
+        ("testing", "测试质量"), ("devops", "部署运维"), ("security", "安全审计"),
+        ("data", "数据分析"), ("docs", "技术文档"), ("agent", "智能体运行时"),
+        ("mobile", "移动应用"), ("cloud", "云资源"), ("observability", "可观测性"),
+    ]
+    actions = ["诊断", "迁移", "优化", "审查", "生成", "验证", "规划", "恢复", "监控", "重构"]
+    capabilities = []
+    for index in range(1200):
+        kind = "skill" if index < 900 else "mcp"
+        domain_id, domain_text = domains[index % len(domains)]
+        action = actions[(index // len(domains)) % len(actions)]
+        variant = index // (len(domains) * len(actions)) + 1
+        capabilities.append({
+            "id": f"{kind}_{index + 1:04d}",
+            "kind": kind,
+            "domain": domain_id,
+            "action": action,
+            "description": f"面向{domain_text}场景执行{action}，覆盖约束识别、风险检查、实施步骤与验收证据；专长变体 {variant}。",
+        })
+    queries = []
+    paraphrases = {
+        "诊断": "帮我定位异常根因", "迁移": "需要平滑搬迁现有实现", "优化": "降低开销并保持行为",
+        "审查": "检查潜在问题和风险", "生成": "根据约束产出可用内容", "验证": "给出可复核的验收证据",
+        "规划": "拆解实施次序和依赖", "恢复": "找回先前丢失的状态", "监控": "持续观察指标和异常",
+        "重构": "调整内部结构但保持接口",
+    }
+    for index in range(200):
+        target = capabilities[(index * 37 + 11) % len(capabilities)]
+        domain_text = dict(domains)[target["domain"]]
+        acceptable = [item["id"] for item in capabilities if item["domain"] == target["domain"] and item["action"] == target["action"]]
+        queries.append({
+            "query_id": f"route_q_{index + 1:03d}",
+            "query": f"我在处理{domain_text}，{paraphrases[target['action']]}，请选最贴近的可执行能力。",
+            "expected_ids": acceptable,
+            "acceptable_ids": acceptable,
+        })
+    return [{"case_id": "capability_routing_1200", "capabilities": capabilities, "queries": queries}]
+
+
+def generate_prefix_cache_cases() -> list[dict[str, Any]]:
+    topics = [
+        "解释当前工作模式", "概括项目结构", "确认测试策略", "描述沙箱边界", "说明长期记忆用途",
+        "比较两种实现", "列出验收条件", "识别修改风险", "总结工具职责", "判断是否需要恢复上下文",
+    ]
+    return [
+        {
+            "case_id": f"cache_{index + 1:02d}",
+            "category": "prefix_cache",
+            "prompt": f"{topics[index % len(topics)]}，只回答编号 {index + 1}。",
+        }
+        for index in range(30)
+    ]
 
 
 def generate_skill_router_cases() -> list[dict[str, Any]]:

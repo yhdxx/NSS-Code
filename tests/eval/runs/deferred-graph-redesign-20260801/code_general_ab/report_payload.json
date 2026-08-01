@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner defer-code-general-ab",
+  "metric": "code_general_ab"
+}

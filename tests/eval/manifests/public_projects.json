@@ -1,0 +1,15 @@
+{
+  "schema_version": 1,
+  "projects": [
+    {"id": "flask", "url": "https://github.com/pallets/flask.git", "commit": "6a2f545bfd8ed31e19066a299296917e034aca58", "language": "python", "size": "medium", "license": "BSD-3-Clause"},
+    {"id": "requests", "url": "https://github.com/psf/requests.git", "commit": "414f0513c33883adf6f2b46901d4f0b38a455851", "language": "python", "size": "medium", "license": "Apache-2.0"},
+    {"id": "fastapi", "url": "https://github.com/fastapi/fastapi.git", "commit": "95f8322ee1dcda7ceace7b1c4f6c9915b36d748f", "language": "python", "size": "large", "license": "MIT"},
+    {"id": "express", "url": "https://github.com/expressjs/express.git", "commit": "a3714473feb3d2908add734d340e7755fd85e0a3", "language": "javascript", "size": "medium", "license": "MIT"},
+    {"id": "axios", "url": "https://github.com/axios/axios.git", "commit": "c3f553c740ebf3dff5e22dae24e9caaafafddd2d", "language": "javascript", "size": "large", "license": "MIT"},
+    {"id": "gin", "url": "https://github.com/gin-gonic/gin.git", "commit": "34dac209ffb6ef85cc78c5d217bbb7ad001d68fd", "language": "go", "size": "large", "license": "MIT"},
+    {"id": "ripgrep", "url": "https://github.com/BurntSushi/ripgrep.git", "commit": "435f59fc4b43af3ab32f34d53fa34978f393fe52", "language": "rust", "size": "large", "license": "MIT OR Unlicense"},
+    {"id": "serde", "url": "https://github.com/serde-rs/serde.git", "commit": "747814f7d5fbab872df3b02f070c165b91bde062", "language": "rust", "size": "medium", "license": "MIT OR Apache-2.0"},
+    {"id": "junit5", "url": "https://github.com/junit-team/junit5.git", "commit": "cc4ef2d364c5a8fd59242b7de7ca03df429e86af", "language": "java", "size": "large", "license": "EPL-2.0"},
+    {"id": "gson", "url": "https://github.com/google/gson.git", "commit": "ff521d70b2ecf2ed85dd1012081493ad7d8c0ba6", "language": "java", "size": "medium", "license": "Apache-2.0"}
+  ]
+}

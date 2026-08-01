@@ -1,0 +1,5 @@
+{
+  "module": "code_general_ab",
+  "reason": "用户正在修改项目图谱逻辑；图谱与 Code/General 实测已显式延期。",
+  "status": "deferred_by_user"
+}
