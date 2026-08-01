@@ -1,0 +1,6 @@
+# Add project-specific files or directories that should not enter the code graph.
+# Examples:
+# build/
+# generated/
+# *.min.js
+# /local-only.json

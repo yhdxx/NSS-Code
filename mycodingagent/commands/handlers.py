@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import sys
 
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
@@ -111,7 +112,22 @@ async def handle_mode_command(context: CommandContext, arguments: str) -> Comman
         print("已取消模式切换；请输入 general 或 code。", flush=True)
         return CommandResult()
     memory_runtime.set_work_mode(answer)
-    print(f"工作模式已切换为 {answer.title()}，将在下一次模型调用生效。", flush=True)
+    print(f"工作模式已切换为 {answer.title()}。", flush=True)
+    if answer == "code" and context.registry is not None:
+        graph_tool = context.registry.get("ProjectArchitecture")
+        graph_service = getattr(graph_tool, "_service", None)
+        build_graph = getattr(graph_service, "status", None)
+        if callable(build_graph):
+            print("[项目图谱] Code 模式初始化开始。", flush=True)
+            try:
+                status = await asyncio.to_thread(build_graph)
+                print(
+                    "[项目图谱] Code 模式已就绪："
+                    f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
+                    flush=True,
+                )
+            except Exception as exc:
+                print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
     return CommandResult(messages=context.messages)
 
 

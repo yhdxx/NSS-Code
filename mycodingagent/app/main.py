@@ -96,6 +96,10 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     project_graph.set_work_mode_provider(
         lambda: memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode
     )
+    project_graph.set_progress_callback(
+        lambda message: print(f"[项目图谱] {message}", flush=True)
+    )
+    workspace_tracker.subscribe(project_graph.mark_dirty)
     if memory_runtime is not None:
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
@@ -323,6 +327,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             await mcp_manager.close()
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
         workspace_tracker.unsubscribe(code_index.mark_dirty)
+        workspace_tracker.unsubscribe(project_graph.mark_dirty)
         workspace_tracker.close()  # 停止工作区文件监听线程。
         if CONFIG.sandbox.workspace_lease_enabled:
             workspace_lease.release()

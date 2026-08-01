@@ -7,8 +7,9 @@ import sqlite3
 from pathlib import Path
 from threading import RLock
 from time import time
-from typing import Any
+from typing import Any, Callable
 
+from mycodingagent.code_intelligence.agentignore import AgentIgnore
 from mycodingagent.code_intelligence.index import LANGUAGE_BY_SUFFIX, SKIP_DIRS, WorkspaceCodeIndex
 
 UNKNOWN_DESCRIPTION = "暂未描述"
@@ -23,12 +24,21 @@ class ProjectGraphService:
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.code_index = code_index
+        self.agent_ignore = AgentIgnore(self.workspace_root)
         self._work_mode = lambda: "code"
+        self._progress_callback: Callable[[str], None] | None = None
+        self._dirty = True
         self._lock = RLock()
         self._init_db()
 
     def set_work_mode_provider(self, provider) -> None:
         self._work_mode = provider
+
+    def set_progress_callback(self, callback: Callable[[str], None] | None) -> None:
+        self._progress_callback = callback
+
+    def mark_dirty(self, _path: Path | str, _is_delete: bool = False) -> None:
+        self._dirty = True
 
     def work_mode_provider(self) -> str:
         return str(self._work_mode())
@@ -40,7 +50,6 @@ class ProjectGraphService:
 
     def runtime_payload(self) -> dict[str, Any]:
         with self._lock:
-            self._refresh()
             return self._status_payload()
 
     def _status_payload(self) -> dict[str, Any]:
@@ -59,7 +68,7 @@ class ProjectGraphService:
 
     def architecture(self, module: str = "") -> dict[str, Any]:
         with self._lock:
-            self._refresh()
+            self._ensure_fresh()
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT * FROM graph_nodes WHERE kind = 'module' ORDER BY path"
@@ -91,7 +100,7 @@ class ProjectGraphService:
 
     def dependency_graph(self, module: str) -> dict[str, Any]:
         with self._lock:
-            self._refresh()
+            self._ensure_fresh()
             with self._connect() as conn:
                 modules = conn.execute("SELECT * FROM graph_nodes WHERE kind = 'module' ORDER BY path").fetchall()
                 resolution = self._resolve_module(module, modules)
@@ -125,7 +134,7 @@ class ProjectGraphService:
 
     def update_description(self, target: str, description: str, content_hash: str) -> dict[str, Any]:
         with self._lock:
-            self._refresh()
+            self._ensure_fresh()
             with self._connect() as conn:
                 row = conn.execute("SELECT * FROM graph_nodes WHERE id = ?", (target.strip(),)).fetchone()
                 if row is None:
@@ -143,8 +152,15 @@ class ProjectGraphService:
             return {"status": "updated", "id": row["id"], "content_hash": content_hash}
 
     def _refresh(self) -> None:
+        started_at = time()
+        self._report_progress("正在刷新静态代码索引...")
         static_graph = self.code_index.static_graph_snapshot()
+        self._report_progress(
+            f"静态索引完成：{len(static_graph['symbols'])} 个符号，{len(static_graph['calls'])} 条调用。"
+        )
+        self.agent_ignore.reload()
         files = self._workspace_files()
+        self._report_progress(f"文件扫描完成：{len(files)} 个文件进入项目图谱。")
         with self._connect() as conn:
             old = {str(row["id"]): str(row["content_hash"]) for row in conn.execute("SELECT id, content_hash FROM graph_nodes")}
             nodes: list[dict[str, Any]] = []
@@ -169,6 +185,7 @@ class ProjectGraphService:
                         self._hash_files(module_files),
                     )
                 )
+            seen_unit_ids: set[str] = set()
             for path, content_hash in files.items():
                 parts = Path(path).parts[:-1]
                 module = "."
@@ -184,6 +201,17 @@ class ProjectGraphService:
                 for symbol in outline:
                     qualified = str(symbol.get("qualified_name") or symbol.get("name"))
                     unit_id = self._id("unit", f"{path}:{qualified}")
+                    if unit_id in seen_unit_ids:
+                        duplicate_key = (
+                            "unit",
+                            f"{path}:{qualified}:{symbol.get('kind')}:{symbol.get('start_line')}",
+                        )
+                        unit_id = self._id(*duplicate_key)
+                        duplicate_index = 2
+                        while unit_id in seen_unit_ids:
+                            unit_id = self._id(duplicate_key[0], f"{duplicate_key[1]}:{duplicate_index}")
+                            duplicate_index += 1
+                    seen_unit_ids.add(unit_id)
                     start = max(1, int(symbol.get("start_line") or 1))
                     end = max(start, int(symbol.get("end_line") or start))
                     source_fragment = "\n".join(source_lines[start - 1:end])
@@ -194,6 +222,7 @@ class ProjectGraphService:
                     nodes.append(unit)
             conn.execute("DELETE FROM graph_nodes")
             conn.execute("DELETE FROM graph_edges")
+            self._report_progress(f"正在写入图谱：{len(nodes)} 个节点...")
             conn.executemany(
                 "INSERT INTO graph_nodes(id, path, name, kind, parent_id, module_id, content_hash, start_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [(item["id"], item["path"], item["name"], item["kind"], item["parent_id"], self._module_for(item, module_ids), item["content_hash"], item.get("start_line", 0)) for item in nodes],
@@ -208,6 +237,14 @@ class ProjectGraphService:
             if old != {item["id"]: item["content_hash"] for item in nodes}:
                 generation += 1
             conn.execute("INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('generation', ?)", (str(generation),))
+        self._report_progress(
+            f"项目图谱完成：generation={generation}，耗时 {time() - started_at:.1f} 秒。"
+        )
+        self._dirty = False
+
+    def _ensure_fresh(self) -> None:
+        if self._dirty or self._generation() == 0:
+            self._refresh()
 
     def _insert_static_edges(
         self,
@@ -256,16 +293,30 @@ class ProjectGraphService:
     def _workspace_files(self) -> dict[str, str]:
         result = {}
         for root, dirs, names in os.walk(self.workspace_root):
-            dirs[:] = sorted(item for item in dirs if item not in SKIP_DIRS)
+            root_path = Path(root)
+            dirs[:] = sorted(
+                item
+                for item in dirs
+                if item not in SKIP_DIRS
+                and not self.agent_ignore.is_ignored(
+                    (root_path / item).relative_to(self.workspace_root).as_posix(),
+                    is_dir=True,
+                )
+            )
             for name in names:
                 path = Path(root) / name
+                relative = path.relative_to(self.workspace_root).as_posix()
                 try:
-                    if path.stat().st_size > 2_000_000:
+                    if self.agent_ignore.is_ignored(relative) or path.stat().st_size > 2_000_000:
                         continue
-                    result[path.relative_to(self.workspace_root).as_posix()] = self._hash_bytes(path.read_bytes())
+                    result[relative] = self._hash_bytes(path.read_bytes())
                 except OSError:
                     continue
         return result
+
+    def _report_progress(self, message: str) -> None:
+        if self._progress_callback is not None:
+            self._progress_callback(message)
 
     def _resolve_module(self, value: str, rows: list[sqlite3.Row]) -> sqlite3.Row | dict[str, Any]:
         value = value.strip()

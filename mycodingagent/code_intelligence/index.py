@@ -13,6 +13,8 @@ from typing import Any
 from tree_sitter import Node
 from tree_sitter_language_pack import get_parser
 
+from mycodingagent.code_intelligence.agentignore import AgentIgnore
+
 
 CODE_INDEX_SCHEMA_VERSION = 2
 MAX_FILE_SIZE = 2_000_000
@@ -101,6 +103,7 @@ class CodeReference:
 class WorkspaceCodeIndex:
     def __init__(self, workspace_root: Path, db_path: Path | str, *, max_files: int = 5000) -> None:
         self.workspace_root = workspace_root.resolve(strict=False)
+        self.agent_ignore = AgentIgnore(self.workspace_root)
         self.db_path = Path(db_path).expanduser()
         self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.max_files = max_files
@@ -266,6 +269,7 @@ class WorkspaceCodeIndex:
         return self._error("unsupported_operation", f"不支持的代码索引操作：{operation}")
 
     def _refresh_full(self) -> dict[str, int]:
+        self.agent_ignore.reload()
         files = list(self._iter_files())[: self.max_files]
         current = {path.relative_to(self.workspace_root).as_posix(): path for path in files}
         with self._connect() as conn:
@@ -290,6 +294,7 @@ class WorkspaceCodeIndex:
         return {"indexed": indexed, "unchanged": unchanged, "removed": len(removed)}
 
     def _refresh_paths(self, relatives: list[str]) -> dict[str, int]:
+        self.agent_ignore.reload()
         indexed = unchanged = removed = 0
         with self._connect() as conn:
             existing = {
@@ -301,7 +306,11 @@ class WorkspaceCodeIndex:
             } if relatives else {}
         for relative in relatives:
             path = self.workspace_root / relative
-            if not path.is_file() or path.suffix.lower() not in LANGUAGE_BY_SUFFIX:
+            if (
+                not path.is_file()
+                or path.suffix.lower() not in LANGUAGE_BY_SUFFIX
+                or self.agent_ignore.is_ignored(relative)
+            ):
                 if relative in existing:
                     self._delete_paths([relative])
                     removed += 1
@@ -663,11 +672,25 @@ class WorkspaceCodeIndex:
 
     def _iter_files(self):
         for root, dirnames, filenames in os.walk(self.workspace_root):
-            dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
+            root_path = Path(root)
+            dirnames[:] = sorted(
+                name
+                for name in dirnames
+                if name not in SKIP_DIRS
+                and not self.agent_ignore.is_ignored(
+                    (root_path / name).relative_to(self.workspace_root).as_posix(),
+                    is_dir=True,
+                )
+            )
             for filename in sorted(filenames):
                 path = Path(root) / filename
+                relative = path.relative_to(self.workspace_root).as_posix()
                 try:
-                    supported = path.suffix.lower() in LANGUAGE_BY_SUFFIX and path.stat().st_size <= MAX_FILE_SIZE
+                    supported = (
+                        not self.agent_ignore.is_ignored(relative)
+                        and path.suffix.lower() in LANGUAGE_BY_SUFFIX
+                        and path.stat().st_size <= MAX_FILE_SIZE
+                    )
                 except OSError:
                     supported = False
                 if supported:

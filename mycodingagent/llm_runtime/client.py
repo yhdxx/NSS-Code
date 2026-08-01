@@ -774,13 +774,20 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
     temporary_system_messages: list[dict[str, Any]] = []
-    capability_result = await capability_router.route(prompt) if capability_router is not None else None
+    if capability_router is not None:
+        print("[Runtime] 正在解析动态能力...", flush=True)
+        capability_result = await capability_router.route(prompt)
+        print("[Runtime] 动态能力解析完成。", flush=True)
+    else:
+        capability_result = None
     long_term_context = None
     if long_term_memory_runtime is not None and session_id:
+        print("[Runtime] 正在查询长期记忆...", flush=True)
         long_term_context = await long_term_memory_runtime.retrieve_for_turn(
             current_query=prompt,
             recent_messages=messages[:turn_start],
         )
+        print("[Runtime] 长期记忆查询完成。", flush=True)
     base_runtime_context = RuntimeContextBuilder(
         workspace_tracker=workspace_tracker,
         context_mode=current_context_mode(),
