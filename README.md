@@ -71,7 +71,15 @@ myAgent --upgrade
 
 ### 2.1 配置加载
 
-启动时读取 `mycodingagent/configuration/settings.py` 中的配置项。所有核心参数都支持环境变量覆盖，包括：
+启动时先读取 `mycodingagent/configuration/settings.py` 的内置默认值，再合并 YAML/JSON 配置文件，最后用环境变量覆盖。
+默认配置文件路径如下，后者覆盖前者：
+
+1. `~/.config/myCodingAgent/config.yaml`
+2. 当前工作区 `.mycodingagent/config.yaml`
+3. `MYCODINGAGENT_CONFIG` 指定的一个或多个文件（多个路径用系统路径分隔符分隔）
+
+可复制 `.mycodingagent/config.example.yaml` 作为本地配置模板；模板里每个常用字段都用注释标出对应环境变量名。
+所有核心参数都可以放入配置文件，也仍然支持环境变量临时覆盖，包括：
 
 - API 地址、模型名、密钥
 - Docker 沙箱镜像、CPU/内存/超时限制
@@ -81,10 +89,14 @@ myAgent --upgrade
 - `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS`：workspace checkpoint/blob 保留天数，默认 30 天
 - `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT=1`：临时切回旧版系统提示词；默认使用按运行时能力组装的精简提示词
 - `MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND`：覆盖某语言的 LSP 启动命令，例如 `MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"`
-
-Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和本地结果包装统一使用中文。工具名、JSON 字段、状态枚举、代码标识、用户原文、Skill 原文以及外部命令/LSP/MCP 的原始输出保持原样，避免翻译破坏协议或证据。
 - 多智能体最大轮次和并发任务数
 - 长期记忆存储/查询模型、抽取超时和启动回填开关
+
+Embedding 支持本地模型、Ollama HTTP、OpenAI-compatible 在线接口、DashScope 原生接口和 hash fallback。
+当当前 embedding provider/model/endpoint/API format/query instruction/request extra 形成的签名与 Milvus 中已索引签名不一致时，
+Skill 向量会在启动同步阶段重新嵌入并 upsert，避免不同模型共用旧向量。
+
+Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和本地结果包装统一使用中文。工具名、JSON 字段、状态枚举、代码标识、用户原文、Skill 原文以及外部命令/LSP/MCP 的原始输出保持原样，避免翻译破坏协议或证据。
 
 ### 2.2 运行资源初始化
 
@@ -351,7 +363,7 @@ Skill 系统按"发现 -> 审查 -> 索引 -> 检索 -> 路由 -> 调用 -> 反�
 
 Skill 检索融合：
 
-- BGE-M3 embedding 语义检索
+- 可配置 embedding 语义检索（本地 BGE/Ollama/OpenAI-compatible/DashScope 等）
 - Milvus 向量索引
 - BM25 关键词检索
 - RRF 排名融合

@@ -1,6 +1,8 @@
 .codex/
 .agents/
 .docker-cli/
+.mycodingagent/config.yaml
+.mycodingagent/config.json
 .idea/
 .venv/
 __pycache__/

@@ -164,13 +164,15 @@ class BgeHttpEmbeddingService:
         timeout: float | None = None,
         dim: int | None = None,
     ) -> None:
-        self.endpoint = endpoint or CONFIG.embedding.bge_endpoint
-        self.model_name = model_name or CONFIG.embedding.bge_model
-        self.api_format = CONFIG.embedding.bge_api_format
-        self.api_key = api_key if api_key is not None else CONFIG.embedding.bge_api_key
-        self.timeout = timeout if timeout is not None else CONFIG.embedding.bge_timeout
-        self.query_instruction = CONFIG.embedding.bge_query_instruction
-        self._dim = dim or CONFIG.embedding.bge_dimension
+        self.endpoint = endpoint or CONFIG.embedding.endpoint
+        self.model_name = model_name or CONFIG.embedding.model
+        self.api_format = CONFIG.embedding.api_format.strip().lower()
+        self.api_key = api_key if api_key is not None else CONFIG.embedding.api_key
+        self.timeout = timeout if timeout is not None else CONFIG.embedding.timeout
+        self.query_instruction = CONFIG.embedding.query_instruction
+        self.request_extra = dict(CONFIG.embedding.request_extra)
+        self.extra_headers = {str(key): str(value) for key, value in CONFIG.embedding.headers.items()}
+        self._dim = dim or CONFIG.embedding.dimension
 
     @property
     def dim(self) -> int:
@@ -191,26 +193,30 @@ class BgeHttpEmbeddingService:
 
     def signature(self) -> str:
         return "|".join([
-            "bge_http",
+            "embedding_http",
             self.api_format,
             self.endpoint,
             self.model_name,
             str(self.query_instruction or ""),
+            str(self._dim),
+            json.dumps(self.request_extra, ensure_ascii=False, sort_keys=True),
         ])
 
     def _request_embeddings(self, texts: list[str]) -> list[list[float]]:
         if not texts:
             return []
         if self.api_format == "ollama":
-            embeddings = self._request_ollama(texts)
-            if embeddings and embeddings[0]:
-                self._dim = len(embeddings[0])
-            return embeddings
-        if self.api_format != "openai":
-            raise RuntimeError(
-                f"Unsupported BGE HTTP API format: {self.api_format}. Supported formats: ollama, openai."
-            )
-        payload = self._openai_payload(texts)
+            return self._request_json(self._ollama_payload(texts), texts)
+        if self.api_format == "openai":
+            return self._request_json(self._openai_payload(texts), texts)
+        if self.api_format == "dashscope":
+            return self._request_json(self._dashscope_payload(texts), texts)
+        raise RuntimeError(
+            "Unsupported embedding HTTP API format: "
+            f"{self.api_format}. Supported formats: ollama, openai, dashscope."
+        )
+
+    def _request_json(self, payload: dict, texts: list[str]) -> list[list[float]]:
         request = urllib.request.Request(
             self.endpoint,
             data=json.dumps(payload).encode("utf-8"),
@@ -221,70 +227,53 @@ class BgeHttpEmbeddingService:
             with urllib.request.urlopen(request, timeout=self.timeout) as response:
                 response_body = response.read().decode("utf-8")
         except urllib.error.URLError as exc:
-            raise RuntimeError(f"Failed to request BGE embedding service at {self.endpoint}: {exc}") from exc
+            raise RuntimeError(f"Failed to request embedding service at {self.endpoint}: {exc}") from exc
         except ConnectionResetError as exc:
             raise RuntimeError(
-                "BGE embedding service reset the connection. Check endpoint, protocol, and API format "
+                "Embedding service reset the connection. Check endpoint, protocol, and API format "
                 f"(current format: {self.api_format}, endpoint: {self.endpoint})."
             ) from exc
         except TimeoutError as exc:
-            raise RuntimeError(f"Timed out requesting BGE embedding service at {self.endpoint}") from exc
+            raise RuntimeError(f"Timed out requesting embedding service at {self.endpoint}") from exc
 
         try:
             body = json.loads(response_body)
         except json.JSONDecodeError as exc:
-            raise RuntimeError(f"BGE embedding service returned non-JSON response: {response_body[:500]}") from exc
+            raise RuntimeError(f"Embedding service returned non-JSON response: {response_body[:500]}") from exc
 
         embeddings = _extract_embeddings(body)
         if len(embeddings) != len(texts):
             raise RuntimeError(
-                "BGE embedding service returned an unexpected number of embeddings: "
+                "Embedding service returned an unexpected number of embeddings: "
                 f"expected {len(texts)}, got {len(embeddings)}"
             )
         if embeddings and embeddings[0]:
             self._dim = len(embeddings[0])
         return embeddings
 
-    def _request_ollama(self, texts: list[str]) -> list[list[float]]:
+    def _ollama_payload(self, texts: list[str]) -> dict:
         payload = {
             "model": self.model_name,
             "input": texts[0] if len(texts) == 1 else texts,
         }
-        request = urllib.request.Request(
-            self.endpoint,
-            data=json.dumps(payload).encode("utf-8"),
-            headers=self._headers(),
-            method="POST",
-        )
-        try:
-            with urllib.request.urlopen(request, timeout=self.timeout) as response:
-                response_body = response.read().decode("utf-8")
-        except urllib.error.URLError as exc:
-            raise RuntimeError(f"Failed to request BGE embedding service at {self.endpoint}: {exc}") from exc
-        except ConnectionResetError as exc:
-            raise RuntimeError(
-                "BGE embedding service reset the connection. Check endpoint, protocol, and API format "
-                f"(current format: {self.api_format}, endpoint: {self.endpoint})."
-            ) from exc
-        except TimeoutError as exc:
-            raise RuntimeError(f"Timed out requesting BGE embedding service at {self.endpoint}") from exc
-        try:
-            body = json.loads(response_body)
-        except json.JSONDecodeError as exc:
-            raise RuntimeError(f"BGE embedding service returned non-JSON response: {response_body[:500]}") from exc
-        embeddings = _extract_embeddings(body)
-        if len(embeddings) != len(texts):
-            raise RuntimeError(
-                "BGE embedding service returned an unexpected number of embeddings: "
-                f"expected {len(texts)}, got {len(embeddings)}"
-            )
-        return embeddings
+        payload.update(self.request_extra)
+        return payload
+
+    def _dashscope_payload(self, texts: list[str]) -> dict:
+        payload = {
+            "model": self.model_name,
+            "input": {"texts": texts},
+        }
+        payload.update(self.request_extra)
+        return payload
 
     def _openai_payload(self, texts: list[str]) -> dict:
-        return {
+        payload = {
             "model": self.model_name,
             "input": texts,
         }
+        payload.update(self.request_extra)
+        return payload
 
     def _headers(self) -> dict[str, str]:
         headers = {
@@ -293,19 +282,21 @@ class BgeHttpEmbeddingService:
         }
         if self.api_key:
             headers["Authorization"] = f"Bearer {self.api_key}"
+        headers.update(self.extra_headers)
         return headers
 
 
 def create_embedding_service() -> EmbeddingService:
-    if CONFIG.embedding.provider == "bge_http":
+    provider = CONFIG.embedding.provider.strip().lower()
+    if provider in {"bge_http", "http", "ollama", "openai", "openai_compatible", "openai-compatible", "dashscope"}:
         return BgeHttpEmbeddingService()
-    if CONFIG.embedding.provider == "bge":
+    if provider in {"bge", "local", "sentence_transformers", "sentence-transformers"}:
         return BgeEmbeddingService()
-    if CONFIG.embedding.provider == "hash":
+    if provider == "hash":
         return HashEmbeddingService()
     raise ValueError(
         "Unsupported embedding provider: "
-        f"{CONFIG.embedding.provider}. Supported providers: bge_http, bge, hash."
+        f"{CONFIG.embedding.provider}. Supported providers: bge_http/http/ollama/openai_compatible/dashscope, local/bge, hash."
     )
 
 
@@ -405,13 +396,24 @@ def _extract_embeddings(body) -> list[list[float]]:
             for item in sorted(body["data"], key=lambda item: item.get("index", 0))
             if isinstance(item, dict) and item.get("embedding") is not None
         ]
+    if isinstance(body, dict) and isinstance(body.get("output"), dict):
+        output_embeddings = body["output"].get("embeddings")
+        if isinstance(output_embeddings, list):
+            return [
+                _to_float_list(item.get("embedding") if isinstance(item, dict) else item)
+                for item in sorted(
+                    output_embeddings,
+                    key=lambda item: item.get("text_index", item.get("index", 0)) if isinstance(item, dict) else 0,
+                )
+                if (isinstance(item, dict) and item.get("embedding") is not None) or not isinstance(item, dict)
+            ]
     if isinstance(body, dict) and isinstance(body.get("embeddings"), list):
         return [_to_float_list(vector) for vector in body["embeddings"]]
     if isinstance(body, dict) and isinstance(body.get("embedding"), list):
         return [_to_float_list(body["embedding"])]
     if isinstance(body, list):
         return [_to_float_list(vector) for vector in body]
-    raise RuntimeError(f"BGE embedding service returned unsupported response shape: {str(body)[:500]}")
+    raise RuntimeError(f"Embedding service returned unsupported response shape: {str(body)[:500]}")
 
 
 def _hash_vector(text: str, dim: int) -> list[float]:
