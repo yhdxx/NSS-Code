@@ -1,7 +1,8 @@
 # myCodingAgent runtime configuration example.
-# Copy this file to `.mycodingagent/config.yaml` for project-local settings, or to
-# `~/.config/myCodingAgent/config.yaml` for user-wide settings.
-# Load order: built-in defaults < user config < project config < MYCODINGAGENT_CONFIG < environment variables.
+# Copy this file to the Agent install directory `.mycodingagent/config.yaml`, or to
+# `~/.config/myCodingAgent/config.yaml` for user-wide settings shared by all installs.
+# Load order: defaults < user config < install config < optional workspace config < MYCODINGAGENT_CONFIG < env.
+# Workspace config is loaded only when env MYCODINGAGENT_LOAD_WORKSPACE_CONFIG=1.
 
 api:
   # env: DEEPSEEK_API_KEY

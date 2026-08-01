@@ -28,8 +28,29 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_MILVUS_PORT", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
     env.pop("MYCODINGAGENT_BGE_MODEL", None)
+    env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     if extra_env:
         env.update(extra_env)
+    return _run_config_probe(cwd=ROOT, env=env)
+
+
+def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str, str] | None = None) -> dict:
+    env = {
+        **os.environ,
+        "HOME": str(home),
+        "PYTHONPATH": str(ROOT),
+    }
+    env.pop("MYCODINGAGENT_CONFIG", None)
+    env.pop("MYCODINGAGENT_MILVUS_PORT", None)
+    env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
+    env.pop("MYCODINGAGENT_BGE_MODEL", None)
+    env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
+    if extra_env:
+        env.update(extra_env)
+    return _run_config_probe(cwd=workspace, env=env)
+
+
+def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
     code = (
         "import json\n"
         "from mycodingagent.configuration import CONFIG\n"
@@ -45,7 +66,7 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     )
     result = subprocess.run(
         [sys.executable, "-c", code],
-        cwd=ROOT,
+        cwd=cwd,
         env=env,
         text=True,
         stdout=subprocess.PIPE,
@@ -98,6 +119,40 @@ def test_legacy_bge_environment_variable_overrides_config_file(tmp_path):
     data = _config_probe(config_path, extra_env={"MYCODINGAGENT_BGE_MODEL": "legacy-env-model"})
 
     assert data["model"] == "legacy-env-model"
+
+
+def test_workspace_config_is_not_loaded_by_default(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    (workspace / ".mycodingagent").mkdir(parents=True)
+    home.mkdir()
+    (workspace / ".mycodingagent" / "config.yaml").write_text(
+        "embedding:\n  model: workspace-only-model\n",
+        encoding="utf-8",
+    )
+
+    data = _workspace_config_probe(workspace, home)
+
+    assert data["model"] != "workspace-only-model"
+
+
+def test_workspace_config_can_be_enabled_explicitly(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    (workspace / ".mycodingagent").mkdir(parents=True)
+    home.mkdir()
+    (workspace / ".mycodingagent" / "config.yaml").write_text(
+        "embedding:\n  model: workspace-enabled-model\n",
+        encoding="utf-8",
+    )
+
+    data = _workspace_config_probe(
+        workspace,
+        home,
+        extra_env={"MYCODINGAGENT_LOAD_WORKSPACE_CONFIG": "1"},
+    )
+
+    assert data["model"] == "workspace-enabled-model"
 
 
 def test_dashscope_embedding_response_shape_is_supported():

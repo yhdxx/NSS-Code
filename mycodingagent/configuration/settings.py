@@ -7,6 +7,7 @@ from pathlib import Path
 
 
 CONFIG_FILE_ENV = "MYCODINGAGENT_CONFIG"
+WORKSPACE_CONFIG_ENV = "MYCODINGAGENT_LOAD_WORKSPACE_CONFIG"
 _MISSING = object()
 
 
@@ -14,16 +15,30 @@ def _default_user_config_path() -> Path:
     return Path.home() / ".config" / "myCodingAgent" / "config.yaml"
 
 
-def _default_project_config_path() -> Path:
+def _default_install_config_path() -> Path:
+    return Path(__file__).resolve().parents[2] / ".mycodingagent" / "config.yaml"
+
+
+def _default_workspace_config_path() -> Path:
     return Path(os.getenv("MYCODINGAGENT_SANDBOX_ROOT", os.getcwd())).expanduser() / ".mycodingagent" / "config.yaml"
 
 
 def _config_file_candidates() -> tuple[Path, ...]:
-    paths = [_default_user_config_path(), _default_project_config_path()]
+    paths = [_default_user_config_path(), _default_install_config_path()]
+    if os.getenv(WORKSPACE_CONFIG_ENV, "").strip().lower() in {"1", "true", "yes", "y", "on"}:
+        paths.append(_default_workspace_config_path())
     explicit_paths = os.getenv(CONFIG_FILE_ENV, "")
     if explicit_paths:
         paths.extend(Path(item).expanduser() for item in explicit_paths.split(os.pathsep) if item.strip())
-    return tuple(paths)
+    seen: set[str] = set()
+    deduped: list[Path] = []
+    for path in paths:
+        key = str(path.expanduser().resolve(strict=False))
+        if key in seen:
+            continue
+        seen.add(key)
+        deduped.append(path)
+    return tuple(deduped)
 
 
 def _deep_merge(base: dict, override: dict) -> dict:

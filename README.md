@@ -75,10 +75,13 @@ myAgent --upgrade
 默认配置文件路径如下，后者覆盖前者：
 
 1. `~/.config/myCodingAgent/config.yaml`
-2. 当前工作区 `.mycodingagent/config.yaml`
-3. `MYCODINGAGENT_CONFIG` 指定的一个或多个文件（多个路径用系统路径分隔符分隔）
+2. Agent 安装目录 `.mycodingagent/config.yaml`
+3. `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG=1` 时，当前工作区 `.mycodingagent/config.yaml`
+4. `MYCODINGAGENT_CONFIG` 指定的一个或多个文件（多个路径用系统路径分隔符分隔）
 
 可复制 `.mycodingagent/config.example.yaml` 作为本地配置模板；模板里每个常用字段都用注释标出对应环境变量名。
+如果希望在任意目录启动都使用同一套配置，把配置放在 `~/.config/myCodingAgent/config.yaml`
+或 Agent 安装目录 `.mycodingagent/config.yaml`，不要开启 `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG`。
 所有核心参数都可以放入配置文件，也仍然支持环境变量临时覆盖，包括：
 
 - API 地址、模型名、密钥
