@@ -14,6 +14,8 @@ from mycodingagent.tool_runtime.command_policy import (  # 高危命令分类与
     USER_DENIED_COMMAND_MESSAGE,
     CommandApprovalHook,
     CommandApprovalRequest,
+    BashPolicyEvaluator,
+    BashPolicyStore,
     analyze_command,
 )
 
@@ -70,9 +72,13 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         self,
         sandbox_root: Path | None = None,
         approval_hook: CommandApprovalHook | None = None,
+        policy_evaluator: BashPolicyEvaluator | None = None,
     ) -> None:  # 创建工具实例时确定要挂载进容器的宿主机工作区。
         self._sandbox_root = sandbox_root or get_sandbox_root()  # 未显式传入时，使用统一沙箱根目录解析逻辑，通常是启动 agent 的当前目录。
         self._approval_hook = approval_hook  # 为 None 时不做审批，保持非交互场景和既有测试行为不变。
+        # The CLI injects the persistent three-table evaluator. Embedded callers
+        # retain the legacy gate unless they explicitly opt into policy storage.
+        self._policy_evaluator = policy_evaluator
 
 
     async def execute(self, params: Params) -> ToolResult:  # 执行一次 Bash 工具调用，并把 stdout/stderr 封装成 ToolResult 返回给模型。
@@ -88,8 +94,45 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         if image_error:  # 镜像不存在或无法检查时，给出可执行的修复提示。
             return ToolResult(output=image_error, is_error=True)  # 返回工具错误，让模型或用户先处理镜像配置。
         if self._approval_hook is not None:
-            risk, reason = analyze_command(params.command)
-            if risk != "read":
+            policy = self._policy_evaluator.evaluate(params.command) if self._policy_evaluator else None
+            if policy is None:
+                risk, reason = analyze_command(params.command)
+                policy_level = "low" if risk == "read" else "approval"
+                policy = type("LegacyDecision", (), {"unknown_keys": (), "level": policy_level, "reason": reason})()
+            if policy.level == "high":
+                return ToolResult(
+                    output=f"{USER_DENIED_COMMAND_MESSAGE}：{policy.reason or '命令命中高危策略'}",
+                    is_error=True,
+                )
+            pending_unknown = bool(
+                self._policy_evaluator
+                and policy.unknown_keys
+                and self._policy_evaluator.has_pending(policy.unknown_keys)
+            )
+            pending_classifications = {}
+            if pending_unknown:
+                pending_classifications = await self._policy_evaluator.resolve_unknowns(policy.evidence, persist=False)
+                ranks = {"low": 0, "approval": 1, "high": 2}
+                pending_level = max(
+                    (pending_classifications.get(key, "approval") for key in policy.unknown_keys),
+                    key=lambda value: ranks[value],
+                )
+                if pending_level == "high":
+                    return ToolResult(
+                        output=f"{USER_DENIED_COMMAND_MESSAGE}：未知命令分类为高危",
+                        is_error=True,
+                    )
+                if pending_level == "low":
+                    return await self._execute_docker(params)
+                policy = type("ResolvedDecision", (), {"unknown_keys": (), "level": "approval", "reason": "未知命令分类为审批级别"})()
+            if policy.level in {"approval", "unknown"}:
+                risk = "dangerous" if policy.level == "unknown" else "normal"
+                reason = policy.reason or "命令包含未分类或需要审批的策略事件。"
+                classification_task = None
+                if self._policy_evaluator is not None and policy.unknown_keys:
+                    classification_task = asyncio.create_task(
+                        self._policy_evaluator.resolve_unknowns(policy.evidence, persist=False)
+                    )
                 decision = await self._approval_hook.approve(
                     CommandApprovalRequest(
                         command=params.command,
@@ -98,11 +141,24 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                         intent=str(getattr(params, "intent", "") or ""),
                     )
                 )
+                if classification_task is not None:
+                    try:
+                        classifications = await classification_task
+                    except Exception:
+                        classifications = {}
+                    self._policy_evaluator.persist_classification(
+                        tuple(item for item in policy.evidence if item.policy_key in policy.unknown_keys),
+                        classifications,
+                        user_allowed=decision.allowed,
+                    )
                 if not decision.allowed:
                     return ToolResult(
                         output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or '用户拒绝'}",
                         is_error=True,
                     )
+        return await self._execute_docker(params)
+
+    async def _execute_docker(self, params: Params) -> ToolResult:
         network = CONFIG.docker.network  # 默认关闭容器网络；需要联网时必须由外部环境显式打开。
         cpus = CONFIG.docker.cpus  # 默认限制为 2 个 CPU，避免编译或测试命令压满宿主机。
         memory = CONFIG.docker.memory  # 默认限制为 1GB 内存，降低失控命令影响整个 agent 进程的风险。

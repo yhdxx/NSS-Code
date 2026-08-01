@@ -12,6 +12,7 @@ for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_P
     os.environ.pop(env_key, None)  # 执行当前步骤的业务逻辑。
 
 import asyncio  # 导入当前模块需要的依赖。
+import json
 import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
 import pyfiglet  # 导入当前模块需要的依赖。
 
@@ -32,6 +33,14 @@ from mycodingagent.tool_runtime.bash import ensure_docker_image, get_docker_imag
 from mycodingagent.tool_runtime.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
 from mycodingagent.tool_runtime.command_policy import CLICommandApprovalHook  # 高危 Bash 命令执行前征求用户同意。
 from mycodingagent.tool_runtime.write_policy import CLIWriteApprovalHook
+from mycodingagent.tool_runtime.command_policy import (
+    BashPolicyEvaluator,
+    BashPolicyEvidence,
+    BashPolicyStore,
+    SubmitBashApproval,
+    SubmitBashHighRisk,
+    SubmitBashLowRisk,
+)
 from mycodingagent.tool_runtime.file_state_cache import FileStateCache  # 共享文件读取状态，判断用户是否修改了模型已读文件。
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
@@ -112,6 +121,56 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             )
     # 创建 OpenAI 客户端（复用连接）
     api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
+
+    async def classify_bash_policy(evidence: BashPolicyEvidence):
+        """Classify one command name/event through one no-argument tool."""
+        prompt = (
+            Path(__file__).resolve().parents[1]
+            / "multi_agent"
+            / "prompts"
+            / "bash_command_classification"
+            / "SYSTEM.md"
+        ).read_text(encoding="utf-8")
+        schemas = []
+        for tool_cls in (SubmitBashLowRisk, SubmitBashApproval, SubmitBashHighRisk):
+            tool = tool_cls(lambda _level: None)
+            schema = tool.get_schema()
+            schemas.append({
+                "type": "function",
+                "name": schema["name"],
+                "description": schema["description"],
+                "parameters": schema["input_schema"],
+            })
+        response = await api_client.chat.completions.create(
+            model=client.MODEL,
+            messages=[
+                {"role": "system", "content": prompt},
+                {
+                    "role": "user",
+                    "content": json.dumps(
+                        {
+                            "policy_key": evidence.policy_key,
+                            "entry_type": evidence.entry_type,
+                            "name": evidence.name,
+                            "source_text": evidence.source_text,
+                            "reason": evidence.reason,
+                        },
+                        ensure_ascii=False,
+                    ),
+                },
+            ],
+            temperature=0,
+            tools=schemas,
+            tool_choice="required",
+        )
+        tool_calls = response.choices[0].message.tool_calls if response.choices else []
+        if not tool_calls:
+            return "approval"
+        return {
+            "SubmitBashLowRisk": "low",
+            "SubmitBashApproval": "approval",
+            "SubmitBashHighRisk": "high",
+        }.get(tool_calls[0].function.name, "approval")
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
     terminal_input = TerminalInputCoordinator()
@@ -125,6 +184,10 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         write_approval_hook=write_approval_hook,
         terminal_input_coordinator=terminal_input,
         project_graph_service=project_graph,
+        bash_policy_evaluator=BashPolicyEvaluator(
+            BashPolicyStore(CONFIG.memory.db_path),
+            classify_bash_policy,
+        ),
     )
     multi_agent_store = MultiAgentStore()
     long_term_memory_runtime = None
