@@ -5,6 +5,7 @@ import asyncio
 import pytest
 
 from mycodingagent.tool_runtime.bash import Bash
+from mycodingagent.tool_runtime.base import ToolResult
 from mycodingagent.tool_runtime.command_policy import (
     USER_DENIED_COMMAND_MESSAGE,
     CLICommandApprovalHook,
@@ -155,6 +156,31 @@ def test_no_hook_means_no_gate(monkeypatch, tmp_path):
     result = asyncio.run(tool.execute(tool.params_model(command="rm -rf /workspace", intent="x")))
 
     assert USER_DENIED_COMMAND_MESSAGE not in result.output
+
+
+def test_bash_execute_passes_checked_image_to_docker(monkeypatch, tmp_path):
+    monkeypatch.setattr("mycodingagent.tool_runtime.bash.shutil.which", lambda name: "/usr/bin/docker")
+    monkeypatch.setattr("mycodingagent.tool_runtime.bash.get_docker_image", lambda: "custom-image:test")
+
+    async def ok_check(self, *args):  # noqa: ANN001
+        return ""
+
+    captured = {}
+
+    async def fake_execute_docker(self, params, image):  # noqa: ANN001
+        captured["command"] = params.command
+        captured["image"] = image
+        return ToolResult(output="ok")
+
+    monkeypatch.setattr(Bash, "_check_docker_daemon", ok_check)
+    monkeypatch.setattr(Bash, "_check_image_available", ok_check)
+    monkeypatch.setattr(Bash, "_execute_docker", fake_execute_docker)
+
+    tool = Bash(sandbox_root=tmp_path)
+    result = asyncio.run(tool.execute(tool.params_model(command="echo ok", intent="verify")))
+
+    assert result.output == "ok"
+    assert captured == {"command": "echo ok", "image": "custom-image:test"}
 
 
 def test_cli_hook_accepts_yes(monkeypatch, capsys):

@@ -138,7 +138,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                         is_error=True,
                     )
                 if pending_level == "low":
-                    return await self._execute_docker(params)
+                    return await self._execute_docker(params, image)
                 policy = type("ResolvedDecision", (), {"unknown_keys": (), "level": "approval", "reason": "未知命令分类为审批级别"})()
             if policy.level in {"approval", "unknown"}:
                 risk = "dangerous" if policy.level == "unknown" else "normal"
@@ -171,9 +171,9 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                         output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or '用户拒绝'}",
                         is_error=True,
                     )
-        return await self._execute_docker(params)
+        return await self._execute_docker(params, image)
 
-    async def _execute_docker(self, params: Params) -> ToolResult:
+    async def _execute_docker(self, params: Params, image: str) -> ToolResult:
         network = CONFIG.docker.network  # 默认关闭容器网络；需要联网时必须由外部环境显式打开。
         cpus = CONFIG.docker.cpus  # 默认限制为 2 个 CPU，避免编译或测试命令压满宿主机。
         memory = CONFIG.docker.memory  # 默认限制为 1GB 内存，降低失控命令影响整个 agent 进程的风险。
