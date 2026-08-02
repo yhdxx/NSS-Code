@@ -144,20 +144,45 @@ class WorkspaceCodeIndex:
             result.setdefault("evidence_count", self._evidence_count(result))
             return result
 
-    def static_graph_snapshot(self) -> dict[str, list[dict[str, Any]]]:
+    def static_graph_snapshot(self) -> dict[str, Any]:
         """Return parser facts for internal graph builders after one index refresh."""
         with self._lock:
             if self._ready:
                 self._reconcile_indexed_paths()
             self.refresh()
             with self._connect() as conn:
+                files = [dict(row) for row in conn.execute(
+                    "SELECT path, language, content_hash, size FROM code_files ORDER BY path"
+                )]
                 symbols = [dict(row) for row in conn.execute(
                     "SELECT * FROM code_symbols ORDER BY path, start_line, start_column"
                 )]
                 calls = [dict(row) for row in conn.execute(
                     "SELECT * FROM code_calls ORDER BY path, line"
                 )]
-        return {"symbols": symbols, "calls": calls}
+        language_stats: dict[str, dict[str, int]] = {}
+        for item in files:
+            language = str(item.get("language") or "")
+            stats = language_stats.setdefault(language, {"files": 0, "bytes": 0})
+            stats["files"] += 1
+            stats["bytes"] += int(item.get("size") or 0)
+        primary_language = ""
+        if language_stats:
+            primary_language = max(
+                language_stats,
+                key=lambda key: (language_stats[key]["bytes"], language_stats[key]["files"], key),
+            )
+        return {
+            "files": files,
+            "symbols": symbols,
+            "calls": calls,
+            "language_stats": language_stats,
+            "primary_language": primary_language,
+            "filter_stats": {
+                "source": "agentignore_then_supported_code_index",
+                "indexed_code_files": len(files),
+            },
+        }
 
     def _reconcile_indexed_paths(self) -> None:
         """Catch edits that race the workspace watcher without rereading file contents."""

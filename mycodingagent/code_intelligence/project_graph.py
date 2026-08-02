@@ -2,19 +2,20 @@ from __future__ import annotations
 
 import hashlib
 import json
-import os
 import sqlite3
 from pathlib import Path
-from threading import RLock
-from time import time
+from threading import RLock, Thread
+from time import sleep, time
 from typing import Any, Callable
 
 from mycodingagent.code_intelligence.agentignore import AgentIgnore
-from mycodingagent.code_intelligence.index import LANGUAGE_BY_SUFFIX, SKIP_DIRS, WorkspaceCodeIndex
+from mycodingagent.code_intelligence.index import WorkspaceCodeIndex
 from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 UNKNOWN_DESCRIPTION = "暂未描述"
 GRAPH_SCHEMA_VERSION = 1
+BOOTSTRAP_DEPTH = 3
+BOOTSTRAP_DEBOUNCE_SECONDS = 1.0
 
 
 class ProjectGraphService:
@@ -29,6 +30,10 @@ class ProjectGraphService:
         self._work_mode = lambda: "code"
         self._progress_callback: Callable[[str], None] | None = None
         self._dirty = True
+        self._dirty_at = time()
+        self._dirty_reason = "initial"
+        self._last_filter_fingerprint = self._filter_fingerprint()
+        self._background_thread: Thread | None = None
         self._lock = RLock()
         self._init_db()
 
@@ -38,11 +43,38 @@ class ProjectGraphService:
     def set_progress_callback(self, callback: Callable[[str], None] | None) -> None:
         self._progress_callback = callback
 
-    def mark_dirty(self, _path: Path | str, _is_delete: bool = False) -> None:
-        self._dirty = True
+    def mark_dirty(self, path: Path | str, _is_delete: bool = False) -> None:
+        with self._lock:
+            self._dirty = True
+            self._dirty_at = time()
+            relative = self._relative_path(path)
+            self._dirty_reason = "agentignore_changed" if relative == ".agentignore" else "workspace_changed"
+            if self._background_thread is None or not self._background_thread.is_alive():
+                self._background_thread = Thread(
+                    target=self._background_refresh,
+                    name="project-graph-refresh",
+                    daemon=True,
+                )
+                self._background_thread.start()
 
     def work_mode_provider(self) -> str:
         return str(self._work_mode())
+
+    def _background_refresh(self) -> None:
+        while True:
+            sleep(BOOTSTRAP_DEBOUNCE_SECONDS)
+            with self._lock:
+                if not self._dirty:
+                    self._background_thread = None
+                    return
+                if time() - self._dirty_at < BOOTSTRAP_DEBOUNCE_SECONDS:
+                    continue
+                try:
+                    self._refresh()
+                except Exception as exc:
+                    self._report_progress(f"后台刷新失败：{type(exc).__name__}: {exc}")
+                    self._background_thread = None
+                    return
 
     def status(self) -> dict[str, Any]:
         with self._lock:
@@ -56,7 +88,7 @@ class ProjectGraphService:
     def _status_payload(self) -> dict[str, Any]:
         with self._connect() as conn:
             modules = int(conn.execute("SELECT COUNT(*) FROM graph_nodes WHERE kind = 'module'").fetchone()[0])
-            units = int(conn.execute("SELECT COUNT(*) FROM graph_nodes WHERE kind != 'module'").fetchone()[0])
+            units = int(conn.execute("SELECT COUNT(*) FROM graph_nodes WHERE kind NOT IN ('module', 'file')").fetchone()[0])
             stale = int(conn.execute("SELECT COUNT(*) FROM graph_descriptions WHERE status = 'stale'").fetchone()[0])
         return {
             "available": True,
@@ -67,7 +99,7 @@ class ProjectGraphService:
             "workspace_root": "/workspace",
         }
 
-    def architecture(self, module: str = "") -> dict[str, Any]:
+    def architecture(self, module: str = "", *, depth: int = BOOTSTRAP_DEPTH, bootstrap: bool = False) -> dict[str, Any]:
         with self._lock:
             self._ensure_fresh()
             with self._connect() as conn:
@@ -79,25 +111,79 @@ class ProjectGraphService:
                     return resolution
                 target = resolution
                 target_path = str(target["path"])
+                max_depth = max(1, min(int(depth or BOOTSTRAP_DEPTH), BOOTSTRAP_DEPTH))
+                target_depth = self._path_depth(target_path)
                 subtree = [
                     row for row in rows
                     if target_path == "."
                     or str(row["path"]) == target_path
                     or str(row["path"]).startswith(target_path + "/")
                 ]
+                visible_subtree = [
+                    row for row in subtree
+                    if self._path_depth(str(row["path"])) - target_depth < max_depth
+                ]
                 descriptions = self._descriptions(conn, [str(row["id"]) for row in subtree])
+                counts = self._module_counts(conn, [str(row["id"]) for row in visible_subtree])
+                language_stats = self._meta_json(conn, "language_stats", {})
+                filter_stats = self._meta_json(conn, "filter_stats", {})
+                primary_language = self._meta_value(conn, "primary_language", "")
+                navigation_hash = self._navigation_hash(conn)
             return {
                 "graph": "project_architecture",
                 "generation": self._generation(),
-                "module": self._module_payload(target, descriptions),
-                "root_module": self._module_payload(target, descriptions),
-                "modules": [self._module_payload(row, descriptions) for row in subtree],
+                "bootstrap": bool(bootstrap),
+                "depth": max_depth,
+                "navigation_hash": navigation_hash,
+                "primary_language": primary_language,
+                "language_stats": language_stats,
+                "filter_stats": filter_stats,
+                "module": self._module_payload(target, descriptions, counts),
+                "root_module": self._module_payload(target, descriptions, counts),
+                "modules": [self._module_payload(row, descriptions, counts) for row in visible_subtree],
                 "children": [
-                    self._module_payload(row, descriptions)
-                    for row in subtree
+                    self._module_payload(row, descriptions, counts)
+                    for row in visible_subtree
                     if str(row["parent_id"] or "") == str(target["id"])
                 ],
             }
+
+    def bootstrap_messages(self) -> list[dict[str, Any]]:
+        payload = self.architecture("", depth=BOOTSTRAP_DEPTH, bootstrap=True)
+        if "error_code" in payload:
+            return []
+        navigation_hash = str(payload.get("navigation_hash") or "")
+        generation = int(payload.get("generation") or 0)
+        call_id = f"project_graph_bootstrap_{generation}_{navigation_hash[:12]}"
+        arguments = json.dumps(
+            {"module": "", "depth": BOOTSTRAP_DEPTH, "bootstrap": True},
+            ensure_ascii=False,
+            sort_keys=True,
+        )
+        metadata = {
+            "project_graph_bootstrap": True,
+            "generation": generation,
+            "navigation_hash": navigation_hash,
+        }
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {"name": "ProjectArchitecture", "arguments": arguments},
+                    }
+                ],
+                "metadata": metadata,
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": json.dumps(payload, ensure_ascii=False, indent=2, sort_keys=True),
+                "metadata": metadata,
+            },
+        ]
 
     def dependency_graph(self, module: str) -> dict[str, Any]:
         with self._lock:
@@ -111,7 +197,7 @@ class ProjectGraphService:
                 module_id = str(target["id"])
                 child_modules = [row for row in modules if str(row["parent_id"]) == module_id]
                 units = conn.execute(
-                    "SELECT * FROM graph_nodes WHERE module_id = ? AND kind != 'module' ORDER BY path, start_line, name",
+                    "SELECT * FROM graph_nodes WHERE module_id = ? AND kind NOT IN ('module', 'file') ORDER BY path, start_line, name",
                     (module_id,),
                 ).fetchall()
                 ids = [str(row["id"]) for row in units] + [module_id]
@@ -152,6 +238,25 @@ class ProjectGraphService:
                 )
             return {"status": "updated", "id": row["id"], "content_hash": content_hash}
 
+    def update_descriptions(self, updates: list[dict[str, str]]) -> dict[str, Any]:
+        if not updates:
+            return self._error("updates_required", "updates 不能为空")
+        results: list[dict[str, Any]] = []
+        for item in updates:
+            result = self.update_description(
+                str(item.get("target") or ""),
+                str(item.get("description") or ""),
+                str(item.get("content_hash") or ""),
+            )
+            results.append(result)
+        failed = [item for item in results if "error_code" in item]
+        return {
+            "status": "updated" if not failed else "partial_failure",
+            "updated": len(results) - len(failed),
+            "failed": len(failed),
+            "results": results,
+        }
+
     def _refresh(self) -> None:
         started_at = time()
         self._report_progress("正在刷新静态代码索引...")
@@ -160,7 +265,10 @@ class ProjectGraphService:
             f"静态索引完成：{len(static_graph['symbols'])} 个符号，{len(static_graph['calls'])} 条调用。"
         )
         self.agent_ignore.reload()
-        files = self._workspace_files()
+        files = {
+            str(item["path"]): str(item["content_hash"])
+            for item in static_graph.get("files", [])
+        }
         self._report_progress(f"文件扫描完成：{len(files)} 个文件进入项目图谱。")
         with self._connect() as conn:
             old = {str(row["id"]): str(row["content_hash"]) for row in conn.execute("SELECT id, content_hash FROM graph_nodes")}
@@ -238,6 +346,29 @@ class ProjectGraphService:
             if old != {item["id"]: item["content_hash"] for item in nodes}:
                 generation += 1
             conn.execute("INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('generation', ?)", (str(generation),))
+            conn.execute(
+                "INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('language_stats', ?)",
+                (json.dumps(static_graph.get("language_stats", {}), ensure_ascii=False, sort_keys=True),),
+            )
+            conn.execute(
+                "INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('primary_language', ?)",
+                (str(static_graph.get("primary_language", "")),),
+            )
+            filter_stats = {
+                **dict(static_graph.get("filter_stats", {})),
+                "agentignore_fingerprint": self._filter_fingerprint(),
+                "graph_input": "indexed_code_files",
+            }
+            conn.execute(
+                "INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('filter_stats', ?)",
+                (json.dumps(filter_stats, ensure_ascii=False, sort_keys=True),),
+            )
+            navigation_hash = self._compute_navigation_hash(conn, depth=BOOTSTRAP_DEPTH)
+            conn.execute(
+                "INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('navigation_hash', ?)",
+                (navigation_hash,),
+            )
+            self._last_filter_fingerprint = filter_stats["agentignore_fingerprint"]
         self._report_progress(
             f"项目图谱完成：generation={generation}，耗时 {time() - started_at:.1f} 秒。"
         )
@@ -291,29 +422,97 @@ class ProjectGraphService:
         conn.row_factory = sqlite3.Row
         return conn
 
-    def _workspace_files(self) -> dict[str, str]:
-        result = {}
-        for root, dirs, names in os.walk(self.workspace_root):
-            root_path = Path(root)
-            dirs[:] = sorted(
-                item
-                for item in dirs
-                if item not in SKIP_DIRS
-                and not self.agent_ignore.is_ignored(
-                    (root_path / item).relative_to(self.workspace_root).as_posix(),
-                    is_dir=True,
-                )
-            )
-            for name in names:
-                path = Path(root) / name
-                relative = path.relative_to(self.workspace_root).as_posix()
-                try:
-                    if self.agent_ignore.is_ignored(relative) or path.stat().st_size > 2_000_000:
-                        continue
-                    result[relative] = self._hash_bytes(path.read_bytes())
-                except OSError:
-                    continue
-        return result
+    def _module_counts(
+        self,
+        conn: sqlite3.Connection,
+        module_ids: list[str],
+    ) -> dict[str, dict[str, int]]:
+        if not module_ids:
+            return {}
+        modules = [dict(row) for row in conn.execute("SELECT id, path, parent_id FROM graph_nodes WHERE kind = 'module'")]
+        units = [dict(row) for row in conn.execute("SELECT module_id FROM graph_nodes WHERE kind NOT IN ('module', 'file')")]
+        module_path_by_id = {str(row["id"]): str(row["path"]) for row in modules}
+        counts = {
+            str(row["id"]): {
+                "recursive_unit_count": 0,
+                "child_module_count": 0,
+            }
+            for row in modules
+            if str(row["id"]) in set(module_ids)
+        }
+        for row in modules:
+            parent_id = str(row["parent_id"] or "")
+            if parent_id in counts:
+                counts[parent_id]["child_module_count"] += 1
+        for unit in units:
+            unit_module_path = module_path_by_id.get(str(unit["module_id"]), "")
+            for module_id in counts:
+                module_path = module_path_by_id.get(module_id, "")
+                if (
+                    module_path == "."
+                    or unit_module_path == module_path
+                    or unit_module_path.startswith(module_path + "/")
+                ):
+                    counts[module_id]["recursive_unit_count"] += 1
+        return counts
+
+    def _navigation_hash(self, conn: sqlite3.Connection) -> str:
+        value = self._meta_value(conn, "navigation_hash", "")
+        return value or self._compute_navigation_hash(conn, depth=BOOTSTRAP_DEPTH)
+
+    def _compute_navigation_hash(self, conn: sqlite3.Connection, *, depth: int) -> str:
+        rows = conn.execute("SELECT id, path, name, parent_id FROM graph_nodes WHERE kind = 'module' ORDER BY path").fetchall()
+        visible = [
+            {
+                "id": row["id"],
+                "path": row["path"],
+                "name": row["name"],
+                "parent_id": row["parent_id"],
+            }
+            for row in rows
+            if self._path_depth(str(row["path"])) < depth
+        ]
+        payload = {
+            "modules": visible,
+            "agentignore_fingerprint": self._filter_fingerprint(),
+        }
+        return self._hash_text(json.dumps(payload, ensure_ascii=False, sort_keys=True))
+
+    @staticmethod
+    def _meta_value(conn: sqlite3.Connection, key: str, default: str = "") -> str:
+        row = conn.execute("SELECT value FROM graph_meta WHERE key = ?", (key,)).fetchone()
+        return str(row["value"]) if row is not None else default
+
+    @classmethod
+    def _meta_json(cls, conn: sqlite3.Connection, key: str, default: Any) -> Any:
+        raw = cls._meta_value(conn, key, "")
+        if not raw:
+            return default
+        try:
+            return json.loads(raw)
+        except json.JSONDecodeError:
+            return default
+
+    @staticmethod
+    def _path_depth(path: str) -> int:
+        if not path or path == ".":
+            return 0
+        return len(Path(path).parts)
+
+    def _relative_path(self, path: Path | str) -> str:
+        candidate = Path(path)
+        if not candidate.is_absolute():
+            candidate = self.workspace_root / candidate
+        try:
+            return candidate.resolve(strict=False).relative_to(self.workspace_root).as_posix()
+        except ValueError:
+            return str(path)
+
+    def _filter_fingerprint(self) -> str:
+        try:
+            return self._hash_bytes((self.workspace_root / ".agentignore").read_bytes())
+        except OSError:
+            return ""
 
     def _report_progress(self, message: str) -> None:
         if self._progress_callback is not None:
@@ -340,9 +539,25 @@ class ProjectGraphService:
             return {}
         return {str(row["node_id"]): dict(row) for row in conn.execute("SELECT * FROM graph_descriptions WHERE node_id IN ({})".format(",".join("?" for _ in ids)), ids)}
 
-    def _module_payload(self, row: sqlite3.Row, descriptions: dict[str, dict[str, Any]]) -> dict[str, Any]:
+    def _module_payload(
+        self,
+        row: sqlite3.Row,
+        descriptions: dict[str, dict[str, Any]],
+        counts: dict[str, dict[str, int]] | None = None,
+    ) -> dict[str, Any]:
         description = descriptions.get(str(row["id"]), {})
-        return {"id": row["id"], "name": row["name"], "path": row["path"], "parent_id": row["parent_id"], "description": description.get("description", UNKNOWN_DESCRIPTION), "content_hash": row["content_hash"], "status": description.get("status", "undescribed")}
+        payload = {
+            "id": row["id"],
+            "name": row["name"],
+            "path": row["path"],
+            "parent_id": row["parent_id"],
+            "description": description.get("description", UNKNOWN_DESCRIPTION),
+            "content_hash": row["content_hash"],
+            "status": description.get("status", "undescribed"),
+        }
+        if counts is not None:
+            payload.update(counts.get(str(row["id"]), {"recursive_unit_count": 0, "child_module_count": 0}))
+        return payload
 
     def _unit_payload(self, row: sqlite3.Row, descriptions: dict[str, dict[str, Any]]) -> dict[str, Any]:
         return {**self._module_payload(row, descriptions), "kind": row["kind"], "start_line": row["start_line"]}

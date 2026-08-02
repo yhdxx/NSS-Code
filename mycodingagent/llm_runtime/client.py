@@ -30,7 +30,11 @@ from mycodingagent.llm_runtime.context import (
 )
 from mycodingagent.llm_runtime.streaming import stream_one_round
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
-from mycodingagent.terminal_ui.output import processing_status, tool_status_message
+from mycodingagent.terminal_ui.output import (
+    processing_status,
+    render_project_graph_bootstrap_tree,
+    tool_status_message,
+)
 from mycodingagent.tool_runtime import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
 from mycodingagent.tool_runtime.execution import (
     CodeQueryLedger,
@@ -503,6 +507,65 @@ async def execute_local_tool(
         execution_recorder=execution_recorder,
         session_id=session_id,
     )
+
+
+def append_project_graph_bootstrap_if_needed(
+    messages: list[dict[str, Any]],
+    project_graph: Any | None,
+    *,
+    work_mode: str,
+) -> bool:
+    if project_graph is None or str(work_mode) != "code":
+        return False
+    bootstrap_messages = getattr(project_graph, "bootstrap_messages", None)
+    if not callable(bootstrap_messages):
+        return False
+    try:
+        pair = bootstrap_messages()
+    except Exception as exc:
+        print(f"[项目图谱] Bootstrap 生成失败：{type(exc).__name__}: {exc}", flush=True)
+        return False
+    if len(pair) != 2:
+        return False
+    new_hash = _project_graph_bootstrap_hash(pair[-1])
+    if not new_hash or new_hash == _latest_project_graph_bootstrap_hash(messages):
+        return False
+    messages.extend(pair)
+    payload = _project_graph_payload_from_message(pair[-1])
+    if payload:
+        render_project_graph_bootstrap_tree(payload)
+    return True
+
+
+def _latest_project_graph_bootstrap_hash(messages: list[dict[str, Any]]) -> str:
+    for message in reversed(messages):
+        value = _project_graph_bootstrap_hash(message)
+        if value:
+            return value
+    return ""
+
+
+def _project_graph_bootstrap_hash(message: dict[str, Any]) -> str:
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("project_graph_bootstrap"):
+        return str(metadata.get("navigation_hash") or "")
+    payload = _project_graph_payload_from_message(message)
+    if payload and payload.get("bootstrap"):
+        return str(payload.get("navigation_hash") or "")
+    return ""
+
+
+def _project_graph_payload_from_message(message: dict[str, Any]) -> dict[str, Any]:
+    if message.get("role") != "tool":
+        return {}
+    content = str(message.get("content") or "")
+    try:
+        payload = json.loads(content)
+    except json.JSONDecodeError:
+        return {}
+    return payload if isinstance(payload, dict) else {}
+
+
 async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
     model_manager: ModelManager,  # 统一推理模型管理器，负责当前 profile 和 provider。
     prompt: str,  # 当前用户输入的自然语言需求。
@@ -669,12 +732,10 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     if remove_trailing_incomplete_tool_call(messages):
         print("已移除上一轮未完成的工具调用，当前会话可以继续。", flush=True)
 
-    turn_start = len(messages)
     session_id = ""
     active_model = model_manager.active_model
     if memory_runtime is not None and CONFIG.memory.enabled:
         session_id = memory_runtime.start_session(active_model)
-        memory_runtime.begin_workspace_checkpoint(prompt=prompt, message_index=turn_start)
 
     def current_context_mode() -> str:
         if memory_runtime is None or not session_id:
@@ -731,6 +792,13 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             success=success,
         )
 
+    if append_project_graph_bootstrap_if_needed(messages, project_graph, work_mode=work_mode):
+        save_session_state(sync=True)
+
+    turn_start = len(messages)
+    if memory_runtime is not None and CONFIG.memory.enabled:
+        memory_runtime.begin_workspace_checkpoint(prompt=prompt, message_index=turn_start)
+
     # 追加当前用户问题  # 每次调用 `ask_model` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
@@ -781,6 +849,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 summary_text=summary_text,
                 persist_snapshot=True,
                 current_turn_start=turn_start,
+                project_graph=project_graph if str(work_mode) == "code" else None,
             )
         runtime_context = replace(
             base_runtime_context,

@@ -399,6 +399,57 @@ def render_generic_call(console: Any, call: _ToolCallView) -> None:
         _print_text(console, f"  └ {summary}", style="tool.generic")
 
 
+def render_project_graph_bootstrap_tree(payload: dict[str, Any], *, file: TextIO | None = None) -> None:
+    """Render a compact module tree for synthetic project graph bootstrap updates."""
+    output = _resolve_file(file)
+    console = _console(output)
+    generation = payload.get("generation", 0)
+    primary_language = payload.get("primary_language") or "unknown"
+    modules = [item for item in payload.get("modules", []) if isinstance(item, dict)]
+    _print_segments(
+        console,
+        [
+            ("[项目图谱] Bootstrap ", "tool.section"),
+            (f"generation={generation} ", "tool.arg"),
+            (f"primary_language={primary_language}", "tool.arg"),
+        ],
+    )
+    if not modules:
+        _print_text(console, "  └ (无代码模块)", style="tool.arg")
+        return
+    by_parent: dict[str, list[dict[str, Any]]] = {}
+    by_id: dict[str, dict[str, Any]] = {}
+    for module in modules:
+        module_id = str(module.get("id") or "")
+        by_id[module_id] = module
+        by_parent.setdefault(str(module.get("parent_id") or ""), []).append(module)
+    root = next((module for module in modules if str(module.get("path") or "") == "."), modules[0])
+
+    def sort_key(item: dict[str, Any]) -> tuple[str, str]:
+        return (str(item.get("path") or ""), str(item.get("name") or ""))
+
+    def walk(module: dict[str, Any], prefix: str = "", is_last: bool = True) -> None:
+        name = str(module.get("name") or module.get("path") or "module")
+        path = str(module.get("path") or "")
+        units = int(module.get("recursive_unit_count") or 0)
+        children = int(module.get("child_module_count") or 0)
+        branch = "└─ " if is_last else "├─ "
+        _print_segments(
+            console,
+            [
+                ("  " + prefix + branch, "tool.branch"),
+                (name, "tool.section"),
+                (f"  {path}  units={units} children={children}", "tool.arg"),
+            ],
+        )
+        child_prefix = prefix + ("   " if is_last else "│  ")
+        child_items = sorted(by_parent.get(str(module.get("id") or ""), []), key=sort_key)
+        for index, child in enumerate(child_items):
+            walk(child, child_prefix, index == len(child_items) - 1)
+
+    walk(root)
+
+
 @dataclass(frozen=True)
 class _ReadSummary:
     verb: str

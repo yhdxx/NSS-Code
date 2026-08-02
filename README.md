@@ -392,7 +392,7 @@ Skill 检索融合：
 MCP 配置加载顺序：
 
 ```text
-~/.config/myCodingAgent/mcp.json
+~/.mycodingagent/mcp.json
   -> 当前工作目录/.mycodingagent/mcp.json
   -> MYCODINGAGENT_MCP_CONFIG
 ```

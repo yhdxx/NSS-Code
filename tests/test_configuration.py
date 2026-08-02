@@ -38,6 +38,9 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
+    env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
+    env.pop("MYCODINGAGENT_STATE_DIR", None)
+    env.pop("XDG_STATE_HOME", None)
     if extra_env:
         env.update(extra_env)
     return _run_config_probe(cwd=ROOT, env=env)
@@ -58,6 +61,9 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
+    env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
+    env.pop("MYCODINGAGENT_STATE_DIR", None)
+    env.pop("XDG_STATE_HOME", None)
     if extra_env:
         env.update(extra_env)
     return _run_config_probe(cwd=workspace, env=env)
@@ -75,6 +81,8 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'dimension': CONFIG.embedding.dimension,\n"
         "  'milvus_uri': CONFIG.milvus.uri,\n"
         "  'milvus_collection': CONFIG.milvus.collection,\n"
+        "  'memory_state_dir': str(CONFIG.memory.state_dir),\n"
+        "  'memory_db_path': str(CONFIG.memory.db_path),\n"
         "  'mcp_project_config_path': str(CONFIG.mcp.project_config_path),\n"
         "  'mcp_user_config_path': str(CONFIG.mcp.user_config_path),\n"
         "  'session_activation_reward': CONFIG.skills.session_activation_reward,\n"
@@ -214,7 +222,23 @@ def test_mcp_project_config_path_defaults_to_current_workspace(tmp_path):
     data = _workspace_config_probe(workspace, home)
 
     assert data["mcp_project_config_path"] == str(workspace / ".mycodingagent" / "mcp.json")
-    assert data["mcp_user_config_path"] == str(home / ".config" / "myCodingAgent" / "mcp.json")
+    assert data["mcp_user_config_path"] == str(home / ".mycodingagent" / "mcp.json")
+
+
+def test_memory_db_path_defaults_to_mycodingagent_state_dir(tmp_path):
+    workspace = tmp_path / "workspace"
+    home = tmp_path / "home"
+    workspace.mkdir()
+    home.mkdir()
+
+    data = _workspace_config_probe(
+        workspace,
+        home,
+        extra_env={"XDG_STATE_HOME": str(tmp_path / "xdg-state")},
+    )
+
+    assert data["memory_state_dir"] == str(home / ".mycodingagent" / "state")
+    assert data["memory_db_path"] == str(home / ".mycodingagent" / "state" / "sessions.sqlite3")
 
 
 def test_dashscope_embedding_response_shape_is_supported():

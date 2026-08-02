@@ -39,6 +39,7 @@ def test_agentignore_excludes_files_from_index_and_project_graph(tmp_path):
     (tmp_path / "src" / "main.py").write_text("def main():\n    return 1\n", encoding="utf-8")
     (tmp_path / "generated" / "hidden.py").write_text("def hidden(): pass\n", encoding="utf-8")
     (tmp_path / "debug.log").write_text("ignored", encoding="utf-8")
+    (tmp_path / "README.md").write_text("# docs\n", encoding="utf-8")
     index, graph = create_graph(tmp_path)
 
     architecture = graph.architecture("")
@@ -46,6 +47,7 @@ def test_agentignore_excludes_files_from_index_and_project_graph(tmp_path):
 
     assert index.status()["indexed_files"] == 1
     assert "generated" not in {module["path"] for module in architecture["modules"]}
+    assert "README.md" not in {module["path"] for module in architecture["modules"]}
     assert "debug.log" not in {unit["path"] for unit in root_units}
 
 
@@ -81,3 +83,41 @@ def test_clean_graph_does_not_rebuild_after_initial_status(tmp_path):
 
     assert progress == completed
     assert any(message.startswith("项目图谱完成") for message in progress)
+
+
+def test_bootstrap_is_depth_limited_and_hash_ignores_description(tmp_path):
+    (tmp_path / "src" / "pkg" / "deep").mkdir(parents=True)
+    (tmp_path / "src" / "pkg" / "deep" / "main.py").write_text("def main(): pass\n", encoding="utf-8")
+    _index, graph = create_graph(tmp_path)
+
+    bootstrap = graph.architecture("", depth=3, bootstrap=True)
+    paths = {module["path"] for module in bootstrap["modules"]}
+    before_hash = bootstrap["navigation_hash"]
+    src_module = next(module for module in bootstrap["modules"] if module["path"] == "src")
+
+    graph.update_description(src_module["id"], "source root", src_module["content_hash"])
+    after_hash = graph.architecture("", depth=3, bootstrap=True)["navigation_hash"]
+
+    assert {"src", "src/pkg"}.issubset(paths)
+    assert "src/pkg/deep" not in paths
+    assert before_hash == after_hash
+
+
+def test_update_descriptions_batches_multiple_targets(tmp_path):
+    (tmp_path / "a.py").write_text("def a(): pass\n", encoding="utf-8")
+    (tmp_path / "b.py").write_text("def b(): pass\n", encoding="utf-8")
+    _index, graph = create_graph(tmp_path)
+    units = graph.dependency_graph("project")["units"]
+
+    result = graph.update_descriptions(
+        [
+            {"target": units[0]["id"], "description": "first unit", "content_hash": units[0]["content_hash"]},
+            {"target": units[1]["id"], "description": "second unit", "content_hash": units[1]["content_hash"]},
+        ]
+    )
+
+    refreshed = {unit["id"]: unit for unit in graph.dependency_graph("project")["units"]}
+    assert result["status"] == "updated"
+    assert result["updated"] == 2
+    assert refreshed[units[0]["id"]]["description"] == "first unit"
+    assert refreshed[units[1]["id"]]["description"] == "second unit"

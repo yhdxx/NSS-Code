@@ -815,6 +815,7 @@ class MemoryRuntime:
         summary_text: str = "",
         persist_snapshot: bool = True,
         current_turn_start: int | None = None,
+        project_graph: Any | None = None,
     ) -> list[dict[str, Any]]:
         return self.render_messages_for_model(
             session_id=session_id,
@@ -824,6 +825,7 @@ class MemoryRuntime:
             current_turn_start=current_turn_start,
             summary_text=summary_text,
             persist_snapshot=persist_snapshot,
+            project_graph=project_graph,
         )
 
     def render_messages_for_model(
@@ -836,6 +838,7 @@ class MemoryRuntime:
         current_turn_start: int | None,
         summary_text: str = "",
         persist_snapshot: bool = True,
+        project_graph: Any | None = None,
     ) -> list[dict[str, Any]]:
         raw_rendered = sanitize_messages_for_model(messages)
         epoch = self.ensure_context_epoch(
@@ -866,6 +869,7 @@ class MemoryRuntime:
             transition_epoch=transition_epoch,
             current_messages=current_messages,
             current_summaries=self._current_turn_summaries,
+            project_graph_bootstrap_messages=live_project_graph_bootstrap_messages(project_graph),
         )
         decision = self._select_context_render(
             session_id=session_id,
@@ -1408,14 +1412,57 @@ def render_virtualized_messages(
     current_messages: list[dict[str, Any]],
     current_summaries: dict[str, dict[str, Any]],
     transition_epoch: ContextEpochState | None = None,
+    project_graph_bootstrap_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rendered: list[dict[str, Any]] = []
     rendered.extend(system_messages[:1])
+    rendered.extend(project_graph_bootstrap_messages or [])
     rendered.extend(render_historical_topology(session_id, historical_messages, historical_turns))
     if transition_epoch is not None:
         rendered.extend(render_context_transition_marker(transition_epoch))
-    rendered.extend(apply_current_summaries(current_messages, current_summaries))
+    rendered.extend(apply_current_summaries(strip_project_graph_bootstrap_messages(current_messages), current_summaries))
     return rendered
+
+
+def live_project_graph_bootstrap_messages(project_graph: Any | None) -> list[dict[str, Any]]:
+    if project_graph is None:
+        return []
+    bootstrap_messages = getattr(project_graph, "bootstrap_messages", None)
+    if not callable(bootstrap_messages):
+        return []
+    try:
+        return sanitize_messages_for_model(bootstrap_messages())
+    except Exception:
+        return []
+
+
+def strip_project_graph_bootstrap_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+    return [dict(message) for message in messages if not is_project_graph_bootstrap_message(message)]
+
+
+def is_project_graph_bootstrap_message(message: dict[str, Any]) -> bool:
+    metadata = message.get("metadata")
+    if isinstance(metadata, dict) and metadata.get("project_graph_bootstrap"):
+        return True
+    if message.get("role") == "assistant":
+        for call in message.get("tool_calls") or []:
+            function = call.get("function") if isinstance(call, dict) else {}
+            if str((function or {}).get("name") or "") != "ProjectArchitecture":
+                continue
+            try:
+                args = json.loads(str((function or {}).get("arguments") or "{}"))
+            except json.JSONDecodeError:
+                args = {}
+            if isinstance(args, dict) and args.get("bootstrap") is True:
+                return True
+    if message.get("role") == "tool":
+        content = str(message.get("content") or "")
+        try:
+            payload = json.loads(content)
+        except json.JSONDecodeError:
+            return False
+        return isinstance(payload, dict) and payload.get("graph") == "project_architecture" and payload.get("bootstrap") is True
+    return False
 
 
 def render_context_transition_marker(epoch: ContextEpochState) -> list[dict[str, Any]]:
@@ -1479,6 +1526,8 @@ def render_historical_topology(
             metadata_by_call_id[metadata.tool_call_id] = metadata
     rendered: list[dict[str, Any]] = []
     for message in messages[system_offset:]:
+        if is_project_graph_bootstrap_message(message):
+            continue
         role = message.get("role")
         if role == "tool":
             tool_call_id = str(message.get("tool_call_id") or "")
@@ -1622,6 +1671,9 @@ def build_historical_turns(session_id: str, messages: list[dict[str, Any]]) -> l
     turn_index = 0
     while index < len(messages):
         message = messages[index]
+        if is_project_graph_bootstrap_message(message):
+            index += 1
+            continue
         if message.get("role") != "user":
             index += 1
             continue
@@ -1634,6 +1686,9 @@ def build_historical_turns(session_id: str, messages: list[dict[str, Any]]) -> l
         call_index = 0
         while index < len(messages):
             current = messages[index]
+            if is_project_graph_bootstrap_message(current):
+                index += 1
+                continue
             role = current.get("role")
             if role == "user":
                 break

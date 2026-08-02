@@ -55,6 +55,8 @@
 # memory:
 #   enabled: true                  # 环境变量：MYCODINGAGENT_MEMORY_ENABLED
 #   output_context_compression: true
+#   state_dir: ""                  # 空值默认使用 ~/.mycodingagent/state；环境变量：MYCODINGAGENT_STATE_DIR
+#   db_path: ""                    # 空值默认使用 ~/.mycodingagent/state/sessions.sqlite3；环境变量：MYCODINGAGENT_MEMORY_DB_PATH
 #   default_context_window: 128000 # 环境变量：MYCODINGAGENT_MODEL_CONTEXT_WINDOW
 #   session_ttl_days: 90          # 环境变量：MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS
 #   default_work_mode: "general"  # 环境变量：MYCODINGAGENT_DEFAULT_WORK_MODE（general / code）
@@ -170,5 +172,5 @@
 # mcp:
 #   enabled: true                 # 环境变量：MYCODINGAGENT_MCP_ENABLED
 #   project_config_path: ".mycodingagent/mcp.json"  # 环境变量：MYCODINGAGENT_MCP_PROJECT_CONFIG；相对当前工作目录
-#   user_config_path: "~/.config/myCodingAgent/mcp.json"  # 环境变量：MYCODINGAGENT_MCP_USER_CONFIG
+#   user_config_path: "~/.mycodingagent/mcp.json"  # 环境变量：MYCODINGAGENT_MCP_USER_CONFIG
 #   reconnect_server_step: 10    # 环境变量：MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP

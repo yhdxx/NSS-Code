@@ -146,6 +146,8 @@ myAgent
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `memory.enabled` | `MYCODINGAGENT_MEMORY_ENABLED` | `true` | 启用会话持久化 |
+| `memory.state_dir` | `MYCODINGAGENT_STATE_DIR` | `~/.mycodingagent/state` | 会话、长期记忆和运行状态默认目录 |
+| `memory.db_path` | `MYCODINGAGENT_MEMORY_DB_PATH` | `~/.mycodingagent/state/sessions.sqlite3` | 会话与长期记忆 SQLite 文件；代码索引、项目图谱、MCP cache、多智能体状态默认放在同目录 |
 | `memory.default_work_mode` | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `"general"` | 默认工作模式（`general` / `code`） |
 | `memory.default_context_window` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `128000` | 默认上下文窗口大小 |
 | `memory.session_ttl_days` | `MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS` | `90` | 会话保留天数 |
@@ -229,7 +231,7 @@ myAgent
 |-----------|----------|--------|------|
 | `mcp.enabled` | `MYCODINGAGENT_MCP_ENABLED` | `true` | 是否启用 MCP |
 | `mcp.project_config_path` | `MYCODINGAGENT_MCP_PROJECT_CONFIG` | `.mycodingagent/mcp.json` | 项目级 MCP 配置路径，默认相对当前工作目录 |
-| `mcp.user_config_path` | `MYCODINGAGENT_MCP_USER_CONFIG` | `~/.config/myCodingAgent/mcp.json` | 用户级 MCP 配置路径 |
+| `mcp.user_config_path` | `MYCODINGAGENT_MCP_USER_CONFIG` | `~/.mycodingagent/mcp.json` | 用户级 MCP 配置路径 |
 | `mcp.reconnect_server_step` | `MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP` | `10` | 后台重连间隔（秒） |
 
 ---
@@ -237,7 +239,7 @@ myAgent
 ## 5. 完整配置示例
 
 完整 JSON 模板见仓库中 `.mycodingagent/config.example.json`，首次启动时会复制为 `~/.mycodingagent/config.json`。
-仓库内 MCP 配置只保留 `.mycodingagent/mcp.example.json` 模板；如需启用 MCP，请复制到当前工作目录的 `.mycodingagent/mcp.json` 或用户级 `~/.config/myCodingAgent/mcp.json`。
+仓库内 MCP 配置只保留 `.mycodingagent/mcp.example.json` 模板；如需启用 MCP，请复制到当前工作目录的 `.mycodingagent/mcp.json` 或用户级 `~/.mycodingagent/mcp.json`。
 
 ---
 
@@ -258,6 +260,8 @@ myAgent
 | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | int |
 | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `long_term_memory.enabled` | bool |
 | `MYCODINGAGENT_MEMORY_ENABLED` | `memory.enabled` | bool |
+| `MYCODINGAGENT_STATE_DIR` | `memory.state_dir` | path |
+| `MYCODINGAGENT_MEMORY_DB_PATH` | `memory.db_path` | path |
 | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `memory.default_work_mode` | string |
 | `MYCODINGAGENT_CHECKPOINT_ENABLED` | `memory.checkpoint_enabled` | bool |
 | `MYCODINGAGENT_SANDBOX_ROOT` | `sandbox.root` | path |
@@ -271,6 +275,9 @@ myAgent
 | `MYCODINGAGENT_MILVUS_HOST` | `milvus.host` | string |
 | `MYCODINGAGENT_MILVUS_TOKEN` | `milvus.token` | string |
 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
+| `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | path |
+
+首次启动会尝试把旧默认目录中的已有资源迁移到 `~/.mycodingagent`：`~/.local/state/myCodingAgent/*` 会移动到 `~/.mycodingagent/state/`，`~/.config/myCodingAgent/mcp.json` 会移动到 `~/.mycodingagent/mcp.json`。如果新路径已有同名文件，旧文件会保留并在启动输出中提示。
 
 ---
 

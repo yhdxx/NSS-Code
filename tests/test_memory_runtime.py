@@ -36,7 +36,12 @@ from mycodingagent.memory import (
 from mycodingagent.memory.budget import BudgetStage, PromptBudgetSnapshot
 from mycodingagent.memory.checkpoint import SNAPSHOT_FIELD_ORDER, TurnState, format_snapshot_prompt
 from mycodingagent.memory.compressor import ContextCompressor, is_reproducible_tool
-from mycodingagent.memory.runtime import ContextMode, estimate_raw_uncached_tokens, format_compression_report
+from mycodingagent.memory.runtime import (
+    ContextMode,
+    estimate_raw_uncached_tokens,
+    format_compression_report,
+    render_virtualized_messages,
+)
 from mycodingagent.memory.stores import session_preview
 from mycodingagent.memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
 from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
@@ -2636,3 +2641,101 @@ def test_legacy_session_migration_keeps_last_complete_turn_hot(tmp_path):
     assert restored is not None
     assert restored.context_epoch is not None
     assert restored.context_epoch.epoch_id == epoch.epoch_id
+
+
+def test_virtualized_context_uses_live_project_graph_bootstrap():
+    def bootstrap_pair(value: str) -> list[dict]:
+        payload = {
+            "graph": "project_architecture",
+            "bootstrap": True,
+            "generation": 1,
+            "navigation_hash": value,
+            "modules": [{"id": "module_root", "name": value, "path": ".", "parent_id": ""}],
+        }
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": f"project_graph_bootstrap_{value}",
+                        "type": "function",
+                        "function": {
+                            "name": "ProjectArchitecture",
+                            "arguments": json.dumps({"module": "", "depth": 3, "bootstrap": True}),
+                        },
+                    }
+                ],
+                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": f"project_graph_bootstrap_{value}",
+                "content": json.dumps(payload),
+                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
+            },
+        ]
+
+    rendered = render_virtualized_messages(
+        system_messages=[{"role": "system", "content": "system"}],
+        historical_messages=[{"role": "system", "content": "system"}, *bootstrap_pair("old")],
+        session_id="session",
+        historical_turns=[],
+        current_messages=[],
+        current_summaries={},
+        project_graph_bootstrap_messages=bootstrap_pair("live"),
+    )
+
+    rendered_text = json.dumps(rendered, ensure_ascii=False)
+    assert "live" in rendered_text
+    assert "old" not in rendered_text
+
+
+def test_project_graph_bootstrap_appends_only_when_navigation_changes(capsys):
+    def bootstrap_pair(value: str) -> list[dict]:
+        payload = {
+            "graph": "project_architecture",
+            "bootstrap": True,
+            "generation": 1,
+            "navigation_hash": value,
+            "primary_language": "python",
+            "modules": [{"id": "module_root", "name": value, "path": ".", "parent_id": ""}],
+        }
+        return [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": f"project_graph_bootstrap_{value}",
+                        "type": "function",
+                        "function": {
+                            "name": "ProjectArchitecture",
+                            "arguments": json.dumps({"module": "", "depth": 3, "bootstrap": True}),
+                        },
+                    }
+                ],
+                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
+            },
+            {
+                "role": "tool",
+                "tool_call_id": f"project_graph_bootstrap_{value}",
+                "content": json.dumps(payload),
+                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
+            },
+        ]
+
+    class FakeGraph:
+        def __init__(self, value: str) -> None:
+            self.value = value
+
+        def bootstrap_messages(self) -> list[dict]:
+            return bootstrap_pair(self.value)
+
+    messages = [{"role": "system", "content": "system"}]
+
+    assert agent_client.append_project_graph_bootstrap_if_needed(messages, FakeGraph("h1"), work_mode="code")
+    assert len(messages) == 3
+    assert not agent_client.append_project_graph_bootstrap_if_needed(messages, FakeGraph("h1"), work_mode="code")
+    assert len(messages) == 3
+    assert agent_client.append_project_graph_bootstrap_if_needed(messages, FakeGraph("h2"), work_mode="code")
+    assert len(messages) == 5
+    assert "Bootstrap" in capsys.readouterr().out

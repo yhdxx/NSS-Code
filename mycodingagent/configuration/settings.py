@@ -302,14 +302,15 @@ def _default_workspace_skills_root() -> Path:
     return Path(sandbox_root).expanduser() / "skills"
 
 
+def _default_state_dir() -> Path:
+    return (
+        _user_path("memory.state_dir", ("MYCODINGAGENT_STATE_DIR",))
+        or Path.home() / ".mycodingagent" / "state"
+    )
+
+
 def _default_memory_db_path() -> Path:
-    state_dir = _user_str("memory.state_dir", ("MYCODINGAGENT_STATE_DIR",), "")
-    if state_dir:
-        return Path(state_dir).expanduser() / "sessions.sqlite3"
-    xdg_state_home = os.getenv("XDG_STATE_HOME")
-    if xdg_state_home:
-        return Path(xdg_state_home).expanduser() / "myCodingAgent" / "sessions.sqlite3"
-    return Path.home() / ".local" / "state" / "myCodingAgent" / "sessions.sqlite3"
+    return _default_state_dir() / "sessions.sqlite3"
 
 
 def _default_mcp_project_config_path() -> Path:
@@ -317,7 +318,7 @@ def _default_mcp_project_config_path() -> Path:
 
 
 def _default_mcp_user_config_path() -> Path:
-    return Path.home() / ".config" / "myCodingAgent" / "mcp.json"
+    return Path.home() / ".mycodingagent" / "mcp.json"
 
 
 # ── 配置类定义 ──
@@ -598,6 +599,7 @@ class MemoryConfig:
     output_context_compression: bool = field(
         default_factory=lambda: _user_bool("memory.output_context_compression", ("OUTPUT_CONTEXT_COMPRESSION",), True)
     )
+    state_dir: Path = field(default_factory=_default_state_dir)
     db_path: Path = field(
         default_factory=lambda: _user_path("memory.db_path", ("MYCODINGAGENT_MEMORY_DB_PATH",)) or _default_memory_db_path()
     )

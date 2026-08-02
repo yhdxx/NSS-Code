@@ -182,7 +182,7 @@
   "mcp": {
     "enabled": true,
     "project_config_path": ".mycodingagent/mcp.json",
-    "user_config_path": "~/.config/myCodingAgent/mcp.json",
+    "user_config_path": "~/.mycodingagent/mcp.json",
     "reconnect_server_step": 10
   }
 }
