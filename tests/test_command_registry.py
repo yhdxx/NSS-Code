@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 
 from mycodingagent.commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
+from mycodingagent.commands import handlers
 from mycodingagent.terminal_ui.history import format_history_message
 
 
@@ -112,6 +114,108 @@ def test_command_registry_executes_only_exact_command():
     )
 
     assert not model_input.handled
+
+
+def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, capsys):
+    class FakeMemoryRuntime:
+        def __init__(self) -> None:
+            self.work_mode = "general"
+
+        def set_work_mode(self, value: str) -> None:
+            self.work_mode = value
+
+    class FakeGraphService:
+        def __init__(self) -> None:
+            self.status_called = False
+
+        def status(self) -> dict[str, int]:
+            self.status_called = True
+            return {"modules": 2, "units": 3}
+
+        def bootstrap_messages(self) -> list[dict]:
+            payload = {
+                "bootstrap": True,
+                "generation": 7,
+                "navigation_hash": "nav-1",
+                "primary_language": "python",
+                "modules": [
+                    {
+                        "id": "root",
+                        "parent_id": "",
+                        "name": "project",
+                        "path": ".",
+                        "recursive_unit_count": 3,
+                        "child_module_count": 1,
+                    },
+                    {
+                        "id": "pkg",
+                        "parent_id": "root",
+                        "name": "pkg",
+                        "path": "pkg",
+                        "recursive_unit_count": 3,
+                        "child_module_count": 0,
+                    },
+                ],
+            }
+            metadata = {
+                "project_graph_bootstrap": True,
+                "generation": 7,
+                "navigation_hash": "nav-1",
+            }
+            return [
+                {
+                    "role": "assistant",
+                    "tool_calls": [
+                        {
+                            "id": "project_graph_bootstrap_7_nav",
+                            "type": "function",
+                            "function": {
+                                "name": "ProjectArchitecture",
+                                "arguments": json.dumps(
+                                    {"module": "", "depth": 3, "bootstrap": True},
+                                    sort_keys=True,
+                                ),
+                            },
+                        }
+                    ],
+                    "metadata": metadata,
+                },
+                {
+                    "role": "tool",
+                    "tool_call_id": "project_graph_bootstrap_7_nav",
+                    "content": json.dumps(payload),
+                    "metadata": metadata,
+                },
+            ]
+
+    class FakeTool:
+        def __init__(self, service: FakeGraphService) -> None:
+            self._service = service
+
+    class FakeRegistry:
+        def __init__(self, service: FakeGraphService) -> None:
+            self._tool = FakeTool(service)
+
+        def get(self, name: str) -> FakeTool | None:
+            return self._tool if name == "ProjectArchitecture" else None
+
+    memory_runtime = FakeMemoryRuntime()
+    graph_service = FakeGraphService()
+    messages = [{"role": "system", "content": "system"}]
+    context = CommandContext(memory_runtime, None, messages, registry=FakeRegistry(graph_service))
+    monkeypatch.setattr(handlers, "coordinated_input", lambda prompt: "code")
+
+    result = asyncio.run(handlers.handle_mode_command(context, ""))
+
+    assert result.messages is messages
+    assert memory_runtime.work_mode == "code"
+    assert graph_service.status_called
+    assert len(messages) == 3
+    assert messages[-1]["metadata"]["project_graph_bootstrap"] is True
+    output = capsys.readouterr().out
+    assert "[项目图谱] Code 模式已就绪：2 个模块，3 个单位。" in output
+    assert "[项目图谱] Bootstrap" in output
+    assert "pkg" in output
 
 
 def test_history_message_formatting_skips_system_and_folds_tool_output():

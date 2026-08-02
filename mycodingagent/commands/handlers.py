@@ -273,6 +273,9 @@ async def handle_mode_command(context: CommandContext, arguments: str) -> Comman
                     f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
                     flush=True,
                 )
+                from mycodingagent.llm_runtime.client import append_project_graph_bootstrap_if_needed
+
+                append_project_graph_bootstrap_if_needed(context.messages, graph_service, work_mode="code")
             except Exception as exc:
                 print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
     return CommandResult(messages=context.messages)
