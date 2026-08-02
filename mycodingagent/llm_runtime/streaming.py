@@ -117,10 +117,13 @@ async def stream_one_round(
     output_label: str = "模型",
     cancel_event: asyncio.Event | None = None,
     bash_classifier: BashDisplayClassifier | None = None,
+    extra_body: dict[str, Any] | None = None,
 ) -> StreamRoundResult:
     request: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
     if tools:
         request["tools"] = tools
+    if extra_body:
+        request["extra_body"] = extra_body
 
     content_parts: list[str] = []
     pending_tool_calls: dict[int, PendingToolCall] = {}

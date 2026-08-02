@@ -196,7 +196,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             api_client=api_client,
             user_id=CONFIG.skills.user_id,
             storage_model=CONFIG.long_term_memory.storage_model or client.MODEL,
-            query_model=CONFIG.long_term_memory.query_model or client.MODEL,
+            query_model=CONFIG.long_term_memory.query_model or "deepseek-v4-flash",
         )
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
@@ -378,10 +378,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             if session_id and messages:
                 memory_runtime.save_messages_now(session_id, messages)
                 await memory_runtime.drain()
-                await long_term_memory_runtime.extract_session_now(
-                    session_id,
-                    timeout_seconds=CONFIG.long_term_memory.graceful_exit_extract_timeout_seconds,
-                )
+                long_term_memory_runtime.schedule_deferred_extraction(session_id)
             await long_term_memory_runtime.close()
         if memory_runtime is not None:
             await memory_runtime.close()

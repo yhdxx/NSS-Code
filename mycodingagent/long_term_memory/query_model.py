@@ -71,6 +71,7 @@ class LongTermMemoryQueryModel:
                     tools,
                     display=False,
                     output_label="long_term_memory_query",
+                    extra_body={"thinking": {"type": "disabled"}},
                 )
             )
             tool_calls = stream_result.tool_calls
