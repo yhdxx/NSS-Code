@@ -3,6 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass
 
 
+PASTE_COLLAPSE_THRESHOLD = 500
 PASTE_MARKER_TEMPLATE = "[Pasted Content {chars} chars]"
 
 
@@ -18,12 +19,12 @@ class InputSegment:
     @property
     def display_text(self) -> str:
         if self.is_paste:
-            return paste_marker(self.text)
+            return paste_marker(self.text) if should_collapse_paste(self.text) else self.text
         return self.text
 
 
 class InputDocument:
-    """Editable input buffer where pasted blocks are atomic display tokens."""
+    """Editable input buffer where only collapsed pasted blocks are atomic tokens."""
 
     def __init__(self, segments: list[InputSegment] | None = None) -> None:
         self.segments = _merge_text_segments(segments or [])
@@ -53,7 +54,7 @@ class InputDocument:
             if index <= start:
                 return display_position
             if index < end:
-                if segment.is_paste:
+                if is_collapsed_paste_segment(segment):
                     return display_position
                 return display_position + (index - start)
             text_position = end
@@ -72,7 +73,7 @@ class InputDocument:
             if index <= display_start:
                 return text_start
             if index < display_end:
-                if segment.is_paste:
+                if is_collapsed_paste_segment(segment):
                     midpoint = display_start + len(segment.display_text) / 2
                     return text_start if index < midpoint else text_end
                 return text_start + (index - display_start)
@@ -83,7 +84,7 @@ class InputDocument:
     def normalize_cursor(self, index: int, *, direction: int = 1) -> int:
         index = clamp_index(index, len(self.text))
         for start, end, segment in self._segments_with_ranges():
-            if not segment.is_paste or not (start < index < end):
+            if not is_collapsed_paste_segment(segment) or not (start < index < end):
                 continue
             return end if direction >= 0 else start
         return index
@@ -110,7 +111,7 @@ class InputDocument:
             return self.copy(), index
         start = index - 1
         for segment_start, segment_end, segment in self._segments_with_ranges():
-            if segment.is_paste and segment_start < index <= segment_end:
+            if is_collapsed_paste_segment(segment) and segment_start < index <= segment_end:
                 start = segment_start
                 index = segment_end
                 break
@@ -122,7 +123,7 @@ class InputDocument:
             return self.copy(), index
         end = index + 1
         for segment_start, segment_end, segment in self._segments_with_ranges():
-            if segment.is_paste and segment_start <= index < segment_end:
+            if is_collapsed_paste_segment(segment) and segment_start <= index < segment_end:
                 index = segment_start
                 end = segment_end
                 break
@@ -142,42 +143,28 @@ class InputDocument:
             if segment_end <= start or segment_start >= end:
                 segments.append(segment)
                 continue
-            if segment.is_paste:
+            if is_collapsed_paste_segment(segment):
                 continue
             left_keep = max(0, start - segment_start)
             right_keep = max(0, segment_end - end)
             if left_keep:
-                segments.append(InputSegment(segment.text[:left_keep], "text"))
+                segments.append(InputSegment(segment.text[:left_keep], segment.kind))
             if right_keep:
-                segments.append(InputSegment(segment.text[len(segment.text) - right_keep :], "text"))
+                segments.append(InputSegment(segment.text[len(segment.text) - right_keep :], segment.kind))
         return InputDocument(segments), start
-
-    def selected_text(self, start: int, end: int) -> str:
-        text = self.text
-        start = clamp_index(start, len(text))
-        end = clamp_index(end, len(text))
-        if start > end:
-            start, end = end, start
-        return text[start:end]
 
     def styled_display_text(
         self,
         *,
         text_style: str = "",
         paste_style: str = "",
-        selection_style: str = "",
         reset_style: str = "",
-        selection_range: tuple[int, int] | None = None,
     ) -> str:
-        if not text_style and not paste_style and not selection_style:
+        if not text_style and not paste_style:
             return self.display_text
-        selection_start, selection_end = (-1, -1)
-        if selection_range is not None:
-            selection_start, selection_end = sorted(selection_range)
         parts: list[str] = []
-        for start, end, segment in self._segments_with_ranges():
-            selected = selection_start < end and selection_end > start
-            style = selection_style if selected and selection_style else paste_style if segment.is_paste else text_style
+        for _start, _end, segment in self._segments_with_ranges():
+            style = paste_style if segment.is_paste and should_collapse_paste(segment.text) else text_style
             if style:
                 parts.append(style)
             parts.append(segment.display_text)
@@ -193,22 +180,22 @@ class InputDocument:
             if not inserted and index <= start:
                 segments.append(new_segment)
                 inserted = True
-            if segment.is_paste or not (start < index < end):
+            if is_collapsed_paste_segment(segment) or not (start < index < end):
                 segments.append(segment)
                 continue
             split = index - start
-            segments.append(InputSegment(segment.text[:split], "text"))
+            segments.append(InputSegment(segment.text[:split], segment.kind))
             if not inserted:
                 segments.append(new_segment)
                 inserted = True
-            segments.append(InputSegment(segment.text[split:], "text"))
+            segments.append(InputSegment(segment.text[split:], segment.kind))
         if not inserted:
             segments.append(new_segment)
         return InputDocument(segments), index + len(new_segment.text)
 
     def _expand_range_for_paste(self, start: int, end: int) -> tuple[int, int]:
         for segment_start, segment_end, segment in self._segments_with_ranges():
-            if not segment.is_paste:
+            if not is_collapsed_paste_segment(segment):
                 continue
             if start < segment_end and end > segment_start:
                 start = min(start, segment_start)
@@ -228,6 +215,14 @@ class InputDocument:
 
 def paste_marker(text: str) -> str:
     return PASTE_MARKER_TEMPLATE.format(chars=len(text))
+
+
+def should_collapse_paste(text: str) -> bool:
+    return len(text) > PASTE_COLLAPSE_THRESHOLD
+
+
+def is_collapsed_paste_segment(segment: InputSegment) -> bool:
+    return segment.is_paste and should_collapse_paste(segment.text)
 
 
 def clamp_index(index: int, length: int) -> int:

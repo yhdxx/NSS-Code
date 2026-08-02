@@ -11,9 +11,7 @@ import tty
 import unicodedata
 
 from mycodingagent.commands import CommandRegistry, CommandSpec
-from mycodingagent.terminal_ui.clipboard import copy_to_clipboard, paste_from_clipboard
 from mycodingagent.terminal_ui.input_document import InputDocument
-from mycodingagent.terminal_ui.keymap import action_for_key, load_keymap
 
 try:
     from wcwidth import wcswidth
@@ -31,10 +29,8 @@ ANSI_RESET = "\033[0m"
 INPUT_BOX_STYLE = "\033[48;5;252m\033[30m"
 INPUT_TEXT_STYLE = "\033[30m"
 INPUT_PASTE_STYLE = "\033[94m"
-INPUT_SELECTION_STYLE = "\033[48;5;240m\033[97m"
 CURSOR_BRIGHT_WHITE = "\033]12;#FFFFFF\a"
 CURSOR_RESET = "\033]112\a"
-INDENT_TEXT = "    "
 
 
 def read_user_prompt(
@@ -65,8 +61,6 @@ class InteractivePrompt:
         self.command_registry = command_registry
         self._document = InputDocument()
         self.cursor_index = 0
-        self.selection_anchor: int | None = None
-        self.keymap = load_keymap()
         self.rendered_screen_lines: list[str] = []
         self.cursor_row = 0
         self.cursor_column = 0
@@ -93,17 +87,24 @@ class InteractivePrompt:
                 char = self._read_char()
                 if not char:
                     continue
+                if char == "\n":
+                    self._insert_text("\n")
+                    continue
+                if char == "\r":
+                    if self.accept_selected_suggestion():
+                        continue
+                    return self._finish()
+                if char == "\x03":
+                    raise KeyboardInterrupt
                 if char == "\x04":
                     if not self.buffer:
                         raise EOFError
                     continue
+                if char in {"\x7f", "\b"}:
+                    self._backspace()
+                    continue
                 if char == "\x1b":
                     self._handle_escape_sequence()
-                    continue
-                action = action_for_key(self.keymap, key_name_for_char(char))
-                if action:
-                    if self._handle_action(action):
-                        return self._finish()
                     continue
                 if char.isprintable() or char == "\t":
                     self._insert_text(char)
@@ -214,10 +215,32 @@ class InteractivePrompt:
         if sequence == BRACKETED_PASTE_START:
             self._insert_paste(normalize_pasted_text(self._read_bracketed_paste()))
             return
-        key_name = key_name_for_escape_sequence(sequence)
-        action = action_for_key(self.keymap, key_name)
-        if action:
-            self._handle_action(action)
+        if sequence in {"[A", "OA"}:
+            if self._suggestions():
+                self.move_selection(-1)
+            else:
+                self._move_cursor_vertical(-1)
+            return
+        if sequence in {"[B", "OB"}:
+            if self._suggestions():
+                self.move_selection(1)
+            else:
+                self._move_cursor_vertical(1)
+            return
+        if sequence in {"[D", "OD"}:
+            self._move_cursor(-1)
+            return
+        if sequence in {"[C", "OC"}:
+            self._move_cursor(1)
+            return
+        if sequence in {"[H", "OH", "[1~", "[7~"}:
+            self._move_cursor_to_line_start()
+            return
+        if sequence in {"[F", "OF", "[4~", "[8~"}:
+            self._move_cursor_to_line_end()
+            return
+        if sequence == "[3~":
+            self._delete_at_cursor()
             return
         if sequence:
             self._drain_escape_sequence()
@@ -294,271 +317,49 @@ class InteractivePrompt:
         if cursor_index is None:
             cursor_index = self.cursor_index
         self.cursor_index = clamp_cursor_index(cursor_index, len(self.buffer))
-        self.selection_anchor = None
 
     def _insert_text(self, text: str) -> None:
         if not text:
             return
-        self._delete_selection_if_needed(render=False)
         self._document, self.cursor_index = self._document.insert_text(self.cursor_index, text)
-        self.selection_anchor = None
         self.selected_suggestion_index = 0
         self._render()
 
     def _insert_paste(self, text: str) -> None:
         if not text:
             return
-        self._delete_selection_if_needed(render=False)
         self._document, self.cursor_index = self._document.insert_paste(self.cursor_index, text)
-        self.selection_anchor = None
         self.selected_suggestion_index = 0
         self._render()
 
     def _backspace(self) -> None:
-        if self._delete_selection_if_needed():
-            return
         if self.cursor_index <= 0:
             return
         self._document, self.cursor_index = self._document.delete_previous(self.cursor_index)
         self._render()
 
     def _delete_at_cursor(self) -> None:
-        if self._delete_selection_if_needed():
-            return
         if self.cursor_index >= len(self.buffer):
             return
         self._document, self.cursor_index = self._document.delete_at(self.cursor_index)
         self._render()
 
-    def _delete_selection_if_needed(self, *, render: bool = True) -> bool:
-        selection = self._selection_range()
-        if selection is None:
-            return False
-        self._document, self.cursor_index = self._document.delete_range(*selection)
-        self.selection_anchor = None
-        if render:
-            self._render()
-        return True
-
-    def _selection_range(self) -> tuple[int, int] | None:
-        if self.selection_anchor is None or self.selection_anchor == self.cursor_index:
-            return None
-        start, end = sorted((self.selection_anchor, self.cursor_index))
-        return start, end
-
-    def _clear_selection(self) -> bool:
-        if self.selection_anchor is None:
-            return False
-        self.selection_anchor = None
-        self._render()
-        return True
-
-    def _handle_action(self, action: str) -> bool:
-        if action == "submit":
-            if self.accept_selected_suggestion():
-                return False
-            return True
-        if action == "newline":
-            self._insert_text("\n")
-            return False
-        if action == "copy_or_interrupt":
-            selection = self._selection_range()
-            if selection is None:
-                raise KeyboardInterrupt
-            copy_to_clipboard(self._document.selected_text(*selection))
-            return False
-        if action == "paste":
-            pasted = paste_from_clipboard()
-            if pasted:
-                self._insert_paste(normalize_pasted_text(pasted))
-            return False
-        if action == "select_all":
-            self.selection_anchor = 0
-            self.cursor_index = len(self.buffer)
-            self._render()
-            return False
-        if action == "indent":
-            self._indent_selection_or_line()
-            return False
-        if action == "unindent":
-            self._unindent_selection_or_line()
-            return False
-        if action == "line_start":
-            self._move_cursor_to_line_start()
-            return False
-        if action == "line_end":
-            self._move_cursor_to_line_end()
-            return False
-        if action == "delete_line_start":
-            self._delete_to_line_start()
-            return False
-        if action == "delete_line_end":
-            self._delete_to_line_end()
-            return False
-        if action == "delete_word_backward":
-            self._delete_word_backward()
-            return False
-        if action == "escape":
-            self._clear_selection()
-            return False
-        if action == "backspace":
-            self._backspace()
-            return False
-        if action == "delete":
-            self._delete_at_cursor()
-            return False
-        if action == "left":
-            self._move_cursor(-1)
-            return False
-        if action == "right":
-            self._move_cursor(1)
-            return False
-        if action == "up":
-            if self._suggestions():
-                self.move_selection(-1)
-            else:
-                self._move_cursor_vertical(-1)
-            return False
-        if action == "down":
-            if self._suggestions():
-                self.move_selection(1)
-            else:
-                self._move_cursor_vertical(1)
-            return False
-        if action == "select_left":
-            self._move_cursor(-1, extend_selection=True)
-            return False
-        if action == "select_right":
-            self._move_cursor(1, extend_selection=True)
-            return False
-        if action == "select_up":
-            self._move_cursor_vertical(-1, extend_selection=True)
-            return False
-        if action == "select_down":
-            self._move_cursor_vertical(1, extend_selection=True)
-            return False
-        return False
-
     def _styled_display_buffer(self) -> str:
         return self._document.styled_display_text(
             text_style=INPUT_TEXT_STYLE,
             paste_style=INPUT_PASTE_STYLE,
-            selection_style=INPUT_SELECTION_STYLE,
             reset_style=INPUT_BOX_STYLE,
-            selection_range=self._selection_range(),
         )
 
     def _set_document(self, document: InputDocument, cursor_index: int) -> None:
         self._document = document
         self.cursor_index = self._document.normalize_cursor(cursor_index)
-        self.selection_anchor = None
 
-    def _indent_selection_or_line(self) -> None:
-        starts = self._line_starts_for_selection_or_cursor()
-        document = self._document
-        cursor_shift = 0
-        anchor_shift = 0
-        for start in reversed(starts):
-            document, _ = document.insert_text(start, INDENT_TEXT)
-            if start <= self.cursor_index:
-                cursor_shift += len(INDENT_TEXT)
-            if self.selection_anchor is not None and start <= self.selection_anchor:
-                anchor_shift += len(INDENT_TEXT)
-        self._document = document
-        self.cursor_index += cursor_shift
-        if self.selection_anchor is not None:
-            self.selection_anchor += anchor_shift
-        self._render()
-
-    def _unindent_selection_or_line(self) -> None:
-        starts = self._line_starts_for_selection_or_cursor()
-        document = self._document
-        cursor_shift = 0
-        anchor_shift = 0
-        for start in reversed(starts):
-            text = document.text
-            remove = 0
-            if text.startswith(INDENT_TEXT, start):
-                remove = len(INDENT_TEXT)
-            elif start < len(text) and text[start] == "\t":
-                remove = 1
-            if not remove:
-                continue
-            document, _ = document.delete_range(start, start + remove)
-            if start < self.cursor_index:
-                cursor_shift -= min(remove, self.cursor_index - start)
-            if self.selection_anchor is not None and start < self.selection_anchor:
-                anchor_shift -= min(remove, self.selection_anchor - start)
-        self._document = document
-        self.cursor_index = clamp_cursor_index(self.cursor_index + cursor_shift, len(self.buffer))
-        if self.selection_anchor is not None:
-            self.selection_anchor = clamp_cursor_index(self.selection_anchor + anchor_shift, len(self.buffer))
-        self._render()
-
-    def _line_starts_for_selection_or_cursor(self) -> list[int]:
-        text = self.buffer
-        selection = self._selection_range()
-        if selection is None:
-            start = text.rfind("\n", 0, self.cursor_index) + 1
-            return [start]
-        start, end = selection
-        line_start = text.rfind("\n", 0, start) + 1
-        line_end = end
-        starts = [line_start]
-        position = line_start
-        while True:
-            newline = text.find("\n", position, line_end)
-            if newline < 0:
-                return starts
-            starts.append(newline + 1)
-            position = newline + 1
-
-    def _delete_to_line_start(self) -> None:
-        line_start = self.buffer.rfind("\n", 0, self.cursor_index) + 1
-        if line_start == self.cursor_index:
-            return
-        self._document, self.cursor_index = self._document.delete_range(line_start, self.cursor_index)
-        self.selection_anchor = None
-        self._render()
-
-    def _delete_to_line_end(self) -> None:
-        cursor = self.cursor_index
-        line_end = self.buffer.find("\n", cursor)
-        if line_end < 0:
-            line_end = len(self.buffer)
-        if line_end == cursor:
-            return
-        self._document, self.cursor_index = self._document.delete_range(cursor, line_end)
-        self.selection_anchor = None
-        self._render()
-
-    def _delete_word_backward(self) -> None:
-        if self._delete_selection_if_needed():
-            return
-        text = self.buffer
-        cursor = self._document.normalize_cursor(self.cursor_index, direction=-1)
-        if cursor <= 0:
-            return
-        start = cursor
-        while start > 0 and text[start - 1].isspace() and text[start - 1] != "\n":
-            start -= 1
-        while start > 0 and not text[start - 1].isspace():
-            start -= 1
-        if start == cursor:
-            start = cursor - 1
-        self._document, self.cursor_index = self._document.delete_range(start, cursor)
-        self.selection_anchor = None
-        self._render()
-
-    def _move_cursor(self, delta: int, *, extend_selection: bool = False) -> None:
+    def _move_cursor(self, delta: int) -> None:
         new_index = self._document.move_cursor(self.cursor_index, delta)
         if new_index == self.cursor_index:
             return
-        if extend_selection and self.selection_anchor is None:
-            self.selection_anchor = self.cursor_index
         self.cursor_index = new_index
-        if not extend_selection:
-            self.selection_anchor = None
         self._render()
 
     def _move_cursor_to_line_start(self) -> None:
@@ -566,7 +367,6 @@ class InteractivePrompt:
         if line_start == self.cursor_index:
             return
         self.cursor_index = line_start
-        self.selection_anchor = None
         self._render()
 
     def _move_cursor_to_line_end(self) -> None:
@@ -576,10 +376,9 @@ class InteractivePrompt:
         if line_end == self.cursor_index:
             return
         self.cursor_index = line_end
-        self.selection_anchor = None
         self._render()
 
-    def _move_cursor_vertical(self, delta: int, *, extend_selection: bool = False) -> None:
+    def _move_cursor_vertical(self, delta: int) -> None:
         display_text = self._document.display_text
         display_cursor = self._document.display_index_for_text_index(self.cursor_index)
         target_display_index = visual_vertical_cursor_index(
@@ -592,11 +391,7 @@ class InteractivePrompt:
         target_index = self._document.text_index_for_display_index(target_display_index)
         if target_index == self.cursor_index:
             return
-        if extend_selection and self.selection_anchor is None:
-            self.selection_anchor = self.cursor_index
         self.cursor_index = target_index
-        if not extend_selection:
-            self.selection_anchor = None
         self._render()
 
     def _enable_bracketed_paste(self) -> None:
@@ -741,56 +536,6 @@ def is_escape_sequence_final_char(char: str) -> bool:
 
 def normalize_pasted_text(text: str) -> str:
     return text.replace("\r\n", "\n").replace("\r", "\n")
-
-
-def key_name_for_char(char: str) -> str:
-    return {
-        "\r": "enter",
-        "\n": "ctrl+j",
-        "\x03": "ctrl+c",
-        "\x16": "ctrl+v",
-        "\x01": "ctrl+a",
-        "\x05": "ctrl+e",
-        "\x0b": "ctrl+k",
-        "\x15": "ctrl+u",
-        "\x7f": "backspace",
-        "\b": "backspace",
-        "\t": "tab",
-    }.get(char, "")
-
-
-def key_name_for_escape_sequence(sequence: str) -> str:
-    if sequence in {"[1;2A", "[A;2"}:
-        return "shift+up"
-    if sequence in {"[1;2B", "[B;2"}:
-        return "shift+down"
-    if sequence in {"[1;2D", "[D;2"}:
-        return "shift+left"
-    if sequence in {"[1;2C", "[C;2"}:
-        return "shift+right"
-    if sequence in {"[A", "OA"}:
-        return "up"
-    if sequence in {"[B", "OB"}:
-        return "down"
-    if sequence in {"[D", "OD"}:
-        return "left"
-    if sequence in {"[C", "OC"}:
-        return "right"
-    if sequence in {"[H", "OH", "[1~", "[7~"}:
-        return "home"
-    if sequence in {"[F", "OF", "[4~", "[8~"}:
-        return "end"
-    if sequence == "[3~":
-        return "delete"
-    if sequence == "[Z":
-        return "shift+tab"
-    if sequence in {"\x7f", "\b"}:
-        return "alt+backspace"
-    if len(sequence) == 1 and sequence.isprintable():
-        return f"alt+{sequence.lower()}"
-    if not sequence:
-        return "esc"
-    return ""
 
 
 def format_prompt_echo(prompt: str, prompt_width: int, text: str) -> str:

@@ -121,13 +121,12 @@ Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和�
 交互式终端使用 `terminal_ui/input.py` 的 raw TTY 输入器，支持：
 
 - 左右方向键移动光标，上下方向键按视觉换行移动光标
-- Home/End 或 Ctrl+A/Ctrl+E 跳转到当前行首/行尾
-- Backspace/Delete 删除；粘贴 token 会作为整体删除
-- Ctrl+J 插入换行，Tab/Shift+Tab 缩进或取消缩进
-- Alt+A 或 Shift+方向键创建输入框内部选区；Ctrl+C 在有输入框选区时复制，否则中断；Ctrl+V 粘贴
+- Home/End 跳转到当前行首/行尾
+- Backspace/Delete 删除；仅折叠显示的粘贴 token 会作为整体删除
+- 复制、粘贴和终端选区交给终端模拟器默认能力处理，项目不再提供自定义快捷键映射
 - `/` 命令候选
-- bracketed paste 多行粘贴，输入框中显示为 `[Pasted Content N chars]`，提交时展开真实内容
-- 通过 `MYCODINGAGENT_KEYMAP=/path/to/keymap.json` 覆盖快捷键，例如 `{"select_all": "ctrl+x"}`
+- bracketed paste 多行粘贴；超过 `PASTE_COLLAPSE_THRESHOLD` 时输入框显示为 `[Pasted Content N chars]`，否则显示原文且使用与用户输入完全相同的颜色；提交时展开真实内容
+- 粘贴折叠阈值由 `mycodingagent/terminal_ui/input_document.py` 的 `PASTE_COLLAPSE_THRESHOLD` 控制
 - 非交互式环境退化为普通 `input()`
 
 ---

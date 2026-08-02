@@ -72,7 +72,7 @@ DEFAULT_APPROVAL_COMMANDS = {
 }
 DEFAULT_LOW_COMMANDS = {
     "pwd", "ls", "cat", "head", "tail", "grep", "rg", "find", "stat", "wc", "file",
-    "which", "git", "echo", "printf", "true", "false", "date", "uname",
+    "which", "git", "echo", "printf", "true", "false", "date", "uname","cd",
 }
 DEFAULT_HIGH_EVENTS = {
     "recursive_delete", "force_delete", "pipe_to_shell", "network_to_shell",

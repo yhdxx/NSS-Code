@@ -112,12 +112,11 @@ read_user_prompt()
 交互式输入支持：
 
 - 左右方向键移动光标，上下方向键选择命令候选或按视觉换行移动。
-- Home/End 与 Ctrl+A/Ctrl+E 跳转当前行首/行尾。
-- Backspace/Delete；粘贴 token 作为整体删除。
-- 多行 bracketed paste，编辑期间显示为 `[Pasted Content N chars]`，提交时展开真实内容。
-- Ctrl+J 换行，Tab/Shift+Tab 缩进或取消缩进，Alt+A 或 Shift+方向键创建输入框内部选区。
-- Ctrl+C 在有输入框内部选区时复制，否则中断；终端鼠标选区仍由终端模拟器处理；Ctrl+V 粘贴。
-- `MYCODINGAGENT_KEYMAP` 可指定 JSON 文件覆盖快捷键 action 绑定。
+- Home/End 跳转当前行首/行尾。
+- Backspace/Delete；仅折叠显示的粘贴 token 作为整体删除。
+- 复制、粘贴和终端选区交给终端模拟器默认能力处理，项目不再提供自定义快捷键映射。
+- 多行 bracketed paste；超过 `PASTE_COLLAPSE_THRESHOLD` 时编辑期间显示为 `[Pasted Content N chars]`，否则显示原文且使用与用户输入完全相同的颜色；提交时展开真实内容。
+- 粘贴折叠阈值由 `mycodingagent/terminal_ui/input_document.py` 的 `PASTE_COLLAPSE_THRESHOLD` 控制。
 - `/` 命令候选。
 
 ### 3.2 命令分流
