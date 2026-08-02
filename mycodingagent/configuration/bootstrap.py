@@ -81,7 +81,9 @@ def _ensure_config_file(*, template_path: Path, config_path: Path, result: Confi
         result.fatal_error = f"无法读取配置文件 {config_path}: {exc}"
         return
 
-    if _is_valid_config_json(raw):
+    parsed = _parse_config_json(raw)
+    if parsed is not None:
+        _merge_template_defaults(template_path=template_path, config_path=config_path, config=parsed, result=result)
         return
 
     backup_path = _backup_path(config_path)
@@ -108,13 +110,55 @@ def _copy_template(*, template_path: Path, config_path: Path, result: ConfigBoot
 
 
 def _is_valid_config_json(raw: str) -> bool:
+    return _parse_config_json(raw) is not None
+
+
+def _parse_config_json(raw: str) -> dict | None:
     if not raw.strip():
-        return False
+        return None
     try:
         parsed = json.loads(raw)
     except json.JSONDecodeError:
-        return False
-    return isinstance(parsed, dict)
+        return None
+    return parsed if isinstance(parsed, dict) else None
+
+
+def _merge_template_defaults(
+    *,
+    template_path: Path,
+    config_path: Path,
+    config: dict,
+    result: ConfigBootstrapResult,
+) -> None:
+    try:
+        template = json.loads(template_path.read_text(encoding="utf-8"))
+    except (OSError, json.JSONDecodeError) as exc:
+        result.warnings.append(f"无法读取配置模板默认值：{exc}")
+        return
+    if not isinstance(template, dict):
+        result.warnings.append(f"配置模板必须是 JSON 对象：{template_path}")
+        return
+    merged = _recursive_fill_missing(config, template)
+    if not merged:
+        return
+    try:
+        config_path.write_text(json.dumps(config, ensure_ascii=False, indent=2) + "\n", encoding="utf-8")
+    except OSError as exc:
+        result.warnings.append(f"无法补齐配置默认字段 {config_path}: {exc}")
+        return
+    result.messages.append(f"已补齐配置默认字段：{config_path}")
+
+
+def _recursive_fill_missing(target: dict, defaults: dict) -> bool:
+    changed = False
+    for key, default_value in defaults.items():
+        if key not in target:
+            target[key] = default_value
+            changed = True
+            continue
+        if isinstance(target[key], dict) and isinstance(default_value, dict):
+            changed = _recursive_fill_missing(target[key], default_value) or changed
+    return changed
 
 
 def _backup_path(config_path: Path) -> Path:

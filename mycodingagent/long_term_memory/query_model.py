@@ -2,14 +2,13 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
-
-from openai import AsyncOpenAI
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime.client import format_openai_tools
-from mycodingagent.llm_runtime.streaming import assistant_message, normalize_stream_result, stream_one_round
+from mycodingagent.llm_runtime.providers import ChatRequest, InferenceProvider, normalize_stream_result
+from mycodingagent.llm_runtime.streaming import assistant_message
 from mycodingagent.long_term_memory.models import LongTermMemoryContext, LongTermMemoryItem, MemoryScope, MemoryType
 from mycodingagent.long_term_memory.tools import SearchWorkspaceProjectFacts, SubmitLongTermMemoryQueryResult
 from mycodingagent.tool_runtime.execution import ToolExecution, execute_tool, parse_tool_arguments_object
@@ -19,9 +18,8 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "multi_agent" / "prompts" / 
 
 
 class LongTermMemoryQueryModel:
-    def __init__(self, *, api_client: AsyncOpenAI, model: str) -> None:
-        self.api_client = api_client
-        self.model = model
+    def __init__(self, *, provider_getter: Callable[[], InferenceProvider]) -> None:
+        self.provider_getter = provider_getter
 
     async def select(
         self,
@@ -64,14 +62,13 @@ class LongTermMemoryQueryModel:
         available_items = list(items)
         for _ in range(3):
             stream_result = normalize_stream_result(
-                await stream_one_round(
-                    self.api_client,
-                    self.model,
-                    messages,
-                    tools,
-                    display=False,
-                    output_label="long_term_memory_query",
-                    extra_body={"thinking": {"type": "disabled"}},
+                await self.provider_getter().stream_chat(
+                    ChatRequest(
+                        messages=messages,
+                        tools=tools,
+                        display=False,
+                        output_label="long_term_memory_query",
+                    )
                 )
             )
             tool_calls = stream_result.tool_calls

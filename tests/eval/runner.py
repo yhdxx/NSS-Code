@@ -25,6 +25,12 @@ for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_P
     os.environ.pop(env_key, None)
 
 
+def _active_profile():
+    from mycodingagent.llm_runtime.model_manager import ModelManager
+
+    return ModelManager().active_profile
+
+
 def read_jsonl(path: Path) -> list[dict[str, Any]]:
     with path.open("r", encoding="utf-8") as handle:
         return [json.loads(line) for line in handle if line.strip()]
@@ -154,16 +160,16 @@ def run_context_virtualization(dataset_path: Path, *, limit: int | None = None) 
 
 async def _run_context_virtualization_async(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from openai import AsyncOpenAI
-    from mycodingagent.configuration import CONFIG
 
-    client = AsyncOpenAI(api_key=CONFIG.api.deepseek_api_key, base_url=CONFIG.api.base_url)
+    profile = _active_profile()
+    client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
     rows: list[dict[str, Any]] = []
     try:
         for case in cases:
             for mode in case["modes"]:
                 prompt = _context_prompt(case, mode=mode)
                 started = time.time()
-                answer = await _simple_chat(client, CONFIG.api.model, prompt)
+                answer = await _simple_chat(client, profile.model, prompt)
                 expected = case["expected_answer_contains"]
                 rows.append({
                     "case_id": case["case_id"],
@@ -195,9 +201,9 @@ def run_recovery(dataset_path: Path, *, limit: int | None = None) -> dict[str, A
 
 async def _run_recovery_async(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from openai import AsyncOpenAI
-    from mycodingagent.configuration import CONFIG
 
-    client = AsyncOpenAI(api_key=CONFIG.api.deepseek_api_key, base_url=CONFIG.api.base_url)
+    profile = _active_profile()
+    client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
     tools = [{
         "type": "function",
         "function": {
@@ -233,7 +239,7 @@ async def _run_recovery_async(cases: list[dict[str, Any]]) -> list[dict[str, Any
             ]
             started = time.time()
             first = await client.chat.completions.create(
-                model=CONFIG.api.model,
+                model=profile.model,
                 messages=messages,
                 tools=tools,
                 stream=False,
@@ -261,7 +267,7 @@ async def _run_recovery_async(cases: list[dict[str, Any]]) -> list[dict[str, Any
                     output = _recover_case_output(case, call.function.arguments)
                     messages.append({"role": "tool", "tool_call_id": call.id, "content": output})
                 second = await client.chat.completions.create(
-                    model=CONFIG.api.model,
+                    model=profile.model,
                     messages=messages,
                     tools=tools,
                     stream=False,
@@ -364,20 +370,20 @@ def run_long_term_workflow(dataset_path: Path, *, limit: int | None = None) -> d
 
 async def _run_long_term_workflow_async(cases: list[dict[str, Any]]) -> list[dict[str, Any]]:
     from openai import AsyncOpenAI
-    from mycodingagent.configuration import CONFIG
 
-    client = AsyncOpenAI(api_key=CONFIG.api.deepseek_api_key, base_url=CONFIG.api.base_url)
+    profile = _active_profile()
+    client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
     rows = []
     try:
         for case in cases:
             base_query = case["validation_query"]
-            without = await _simple_chat(client, CONFIG.api.model, base_query)
+            without = await _simple_chat(client, profile.model, base_query)
             with_memory_prompt = (
                 "以下是长期记忆检索结果，请优先遵循：\n"
                 f"workflow_candidate: {case['expected_workflow']}\n\n"
                 f"用户当前请求：{base_query}"
             )
-            with_memory = await _simple_chat(client, CONFIG.api.model, with_memory_prompt)
+            with_memory = await _simple_chat(client, profile.model, with_memory_prompt)
             rows.append({
                 "case_id": case["case_id"],
                 "without_memory_passed": _contains_workflow_hint(without, case["expected_workflow"]),
@@ -421,13 +427,13 @@ async def _run_multi_agent_case(
     from mycodingagent.multi_agent.context import run_summary_for_main_context
     from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
     from mycodingagent.multi_agent.store import MultiAgentStore
-    from mycodingagent.configuration import CONFIG
     from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
     from mycodingagent.tool_runtime import create_default_registry
     from mycodingagent.tool_runtime.file_state_cache import FileStateCache
     from mycodingagent.workspace.file_cache import FileCache
 
+    profile = _active_profile()
     started = time.time()
     with tempfile.TemporaryDirectory(prefix=f"mca_eval_{mode}_{ordinal:02d}_") as tmp:
         root = Path(tmp)
@@ -441,10 +447,10 @@ async def _run_multi_agent_case(
         memory_runtime = MemoryRuntime(
             store=SQLiteMemoryStore(state_dir / f"{mode}_sessions.sqlite3"),
             compressor=ContextCompressor(context_window=96_000),
-            model=CONFIG.api.model,
+            model=profile.model,
             workspace_root=str(workspace),
         )
-        api_client = AsyncOpenAI(api_key=CONFIG.api.deepseek_api_key, base_url=CONFIG.api.base_url)
+        api_client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
         registry = create_default_registry(
             file_cache=FileCache(),
             file_state_cache=FileStateCache(),
@@ -481,7 +487,7 @@ async def _run_multi_agent_case(
                         registry=registry,
                         api_client=api_client,
                         memory_runtime=memory_runtime,
-                        model=CONFIG.api.model,
+                        model=profile.model,
                     )
                     run = await orchestrator.start(
                         task=(

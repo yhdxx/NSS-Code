@@ -6,9 +6,8 @@ import re
 from time import time
 from typing import Any
 
-from openai import AsyncOpenAI
-
 from mycodingagent.configuration import CONFIG
+from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.long_term_memory.models import ExtractionResult, LongTermMemoryContext, MemoryScope, MemoryType
 from mycodingagent.long_term_memory.namespaces import (
     GLOBAL_WORKSPACE_FINGERPRINT,
@@ -41,19 +40,17 @@ class LongTermMemoryRuntime:
         *,
         memory_runtime: MemoryRuntime,
         registry: ToolRegistry,
-        api_client: AsyncOpenAI,
+        model_manager: ModelManager,
         user_id: str,
-        storage_model: str,
-        query_model: str,
         store: SQLiteLongTermMemoryStore | None = None,
     ) -> None:
         self.memory_runtime = memory_runtime
         self.registry = registry
-        self.api_client = api_client
+        self.model_manager = model_manager
         self.user_id = user_id
         self.store = store or SQLiteLongTermMemoryStore(CONFIG.memory.db_path)
-        self.storage_model = LongTermMemoryStorageModel(api_client=api_client, model=storage_model)
-        self.query_model = LongTermMemoryQueryModel(api_client=api_client, model=query_model)
+        self.storage_model = LongTermMemoryStorageModel(provider_getter=model_manager.storage_provider)
+        self.query_model = LongTermMemoryQueryModel(provider_getter=model_manager.search_provider)
         self._backfill_task: asyncio.Task | None = None
         self._last_context_by_session: dict[str, LongTermMemoryContext] = {}
 

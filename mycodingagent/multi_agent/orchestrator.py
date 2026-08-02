@@ -6,11 +6,11 @@ from time import time
 from typing import Any
 from uuid import uuid4
 
-from openai import AsyncOpenAI
-
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime import client as llm_client
-from mycodingagent.llm_runtime.streaming import assistant_message, normalize_stream_result, stream_one_round
+from mycodingagent.llm_runtime.model_manager import ModelManager
+from mycodingagent.llm_runtime.providers import ChatRequest, normalize_stream_result
+from mycodingagent.llm_runtime.streaming import assistant_message, stream_one_round
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.execution import (
     RepeatedFailureTracker,
@@ -80,23 +80,45 @@ def _now() -> float:
     return time()
 
 
+class _LegacyModelManager:
+    def __init__(self, raw_client: Any, model: str = "legacy-model") -> None:
+        self.active_model = model
+        self.raw_client = raw_client
+
+    def active_provider(self) -> Any:
+        return self
+
+    async def stream_chat(self, request: ChatRequest) -> Any:
+        return await stream_one_round(
+            self.raw_client,
+            self.active_model,
+            request.messages,
+            request.tools,
+            display=request.display,
+            output_label=request.output_label,
+            cancel_event=request.cancel_event,
+            bash_classifier=request.bash_classifier,
+            extra_body=request.extra_body,
+        )
+
+
 class MultiAgentOrchestrator:
     def __init__(
         self,
         *,
         store: MultiAgentStore,
         registry: ToolRegistry,
-        api_client: AsyncOpenAI,
-        memory_runtime: Any | None = None,
+        model_manager: ModelManager | None = None,
+        api_client: Any | None = None,
         model: str | None = None,
+        memory_runtime: Any | None = None,
         cancel_event: asyncio.Event | None = None,
         workspace_root: Any | None = None,
     ) -> None:
         self.store = store
         self.registry = registry
-        self.api_client = api_client
+        self.model_manager = model_manager or _LegacyModelManager(api_client, model or "legacy-model")
         self.memory_runtime = memory_runtime
-        self.model = model or llm_client.MODEL
         self.cancel_event = cancel_event
         self.file_coordinator = FileCoordinator(sandbox_root=workspace_root)
         self._operation_lock = asyncio.Lock()
@@ -415,15 +437,16 @@ class MultiAgentOrchestrator:
             bash_classifier = llm_client.bash_display_classifier_from_registry(self.registry)
             if bash_classifier is not None:
                 stream_kwargs["bash_classifier"] = bash_classifier
+            provider = self.model_manager.active_provider()
             stream_result = normalize_stream_result(
-                await stream_one_round(
-                    self.api_client,
-                    self.model,
-                    request_messages,
-                    tools,
-                    display=True,
-                    output_label=f"{role.value}",
-                    **stream_kwargs,
+                await provider.stream_chat(
+                    ChatRequest(
+                        messages=request_messages,
+                        tools=tools,
+                        display=True,
+                        output_label=f"{role.value}",
+                        **stream_kwargs,
+                    )
                 )
             )
             assistant_text = stream_result.text
@@ -858,7 +881,9 @@ class MultiAgentOrchestrator:
         self.store.save_run(run)
         if self.memory_runtime is None:
             return ToolExecution(_preview_without_memory(execution.output), execution.is_error)
-        session_id = self.memory_runtime.get_current_session_id() or self.memory_runtime.start_session(self.model)
+        session_id = self.memory_runtime.get_current_session_id() or self.memory_runtime.start_session(
+            self.model_manager.active_model
+        )
         context_id = self.memory_runtime.save_tool_output(
             session_id=session_id,
             tool_call_id=tool_call_id,

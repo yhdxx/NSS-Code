@@ -1,9 +1,18 @@
 {
   "_说明": "此文件是 myCodingAgent 全量 JSON 配置模板。首次启动会自动复制为 ~/.mycodingagent/config.json；实际使用时请在用户目录文件中填入真实密钥。详细说明见 docs/configuration.md（每次启动会自动复制到 ~/.mycodingagent/README.md）。",
-  "api": {
-    "deepseek_api_key": "",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-pro"
+  "model": {
+    "active": "main",
+    "profiles": {
+      "main": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "api": ""
+      }
+    },
+    "long_term_memory": {
+      "storage": "main",
+      "search": "main"
+    }
   },
   "client": {
     "max_tool_rounds": 50,
@@ -23,8 +32,6 @@
   },
   "long_term_memory": {
     "enabled": true,
-    "storage_model": "",
-    "query_model": "",
     "query_recent_turns": 10,
     "max_memories": 50,
     "max_workflow_candidates": 5,

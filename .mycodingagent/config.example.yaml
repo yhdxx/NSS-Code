@@ -4,14 +4,18 @@
 # 所有运行配置请使用 ~/.mycodingagent/config.json 或环境变量。
 # 首次启动 myAgent 时会自动创建配置文件模板并复制教程文档。
 #
-# 配置优先级：~/.mycodingagent/config.json > 环境变量 > 内置默认值
-# 环境变量名不变，此处保留作为对照参考。
+# 配置优先级：~/.mycodingagent/config.json > 内置默认值
 
-# api:
-#   # 密钥请配置在 ~/.mycodingagent/config.json 中，或通过环境变量 DEEPSEEK_API_KEY 设置
-#   deepseek_api_key: ""           # 环境变量：DEEPSEEK_API_KEY
-#   base_url: "https://api.deepseek.com"   # 环境变量：DEEPSEEK_BASE_URL
-#   model: "deepseek-v4-pro"               # 环境变量：DEEPSEEK_MODEL
+# model:
+#   active: "main"
+#   profiles:
+#     main:
+#       provider: "deepseek"
+#       model: "deepseek-v4-pro"
+#       api: ""
+#   long_term_memory:
+#     storage: "main"
+#     search: "main"
 
 # client:
 #   max_tool_rounds: 50            # 环境变量：MYCODINGAGENT_MAX_TOOL_ROUNDS
@@ -31,8 +35,6 @@
 
 # long_term_memory:
 #   enabled: true                  # 环境变量：MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED
-#   storage_model: ""              # 环境变量：MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL（空则跟随 api.model）
-#   query_model: ""                # 环境变量：MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL（空则用 deepseek-v4-flash）
 #   query_recent_turns: 10         # 环境变量：MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_RECENT_TURNS
 #   max_memories: 50               # 环境变量：MYCODINGAGENT_LONG_TERM_MEMORY_MAX_MEMORIES
 #   max_workflow_candidates: 5     # 环境变量：MYCODINGAGENT_LONG_TERM_MEMORY_MAX_WORKFLOW_CANDIDATES

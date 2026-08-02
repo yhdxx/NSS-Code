@@ -4,6 +4,7 @@ import json
 import os
 from dataclasses import dataclass, field
 from pathlib import Path
+from typing import Any
 
 
 # ── 统一用户 JSON 配置 ──
@@ -39,8 +40,8 @@ _USER_JSON_CONFIG = _load_user_json_config()
 def _user_raw(json_path: str, env_names: tuple[str, ...]) -> object:
     """统一配置查找：JSON 路径 > 环境变量列表（逐项尝试）。
 
-    json_path 示例："api.model"
-    env_names 示例：("DEEPSEEK_MODEL",)
+    json_path 示例："model.active"
+    env_names 示例：("MYCODINGAGENT_MODEL_ACTIVE",)
     """
     # 第一优先级：~/.mycodingagent/config.json
     current: object = _USER_JSON_CONFIG
@@ -215,17 +216,125 @@ def _default_mcp_user_config_path() -> Path:
 # ── 配置类定义 ──
 
 @dataclass(frozen=True)
-class ApiConfig:
-    """主模型 API 配置。模型名称影响对话质量和长期记忆模型选择。"""
-    deepseek_api_key: str = field(
-        default_factory=lambda: _user_str("api.deepseek_api_key", ("DEEPSEEK_API_KEY",), "")
+class ModelProfileConfig:
+    """单个推理模型 profile。provider/model/api 为连接模型的必要字段。"""
+
+    provider: str
+    model: str
+    api: str
+    base_url: str = ""
+    reasoning: str | dict[str, Any] | None = None
+    timeout: float | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, raw: object) -> "ModelProfileConfig":
+        data = raw if isinstance(raw, dict) else {}
+        timeout_raw = data.get("timeout")
+        timeout = None
+        if timeout_raw not in (None, ""):
+            try:
+                timeout = float(timeout_raw)
+            except (TypeError, ValueError):
+                timeout = None
+        extra_headers_raw = data.get("extra_headers")
+        extra_body_raw = data.get("extra_body")
+        return cls(
+            provider=str(data.get("provider") or "").strip().lower(),
+            model=str(data.get("model") or "").strip(),
+            api=str(data.get("api") or "").strip(),
+            base_url=str(data.get("base_url") or "").strip(),
+            reasoning=data.get("reasoning"),
+            timeout=timeout,
+            extra_headers={
+                str(key): str(value)
+                for key, value in (extra_headers_raw.items() if isinstance(extra_headers_raw, dict) else [])
+                if str(key).strip()
+            },
+            extra_body=dict(extra_body_raw) if isinstance(extra_body_raw, dict) else {},
+        )
+
+    def missing_required_fields(self) -> list[str]:
+        missing: list[str] = []
+        if not self.provider:
+            missing.append("provider")
+        if not self.model:
+            missing.append("model")
+        if not self.api:
+            missing.append("api")
+        return missing
+
+
+@dataclass(frozen=True)
+class ModelLongTermMemoryConfig:
+    """长期记忆使用的推理模型 profile key。"""
+
+    storage: str = "main"
+    search: str = "main"
+
+
+def _load_model_profiles() -> dict[str, ModelProfileConfig]:
+    raw = _user_dict("model.profiles", (), {})
+    if not raw:
+        raw = {
+            "main": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-pro",
+                "api": "",
+            }
+        }
+    profiles: dict[str, ModelProfileConfig] = {}
+    for key, value in raw.items():
+        profile_key = str(key).strip()
+        if profile_key:
+            profiles[profile_key] = ModelProfileConfig.from_raw(value)
+    return profiles or {
+        "main": ModelProfileConfig(provider="deepseek", model="deepseek-v4-pro", api="")
+    }
+
+
+def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
+    active = _user_str("model.active", (), "main").strip() or "main"
+    raw = _user_dict("model.long_term_memory", (), {})
+    return ModelLongTermMemoryConfig(
+        storage=str(raw.get("storage") or active).strip() or active,
+        search=str(raw.get("search") or active).strip() or active,
     )
-    base_url: str = field(
-        default_factory=lambda: _user_str("api.base_url", ("DEEPSEEK_BASE_URL",), "https://api.deepseek.com")
-    )
-    model: str = field(
-        default_factory=lambda: _user_str("api.model", ("DEEPSEEK_MODEL",), "deepseek-v4-pro")
-    )
+
+
+@dataclass(frozen=True)
+class ModelConfig:
+    """推理模型配置入口。旧 api.* 配置已移除。"""
+
+    active: str = field(default_factory=lambda: _user_str("model.active", (), "main").strip() or "main")
+    profiles: dict[str, ModelProfileConfig] = field(default_factory=_load_model_profiles)
+    long_term_memory: ModelLongTermMemoryConfig = field(default_factory=_load_model_ltm_config)
+
+    @property
+    def active_profile(self) -> ModelProfileConfig | None:
+        return self.profiles.get(self.active)
+
+    def profile(self, key: str) -> ModelProfileConfig | None:
+        return self.profiles.get(key)
+
+    def validation_errors(self, *, require_long_term_memory: bool = True) -> list[str]:
+        errors: list[str] = []
+        active_profile = self.active_profile
+        if active_profile is None:
+            errors.append(f"model.active 指向不存在的 profile：{self.active}")
+        else:
+            missing = active_profile.missing_required_fields()
+            if missing:
+                errors.append(f"model.profiles.{self.active} 缺少必要字段：{', '.join(missing)}")
+        if require_long_term_memory:
+            for label, key in (
+                ("storage", self.long_term_memory.storage),
+                ("search", self.long_term_memory.search),
+            ):
+                if key and key not in self.profiles:
+                    errors.append(f"model.long_term_memory.{label} 指向不存在的 profile：{key}")
+        return errors
 
 
 @dataclass(frozen=True)
@@ -277,18 +386,9 @@ class MultiAgentConfig:
 
 @dataclass(frozen=True)
 class LongTermMemoryConfig:
-    """长期记忆存储和查询配置。
-
-    storage_model / query_model 为空时自动跟随 api.model / deepseek-v4-flash。
-    """
+    """长期记忆存储和查询行为配置。模型选择位于 model.long_term_memory。"""
     enabled: bool = field(
         default_factory=lambda: _user_bool("long_term_memory.enabled", ("MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED",), True)
-    )
-    storage_model: str = field(
-        default_factory=lambda: _user_str("long_term_memory.storage_model", ("MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL",), "")
-    )
-    query_model: str = field(
-        default_factory=lambda: _user_str("long_term_memory.query_model", ("MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL",), "")
     )
     query_recent_turns: int = field(
         default_factory=lambda: max(1, _user_int("long_term_memory.query_recent_turns", ("MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_RECENT_TURNS",), 10))
@@ -837,7 +937,7 @@ class MCPConfig:
 class AppConfig:
     """应用顶层配置，聚合所有子配置模块。"""
     user_id: str = field(default_factory=_default_user_id)
-    api: ApiConfig = field(default_factory=ApiConfig)
+    model: ModelConfig = field(default_factory=ModelConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
     multi_agent: MultiAgentConfig = field(default_factory=MultiAgentConfig)
     long_term_memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)

@@ -11,10 +11,10 @@ myCodingAgent 所有运行配置通过以下**两个来源**读取（优先级�
 | 优先级 | 来源 | 说明 |
 |--------|------|------|
 | **1（最高）** | `~/.mycodingagent/config.json` | 用户级 JSON 配置文件 |
-| **2** | 环境变量 | JSON 字段缺失或为空字符串时生效，与旧版本兼容 |
+| **2** | 环境变量 | JSON 字段缺失或为空字符串时生效；推理模型 profile 不提供环境变量兜底 |
 
 仓库内 `.mycodingagent/config.example.json` 是首次启动时复制到用户目录的全量模板；
-`.mycodingagent/config.example.yaml` 仅供旧配置迁移参考。两者都不参与运行时配置读取。
+`.mycodingagent/config.example.yaml` 仅作字段参考。两者都不参与运行时配置读取。
 
 ---
 
@@ -28,11 +28,8 @@ myAgent
 # 编辑配置文件
 nano ~/.mycodingagent/config.json
 
-# 至少需要填入 API 密钥
-# 找到 "api" -> "deepseek_api_key"，填入你的密钥
-
-# 或者通过环境变量配置（JSON 优先）
-export DEEPSEEK_API_KEY="sk-..."
+# 至少需要填入主模型 profile 的 API Key
+# 找到 "model" -> "profiles" -> "main" -> "api"，填入你的密钥
 myAgent
 ```
 
@@ -44,10 +41,10 @@ myAgent
 
 | Key | 说明 |
 |-----|------|
-| `api` | 主模型 API 配置（密钥、地址、模型名称） |
+| `model` | 推理模型 profile 配置（厂商、模型、API Key、长期记忆模型选择） |
 | `client` | LLM 客户端行为（重试、调试、展示） |
 | `multi_agent` | 多智能体并发与轮次限制 |
-| `long_term_memory` | 长期记忆存储与查询模型配置 |
+| `long_term_memory` | 长期记忆存储、检索和候选推荐行为配置 |
 | `memory` | 会话持久化、上下文虚拟化、检查点 |
 | `sandbox` | Docker 沙箱工作区设置 |
 | `docker` | Docker 容器资源限制 |
@@ -60,20 +57,34 @@ myAgent
 
 ## 4. 各模块配置说明
 
-### 4.1 `api` — 主模型配置
+### 4.1 `model` — 推理模型配置
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `api.deepseek_api_key` | `DEEPSEEK_API_KEY` | `""` | **API 密钥（必填）** |
-| `api.base_url` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 服务地址 |
-| `api.model` | `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 对话模型名称 |
+| `model.active` | - | `"main"` | 当前主推理模型 profile key |
+| `model.profiles.<key>.provider` | - | `"deepseek"` | **厂商（必填）** |
+| `model.profiles.<key>.model` | - | `"deepseek-v4-pro"` | **模型名称（必填）** |
+| `model.profiles.<key>.api` | - | `""` | **API Key（必填）** |
+| `model.profiles.<key>.base_url` | - | `""` | 可选自定义 API 地址；为空时使用厂商默认值 |
+| `model.profiles.<key>.reasoning` | - | `null` | 可选思考强度/模式 |
+| `model.long_term_memory.storage` | - | `"main"` | 长期记忆存储/抽取模型 profile |
+| `model.long_term_memory.search` | - | `"main"` | 长期记忆检索模型 profile |
 
 ```json
 {
-  "api": {
-    "deepseek_api_key": "sk-...",
-    "base_url": "https://api.deepseek.com",
-    "model": "deepseek-v4-pro"
+  "model": {
+    "active": "main",
+    "profiles": {
+      "main": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "api": "sk-..."
+      }
+    },
+    "long_term_memory": {
+      "storage": "main",
+      "search": "main"
+    }
   }
 }
 ```
@@ -103,8 +114,6 @@ myAgent
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `long_term_memory.enabled` | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `true` | 是否启用长期记忆 |
-| `long_term_memory.storage_model` | `MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL` | `""` | 记忆存储模型（空则跟随 `api.model`） |
-| `long_term_memory.query_model` | `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL` | `""` | 记忆检索模型（空则用 `deepseek-v4-flash`） |
 | `long_term_memory.query_recent_turns` | `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_RECENT_TURNS` | `10` | 查询时携带的最近对话轮数 |
 | `long_term_memory.max_memories` | `MYCODINGAGENT_LONG_TERM_MEMORY_MAX_MEMORIES` | `50` | 上下文注入最多记忆条数 |
 | `long_term_memory.max_workflow_candidates` | `MYCODINGAGENT_LONG_TERM_MEMORY_MAX_WORKFLOW_CANDIDATES` | `5` | 工作流候选最多条数 |
@@ -217,9 +226,6 @@ myAgent
 
 | 环境变量 | JSON 路径 | 类型 |
 |----------|-----------|------|
-| `DEEPSEEK_API_KEY` | `api.deepseek_api_key` | string |
-| `DEEPSEEK_BASE_URL` | `api.base_url` | string |
-| `DEEPSEEK_MODEL` | `api.model` | string |
 | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `client.max_tool_rounds` | int |
 | `MYCODINGAGENT_API_MAX_RETRIES` | `client.api_max_retries` | int |
 | `DEBUG` | `client.debug` | bool |
@@ -227,8 +233,6 @@ myAgent
 | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | int |
 | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | int |
 | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `long_term_memory.enabled` | bool |
-| `MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL` | `long_term_memory.storage_model` | string |
-| `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL` | `long_term_memory.query_model` | string |
 | `MYCODINGAGENT_MEMORY_ENABLED` | `memory.enabled` | bool |
 | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `memory.default_work_mode` | string |
 | `MYCODINGAGENT_CHECKPOINT_ENABLED` | `memory.checkpoint_enabled` | bool |
@@ -253,8 +257,15 @@ myAgent
 编辑 `~/.mycodingagent/config.json`：
 ```json
 {
-  "api": {
-    "deepseek_api_key": "sk-..."
+  "model": {
+    "active": "main",
+    "profiles": {
+      "main": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+        "api": "sk-..."
+      }
+    }
   }
 }
 ```
@@ -264,8 +275,11 @@ myAgent
 
 ```json
 {
-  "api": {
-    "deepseek_api_key": "sk-..."
+  "model": {
+    "active": "main",
+    "profiles": {
+      "main": {"provider": "deepseek", "model": "deepseek-v4-pro", "api": "sk-..."}
+    }
   },
   "embedding": {
     "provider": "bge_http",
@@ -281,8 +295,11 @@ myAgent
 
 ```json
 {
-  "api": {
-    "deepseek_api_key": "sk-..."
+  "model": {
+    "active": "main",
+    "profiles": {
+      "main": {"provider": "openai", "model": "gpt-5", "api": "sk-..."}
+    }
   },
   "embedding": {
     "provider": "openai",
@@ -307,20 +324,23 @@ docker compose -f Milvus/docker-compose.yml up -d
 
 ```json
 {
-  "api": {
-    "deepseek_api_key": "sk-...",
-    "model": "deepseek-v4-pro"
-  },
-  "long_term_memory": {
-    "storage_model": "deepseek-v4-pro",
-    "query_model": "deepseek-v4-flash"
+  "model": {
+    "active": "main",
+    "profiles": {
+      "main": {"provider": "deepseek", "model": "deepseek-v4-pro", "api": "sk-..."},
+      "memory_search": {"provider": "deepseek", "model": "deepseek-v4-flash", "api": "sk-..."}
+    },
+    "long_term_memory": {
+      "storage": "main",
+      "search": "memory_search"
+    }
   }
 }
 ```
 
-- `api.model`：Agent 对话主模型
-- `long_term_memory.storage_model`：长期记忆存储模型（空则跟随 `api.model`）
-- `long_term_memory.query_model`：长期记忆检索模型（空则用 `deepseek-v4-flash`）
+- `model.active`：Agent 对话主模型 profile
+- `model.long_term_memory.storage`：长期记忆存储模型 profile
+- `model.long_term_memory.search`：长期记忆检索模型 profile
 - `embedding.model`：向量嵌入模型（独立于对话模型）
 
 ---
@@ -345,9 +365,9 @@ LSP 进程运行在宿主机上，需在 `PATH` 中可找到对应可执行程�
 
 ## 9. 常见问题
 
-**Q: 启动时提示"未检测到 API 密钥"？**
+**Q: 启动时提示"未检测到必要推理模型配置"？**
 
-A: 编辑 `~/.mycodingagent/config.json`，在 `api.deepseek_api_key` 填入密钥，或设置环境变量 `export DEEPSEEK_API_KEY="sk-..."`。
+A: 编辑 `~/.mycodingagent/config.json`，确认 `model.active` 指向存在的 profile，并在该 profile 的 `provider`、`model`、`api` 中填入有效值。
 
 **Q: 配置文件格式错误怎么办？**
 

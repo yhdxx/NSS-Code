@@ -2,12 +2,11 @@ from __future__ import annotations
 
 import json
 from pathlib import Path
-from typing import Any
-
-from openai import AsyncOpenAI
+from typing import Any, Callable
 
 from mycodingagent.llm_runtime.client import format_openai_tools
-from mycodingagent.llm_runtime.streaming import assistant_message, normalize_stream_result, stream_one_round
+from mycodingagent.llm_runtime.providers import ChatRequest, InferenceProvider, normalize_stream_result
+from mycodingagent.llm_runtime.streaming import assistant_message
 from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch
 from mycodingagent.tool_runtime.execution import ToolExecution, execute_tool, parse_tool_arguments_object
 
@@ -16,9 +15,8 @@ PROMPT_PATH = Path(__file__).resolve().parents[1] / "multi_agent" / "prompts" / 
 
 
 class LongTermMemoryStorageModel:
-    def __init__(self, *, api_client: AsyncOpenAI, model: str) -> None:
-        self.api_client = api_client
-        self.model = model
+    def __init__(self, *, provider_getter: Callable[[], InferenceProvider]) -> None:
+        self.provider_getter = provider_getter
 
     async def extract_patch(self, payload: dict[str, Any]) -> dict[str, Any]:
         extraction_id = str(payload.get("extraction_id", ""))
@@ -31,13 +29,13 @@ class LongTermMemoryStorageModel:
         tools = format_openai_tools([_openai_schema(submit_tool)])
         for _ in range(3):
             stream_result = normalize_stream_result(
-                await stream_one_round(
-                    self.api_client,
-                    self.model,
-                    messages,
-                    tools,
-                    display=False,
-                    output_label="long_term_memory_storage",
+                await self.provider_getter().stream_chat(
+                    ChatRequest(
+                        messages=messages,
+                        tools=tools,
+                        display=False,
+                        output_label="long_term_memory_storage",
+                    )
                 )
             )
             tool_calls = stream_result.tool_calls

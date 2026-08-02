@@ -18,8 +18,6 @@ from pathlib import Path
 
 import pyfiglet  # 导入当前模块需要的依赖。
 
-from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
-
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.code_intelligence import ProjectGraphService, WorkspaceCodeIndex
 from mycodingagent.terminal_ui.input import read_user_prompt
@@ -53,6 +51,7 @@ from mycodingagent.mcp_integration.cache import MCPMetadataCache
 from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprovalHook, MCPToolApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
+from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.multi_agent import MultiAgentStore
 
 # 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
@@ -61,29 +60,33 @@ try:  # 开始可能抛出异常的保护代码块。
 except ImportError:  # 捕获并处理指定异常。
     pass  # Windows 可能没有 readline，但不影响基本功能
 
-def _print_missing_required_config() -> None:
+def _print_missing_required_config(errors: list[str]) -> None:
     print(
-        "未检测到基础配置：api.deepseek_api_key。\n"
+        "未检测到必要推理模型配置。\n"
         f"请编辑配置文件：{USER_CONFIG_PATH}\n"
         f"配置教程已同步到：{USER_CONFIG_README_PATH}\n\n"
         "最小可用配置：\n"
-        "  api.deepseek_api_key  Agent 对话 API 密钥\n\n"
+        "  model.active                         当前主推理模型 profile key\n"
+        "  model.profiles.<key>.provider        厂商，例如 deepseek/qwen/openai/anthropic\n"
+        "  model.profiles.<key>.model           模型名称\n"
+        "  model.profiles.<key>.api             API Key\n\n"
         "常用模型组合配置：\n"
-        "  api.model                         Agent 回答模型\n"
-        "  long_term_memory.storage_model    长期记忆存储/抽取模型（空则跟随 api.model）\n"
-        "  long_term_memory.query_model      长期记忆检索模型（空则使用 deepseek-v4-flash）\n"
+        "  model.long_term_memory.storage    长期记忆存储/抽取模型 profile\n"
+        "  model.long_term_memory.search     长期记忆检索模型 profile\n"
         "  embedding.provider/model/endpoint 嵌入模型与端点\n"
         "  milvus.host/port/collection       Skill 向量索引存储\n\n"
-        "也可以临时使用环境变量：\n"
-        "  export DEEPSEEK_API_KEY=<你的密钥>",
+        "具体问题：\n"
+        + "\n".join(f"  - {error}" for error in errors),
         flush=True,
     )
 
 
 async def main() -> None:  # 定义异步函数，供事件循环调用。
 
-    if not CONFIG.api.deepseek_api_key.strip():
-        _print_missing_required_config()
+    model_manager = ModelManager()
+    config_errors = model_manager.validation_errors(require_long_term_memory=CONFIG.long_term_memory.enabled)
+    if config_errors:
+        _print_missing_required_config(config_errors)
         return  # 基础配置缺失时不进入 Docker / Skill / MCP 初始化。
 
     ascii_art = pyfiglet.figlet_format("MyCodingAgent")  # 保存配置值或中间计算结果。
@@ -107,7 +110,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     file_state_cache = FileStateCache()  # 记录模型读过的文件，用于识别已读文件的外部变更。
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
     workspace_tracker.start()  # 启动后台监听线程；不可用时静默降级为不提示。
-    memory_runtime = MemoryRuntime(model=client.MODEL, workspace_root=str(get_sandbox_root())) if CONFIG.memory.enabled else None
+    memory_runtime = MemoryRuntime(model=model_manager.active_model, workspace_root=str(get_sandbox_root())) if CONFIG.memory.enabled else None
     code_index = WorkspaceCodeIndex(
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
@@ -134,9 +137,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 f"已清理 {expired_checkpoints} 个过期 workspace checkpoint 和 {expired_blobs} 个 snapshot blob。",
                 flush=True,
             )
-    # 创建 OpenAI 客户端（复用连接）
-    api_client = AsyncOpenAI(api_key=client.DEEPSEEK_API_KEY, base_url=client.BASE_URL)  # 保存配置值或中间计算结果。
-
     async def classify_bash_policy(evidence: BashPolicyEvidence):
         """Classify one command name/event through one no-argument tool."""
         prompt = (
@@ -151,41 +151,43 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             tool = tool_cls(lambda _level: None)
             schema = tool.get_schema()
             schemas.append({
-                "type": "function",
                 "name": schema["name"],
                 "description": schema["description"],
                 "parameters": schema["input_schema"],
             })
-        response = await api_client.chat.completions.create(
-            model=client.MODEL,
-            messages=[
-                {"role": "system", "content": prompt},
-                {
-                    "role": "user",
-                    "content": json.dumps(
-                        {
-                            "policy_key": evidence.policy_key,
-                            "entry_type": evidence.entry_type,
-                            "name": evidence.name,
-                            "source_text": evidence.source_text,
-                            "reason": evidence.reason,
-                        },
-                        ensure_ascii=False,
-                    ),
-                },
-            ],
-            temperature=0,
-            tools=schemas,
-            tool_choice="required",
+        response = await model_manager.active_provider().stream_chat(
+            client.ChatRequest(
+                messages=[
+                    {"role": "system", "content": prompt},
+                    {
+                        "role": "user",
+                        "content": json.dumps(
+                            {
+                                "policy_key": evidence.policy_key,
+                                "entry_type": evidence.entry_type,
+                                "name": evidence.name,
+                                "source_text": evidence.source_text,
+                                "reason": evidence.reason,
+                            },
+                            ensure_ascii=False,
+                        ),
+                    },
+                ],
+                tools=client.format_openai_tools(schemas),
+                display=False,
+                output_label="bash_policy",
+                tool_choice="required",
+                temperature=0,
+            )
         )
-        tool_calls = response.choices[0].message.tool_calls if response.choices else []
+        tool_calls = response.tool_calls
         if not tool_calls:
             return "approval"
         return {
             "SubmitBashLowRisk": "low",
             "SubmitBashApproval": "approval",
             "SubmitBashHighRisk": "high",
-        }.get(tool_calls[0].function.name, "approval")
+        }.get(tool_calls[0].tool_name, "approval")
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
     terminal_input = TerminalInputCoordinator()
@@ -209,10 +211,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         long_term_memory_runtime = LongTermMemoryRuntime(
             memory_runtime=memory_runtime,
             registry=registry,
-            api_client=api_client,
+            model_manager=model_manager,
             user_id=CONFIG.skills.user_id,
-            storage_model=CONFIG.long_term_memory.storage_model or client.MODEL,
-            query_model=CONFIG.long_term_memory.query_model or "deepseek-v4-flash",
         )
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
@@ -319,7 +319,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                         file_state_cache=file_state_cache,
                         workspace_tracker=workspace_tracker,
                         registry=registry,
-                        api_client=api_client,
+                        model_manager=model_manager,
                         multi_agent_store=multi_agent_store,
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=command_watcher.triggered,
@@ -343,11 +343,11 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 continue
 
             # 携带历史消息进行对话，并获取更新后的消息列表
-            # 注意：首次对话不传 messages（None），让 ask_deepseek 自动注入系统提示词 "H-Agent"
+            # 注意：首次对话不传 messages（None），让 ask_model 自动注入系统提示词 "H-Agent"
             try:  # 单轮对话内部的意外异常不应该终止整个 agent 进程；会话状态已在轮内持久化。
                 async with InterruptWatcher(terminal_input) as turn_watcher:
-                    _, messages = await client.ask_deepseek(  # 保存配置值或中间计算结果。
-                        api_client,
+                    _, messages = await client.ask_model(  # 保存配置值或中间计算结果。
+                        model_manager,
                         prompt,
                         registry,
                         tools,
@@ -406,7 +406,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         if CONFIG.sandbox.workspace_lease_enabled:
             workspace_lease.release()
         # 退出时关闭连接
-        await api_client.close()  # 执行当前步骤的业务逻辑。
+        await model_manager.close()  # 执行当前步骤的业务逻辑。
         print("\n连接已关闭，再见！")  # 执行当前步骤的业务逻辑。
 
 if __name__ == "__main__":  # 根据条件决定是否执行后续分支。

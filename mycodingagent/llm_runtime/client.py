@@ -11,9 +11,9 @@ for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_P
 
 from typing import Any  # `Any` 用在 OpenAI 消息、工具 schema 等动态 JSON 结构的类型标注中。
 
-from openai import AsyncOpenAI  # OpenAI Python SDK 的异步客户端；这里连接 DeepSeek 的 OpenAI 兼容接口。
-
 from mycodingagent.configuration import CONFIG  # 统一读取 API、模型和客户端展示相关配置。
+from mycodingagent.llm_runtime.model_manager import ModelManager
+from mycodingagent.llm_runtime.providers import ChatRequest, PendingToolCall, normalize_stream_result
 from mycodingagent.memory import MemoryRuntime, TokenUsageRecord, TokenUsageSummary
 from mycodingagent.memory.budget import estimate_tokens
 from mycodingagent.memory.message_filters import (
@@ -28,7 +28,7 @@ from mycodingagent.llm_runtime.context import (
     RuntimeContextBuilder,
     render_current_turn_for_model,
 )
-from mycodingagent.llm_runtime.streaming import PendingToolCall, normalize_stream_result, stream_one_round
+from mycodingagent.llm_runtime.streaming import stream_one_round
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.terminal_ui.output import processing_status, tool_status_message
 from mycodingagent.tool_runtime import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
@@ -40,9 +40,6 @@ from mycodingagent.tool_runtime.execution import (
     parse_tool_arguments_object,
 )
 
-DEEPSEEK_API_KEY = CONFIG.api.deepseek_api_key  # DeepSeek API Key；从 ~/.mycodingagent/config.json 或 DEEPSEEK_API_KEY 环境变量读取。
-BASE_URL = CONFIG.api.base_url  # API 基础地址；未配置时使用 DeepSeek 官方兼容地址。
-MODEL = CONFIG.api.model  # 模型名称；允许通过环境变量切换模型而不用改代码。
 MAX_TOOL_ROUNDS = CONFIG.client.max_tool_rounds  # 单次用户请求最多允许模型连续调用工具的轮数，用于防止无限循环。
 MAX_DISPLAY_STRING_CHARS = CONFIG.client.max_display_string_chars  # 终端展示超长字符串参数时的最大字符数，避免 WriteFile 内容刷屏。
 MAX_TOOL_OUTPUT_CHARS = CONFIG.client.max_tool_output_chars
@@ -506,8 +503,8 @@ async def execute_local_tool(
         execution_recorder=execution_recorder,
         session_id=session_id,
     )
-async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
-    client: AsyncOpenAI,  # 已打开连接的异步 API 客户端，由调用方负责创建和关闭。
+async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
+    model_manager: ModelManager,  # 统一推理模型管理器，负责当前 profile 和 provider。
     prompt: str,  # 当前用户输入的自然语言需求。
     registry: ToolRegistry,  # 本地工具注册表，用于根据模型 tool_call 名称找到实际工具对象。
     tools: list[dict[str, Any]],  # 已格式化好的 OpenAI tools schema，每轮请求都要传给模型。
@@ -674,8 +671,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
 
     turn_start = len(messages)
     session_id = ""
+    active_model = model_manager.active_model
     if memory_runtime is not None and CONFIG.memory.enabled:
-        session_id = memory_runtime.start_session(MODEL)
+        session_id = memory_runtime.start_session(active_model)
         memory_runtime.begin_workspace_checkpoint(prompt=prompt, message_index=turn_start)
 
     def current_context_mode() -> str:
@@ -733,7 +731,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             success=success,
         )
 
-    # 追加当前用户问题  # 每次调用 `ask_deepseek` 都代表用户发来一条新消息。
+    # 追加当前用户问题  # 每次调用 `ask_model` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
     save_session_state()
     temporary_system_messages: list[dict[str, Any]] = []
@@ -771,7 +769,10 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         summary_text = ""
         if memory_runtime is not None and session_id:
             if should_generate_summary(memory_runtime, round_messages, current_tools, prompt):
-                summary_text = await summarize_engineering_state(client, MODEL, round_messages)
+                summary_text = await summarize_engineering_state(
+                    model_manager.active_provider(),
+                    round_messages,
+                )
             prepared_messages = memory_runtime.prepare_messages_for_model(
                 session_id=session_id,
                 messages=round_messages,
@@ -815,8 +816,16 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         bash_classifier = bash_display_classifier_from_registry(registry)
         if bash_classifier is not None:
             stream_kwargs["bash_classifier"] = bash_classifier
+        provider = model_manager.active_provider()
+        active_model = provider.model
         stream_result = normalize_stream_result(
-            await stream_one_round(client, MODEL, model_messages, current_tools, **stream_kwargs)
+            await provider.stream_chat(
+                ChatRequest(
+                    messages=model_messages,
+                    tools=current_tools,
+                    **stream_kwargs,
+                )
+            )
         )
         assistant_text = stream_result.text
         tool_calls = stream_result.tool_calls
@@ -827,7 +836,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             if memory_runtime is not None and session_id:
                 session_token_usage = memory_runtime.record_token_usage(
                     session_id=session_id,
-                    model=MODEL,
+                    model=active_model,
                     prompt_hash=prompt_debug_snapshot.request_hash,
                     tools_hash=prompt_debug_snapshot.tools_hash,
                     metadata={
@@ -1038,6 +1047,61 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。
 
 
+class _LegacyClientProvider:
+    """Compatibility shim for older tests/callers that still pass a raw client."""
+
+    def __init__(self, raw_client: Any, model: str = "legacy-model") -> None:
+        self.raw_client = raw_client
+        self.model = model
+
+    async def stream_chat(self, request: ChatRequest) -> Any:
+        kwargs: dict[str, Any] = {}
+        if request.display is not True:
+            kwargs["display"] = request.display
+        if request.output_label != "模型":
+            kwargs["output_label"] = request.output_label
+        if request.cancel_event is not None:
+            kwargs["cancel_event"] = request.cancel_event
+        if request.bash_classifier is not None:
+            kwargs["bash_classifier"] = request.bash_classifier
+        if request.extra_body is not None:
+            kwargs["extra_body"] = request.extra_body
+        return await stream_one_round(
+            self.raw_client,
+            self.model,
+            request.messages,
+            request.tools,
+            **kwargs,
+        )
+
+
+class _LegacyClientModelManager:
+    def __init__(self, raw_client: Any, model: str = "legacy-model") -> None:
+        self.active_model = model
+        self._provider = _LegacyClientProvider(raw_client, model)
+
+    def active_provider(self) -> _LegacyClientProvider:
+        return self._provider
+
+
+async def ask_deepseek(
+    client: Any,
+    prompt: str,
+    registry: ToolRegistry,
+    tools: list[dict[str, Any]],
+    messages: list[dict[str, Any]] | None = None,
+    **kwargs: Any,
+) -> tuple[str, list[dict[str, Any]]]:
+    return await ask_model(
+        _LegacyClientModelManager(client),
+        prompt,
+        registry,
+        tools,
+        messages,
+        **kwargs,
+    )
+
+
 def should_generate_summary(
     memory_runtime: MemoryRuntime,
     messages: list[dict[str, Any]],
@@ -1055,8 +1119,7 @@ def should_generate_summary(
 
 
 async def summarize_engineering_state(
-    client: AsyncOpenAI,
-    model: str,
+    provider: Any,
     messages: list[dict[str, Any]],
 ) -> str:
     prompt_path = CONFIG.memory.prompt_path
@@ -1078,16 +1141,12 @@ async def summarize_engineering_state(
         },
     ]
     try:
-        response = await client.chat.completions.create(
-            model=model,
-            messages=summary_messages,
-            stream=False,
+        result = await provider.stream_chat(
+            ChatRequest(messages=summary_messages, display=False, output_label="summary")
         )
-    except (APIConnectionError, APITimeoutError, APIError) as exc:
+    except Exception as exc:
         return f"UNKNOWN\nSUMMARY_ERROR: {exc}"
-    if not response.choices:
-        return "UNKNOWN"
-    return response.choices[0].message.content or "UNKNOWN"
+    return result.text or "UNKNOWN"
 
 
 def truncate_tool_output(output: str) -> str:
@@ -1115,13 +1174,13 @@ async def main() -> None:  # 提供一个直接运行 `client.py` 时使用的�
     raw_tools = registry.get_all_schemas("openai")  # 从注册表拿到 OpenAI 协议方向的原始工具 schema。
     tools = format_openai_tools(raw_tools)  # 确保工具 schema 满足 Chat Completions 的 tools 参数格式。
 
-    client = AsyncOpenAI(api_key=DEEPSEEK_API_KEY, base_url=BASE_URL)  # 创建异步 API 客户端；连接地址可由 BASE_URL 控制。
+    model_manager = ModelManager()
 
     print(f"提问：{prompt}", flush=True)  # 在终端显示测试 prompt。
-    result, messages = await ask_deepseek(client, prompt, registry, tools)  # 执行完整 agent 循环，得到最终回答和历史消息。
+    result, messages = await ask_model(model_manager, prompt, registry, tools)  # 执行完整 agent 循环，得到最终回答和历史消息。
     print(f"结果：{result}", flush=True)  # 打印模型最终回答。
 
-    await client.close()  # 关闭异步 HTTP 客户端连接，释放网络资源。
+    await model_manager.close()  # 关闭异步 HTTP 客户端连接，释放网络资源。
 
 
 if __name__ == "__main__":  # 只有直接运行本文件时才执行测试入口，被其他模块 import 时不会运行。

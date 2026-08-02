@@ -38,6 +38,7 @@ from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
 from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.capability_discovery.router import CapabilityRouter
 from mycodingagent.llm_runtime import client as agent_client
+from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
@@ -74,6 +75,7 @@ class EvalHarness:
     memory_runtime: MemoryRuntime
     multi_agent_store: MultiAgentStore
     api_client: AsyncOpenAI
+    model_manager: ModelManager
 
     @property
     def tools(self) -> list[dict[str, Any]]:
@@ -82,6 +84,7 @@ class EvalHarness:
     async def close(self) -> None:
         await self.memory_runtime.close()
         await self.api_client.close()
+        await self.model_manager.close()
 
 
 class StaticSkillSource:
@@ -288,14 +291,12 @@ async def _case_long_term_memory_cross_session(tmp_path: Path) -> dict[str, Any]
     long_term = LongTermMemoryRuntime(
         memory_runtime=harness.memory_runtime,
         registry=harness.registry,
-        api_client=harness.api_client,
+        model_manager=harness.model_manager,
         user_id="eval_user",
-        storage_model=agent_client.MODEL,
-        query_model=agent_client.MODEL,
         store=SQLiteLongTermMemoryStore(tmp_path / "state" / "long_term_memory.sqlite3"),
     )
     try:
-        session_id = harness.memory_runtime.start_session(agent_client.MODEL)
+        session_id = harness.memory_runtime.start_session(harness.model_manager.active_model)
         messages = [
             {"role": "user", "content": "请记住：我偏好中文回答。项目事实：myCodingAgent 使用 Capability Router + Skill Router 双层能力路由。"},
             {"role": "assistant", "content": "已记录你的中文回答偏好，以及项目使用双层能力路由这一事实。"},
@@ -337,9 +338,8 @@ async def _case_multi_agent_minimal_workflow(tmp_path: Path) -> dict[str, Any]:
         orchestrator = MultiAgentOrchestrator(
             store=harness.multi_agent_store,
             registry=harness.registry,
-            api_client=harness.api_client,
+            model_manager=harness.model_manager,
             memory_runtime=harness.memory_runtime,
-            model=agent_client.MODEL,
         )
         run = await orchestrator.start(
             task=(
@@ -407,10 +407,12 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
     registry.register(Glob(sandbox_root=workspace))
     registry.register(Grep(sandbox_root=workspace))
 
+    model_manager = ModelManager()
+    profile = model_manager.active_profile
     memory_runtime = MemoryRuntime(
         store=SQLiteMemoryStore(state_dir / "sessions.sqlite3"),
         compressor=ContextCompressor(context_window=context_window),
-        model=agent_client.MODEL,
+        model=profile.model,
         workspace_root=str(workspace),
     )
     registry.register(CommitWorkingContext(memory_runtime))
@@ -421,7 +423,7 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
     registry.register(GetRecentConversationTurns(memory_runtime))
     registry.register(SummarizeCurrentTurnMessage(memory_runtime))
 
-    api_client = AsyncOpenAI(api_key=agent_client.DEEPSEEK_API_KEY, base_url=agent_client.BASE_URL)
+    api_client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
     multi_agent_store = MultiAgentStore(state_dir / "multi_agent.sqlite3")
     return EvalHarness(
         workspace=workspace,
@@ -430,6 +432,7 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
         memory_runtime=memory_runtime,
         multi_agent_store=multi_agent_store,
         api_client=api_client,
+        model_manager=model_manager,
     )
 
 

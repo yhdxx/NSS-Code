@@ -5,7 +5,6 @@ import sys
 
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from mycodingagent.configuration import CONFIG
-from mycodingagent.llm_runtime import client
 from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
 from mycodingagent.memory.message_filters import remove_trailing_incomplete_tool_call
 from mycodingagent.terminal_ui.confirm import (
@@ -35,8 +34,154 @@ def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> N
         print(f"长期记忆待抽取标记失败：{exc}", flush=True)
 
 
+def _current_model_name(context: CommandContext) -> str:
+    model_manager = context.model_manager
+    if model_manager is None:
+        return ""
+    try:
+        return str(model_manager.active_model)
+    except Exception:
+        return ""
+
+
+def _choose_from_list(prompt: str, options: list[str]) -> int | None:
+    if not options:
+        return None
+    print(prompt, flush=True)
+    for index, option in enumerate(options, start=1):
+        print(f"  {index}. {option}", flush=True)
+    try:
+        answer = coordinated_input("请输入序号，或直接回车取消：").strip()
+    except (PromptCancelled, EOFError, KeyboardInterrupt):
+        return None
+    if not answer:
+        return None
+    try:
+        selected = int(answer)
+    except ValueError:
+        return None
+    if selected < 1 or selected > len(options):
+        return None
+    return selected - 1
+
+
+def _select_model_profile(context: CommandContext) -> tuple[str, str | None] | None:
+    model_manager = context.model_manager
+    if model_manager is None:
+        print("模型管理器未启用，无法切换模型。", flush=True)
+        return None
+    try:
+        model_manager.reload()
+        grouped = model_manager.profiles_by_provider()
+    except Exception as exc:
+        print(f"读取模型配置失败：{exc}", flush=True)
+        return None
+    if not grouped:
+        print("没有找到已配置 API 的推理模型 profile。请先编辑 ~/.mycodingagent/config.json。", flush=True)
+        return None
+    providers = sorted(grouped)
+    provider_index = _choose_from_list("请选择厂商：", providers)
+    if provider_index is None:
+        print("已取消模型切换。", flush=True)
+        return None
+    provider_name = providers[provider_index]
+    profiles = sorted(grouped[provider_name], key=lambda item: (item.model, item.key))
+    profile_labels = [f"{profile.model}  ({profile.key})" for profile in profiles]
+    profile_index = _choose_from_list(f"请选择 {provider_name} 模型：", profile_labels)
+    if profile_index is None:
+        print("已取消模型切换。", flush=True)
+        return None
+    profile = profiles[profile_index]
+    reasoning: str | None = None
+    try:
+        provider = model_manager.provider(profile.key)
+        reasoning_options = provider.reasoning_options(profile.model)
+    except Exception as exc:
+        print(f"读取思考模式失败，跳过该步骤：{exc}", flush=True)
+        reasoning_options = []
+    if reasoning_options:
+        labels = [
+            f"{option.label} ({option.name})" + (f" - {option.description}" if option.description else "")
+            for option in reasoning_options
+        ]
+        reasoning_index = _choose_from_list("请选择思考强度：", labels)
+        if reasoning_index is None:
+            print("已取消模型切换。", flush=True)
+            return None
+        reasoning = reasoning_options[reasoning_index].name
+    return profile.key, reasoning
+
+
+async def handle_model_command(context: CommandContext, arguments: str) -> CommandResult:
+    selected = _select_model_profile(context)
+    if selected is None:
+        return CommandResult(messages=context.messages)
+    profile_key, reasoning = selected
+    try:
+        context.model_manager.switch_active(profile_key, reasoning=reasoning)
+    except Exception as exc:
+        print(f"切换主模型失败：{exc}", flush=True)
+        return CommandResult(messages=context.messages)
+    print(
+        f"主模型已切换为 {context.model_manager.active_profile.provider}/{context.model_manager.active_model}"
+        f"（profile: {context.model_manager.active_profile_key}）。",
+        flush=True,
+    )
+    return CommandResult(messages=context.messages)
+
+
+async def handle_long_mem_model_storage_command(context: CommandContext, arguments: str) -> CommandResult:
+    return await _handle_long_mem_model_command(context, target="storage", label="长期记忆存储")
+
+
+async def handle_long_mem_model_search_command(context: CommandContext, arguments: str) -> CommandResult:
+    return await _handle_long_mem_model_command(context, target="search", label="长期记忆检索")
+
+
+async def _handle_long_mem_model_command(context: CommandContext, *, target: str, label: str) -> CommandResult:
+    selected = _select_model_profile(context)
+    if selected is None:
+        return CommandResult(messages=context.messages)
+    profile_key, reasoning = selected
+    try:
+        context.model_manager.switch_long_term_memory(target, profile_key, reasoning=reasoning)
+    except Exception as exc:
+        print(f"切换{label}模型失败：{exc}", flush=True)
+        return CommandResult(messages=context.messages)
+    profile = context.model_manager.profile(profile_key)
+    print(f"{label}模型已切换为 {profile.provider}/{profile.model}（profile: {profile.key}）。", flush=True)
+    return CommandResult(messages=context.messages)
+
+
 def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
+    registry.register(
+        CommandSpec(
+            name="/model",
+            aliases=("model", "模型"),
+            description="交互选择并切换当前主推理模型",
+            usages=(("", "选择厂商、模型和可用思考强度"),),
+            handler=handle_model_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
+            name="/long_mem_model_storage",
+            aliases=("long_mem_model_storage",),
+            description="交互选择长期记忆存储/抽取模型",
+            usages=(("", "选择厂商、模型和可用思考强度"),),
+            handler=handle_long_mem_model_storage_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
+            name="/long_mem_model_search",
+            aliases=("long_mem_model_search",),
+            description="交互选择长期记忆检索模型",
+            usages=(("", "选择厂商、模型和可用思考强度"),),
+            handler=handle_long_mem_model_search_command,
+        )
+    )
     registry.register(
         CommandSpec(
             name="/mode",
@@ -220,8 +365,8 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
         print(run_summary_for_main_context(run), flush=True)
         return CommandResult()
 
-    if context.registry is None or context.api_client is None:
-        print("多智能体运行缺少 registry 或 api_client，无法执行。", flush=True)
+    if context.registry is None or context.model_manager is None:
+        print("多智能体运行缺少 registry 或 model_manager，无法执行。", flush=True)
         return CommandResult()
 
     from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
@@ -241,9 +386,8 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=context.registry,
-        api_client=context.api_client,
+        model_manager=context.model_manager,
         memory_runtime=context.memory_runtime,
-        model=client.MODEL,
         cancel_event=context.cancel_event,
         workspace_root=worktree_handle.path if worktree_handle is not None else None,
     )
@@ -390,7 +534,7 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         memory_runtime.save_messages_now(source_session_id, fork_messages)
     fork_session_id = memory_runtime.fork_session(
         source_session_id,
-        model=client.MODEL,
+        model=_current_model_name(context),
         messages=fork_messages,
     )
     if fork_session_id is None:
@@ -438,7 +582,7 @@ async def handle_clear_command(context: CommandContext, arguments: str) -> Comma
     await memory_runtime.drain()
     mark_long_term_memory_pending(context, saved_session_id)
     memory_runtime.clear_current_session_id()
-    new_session_id = memory_runtime.start_session(client.MODEL)
+    new_session_id = memory_runtime.start_session(_current_model_name(context))
     await memory_runtime.drain()
 
     if saved_session_id:

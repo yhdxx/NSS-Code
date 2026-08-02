@@ -34,9 +34,10 @@ DEFAULT_PROJECTS_ROOT = Path("/tmp/mycodingagent_eval_projects")
 
 
 def _config() -> tuple[str, str, str]:
-    from mycodingagent.configuration import CONFIG
+    from mycodingagent.llm_runtime.model_manager import ModelManager
 
-    return CONFIG.api.model, CONFIG.api.base_url, CONFIG.api.deepseek_api_key
+    profile = ModelManager().active_profile
+    return profile.model, profile.base_url, profile.api
 
 
 def _schemas() -> list[dict[str, Any]]:
@@ -482,7 +483,7 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
         before = _snapshot_project_files(workspace)
         memory = MemoryRuntime(
             store=SQLiteMemoryStore(state / "sessions.sqlite3"),
-            compressor=ContextCompressor(context_window=96_000), model=CONFIG.api.model,
+            compressor=ContextCompressor(context_window=96_000), model=_config()[0],
             workspace_root=str(workspace),
         )
         index = WorkspaceCodeIndex(workspace, state / "code_index.sqlite3")
@@ -490,8 +491,9 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
         graph.set_work_mode_provider(lambda: mode)
         registry = _workspace_registry(workspace, memory, graph)
         schemas = agent_client.format_openai_tools(registry.get_all_schemas("openai"))
+        model, base_url, api_key = _config()
         api_client = AsyncOpenAI(
-            api_key=CONFIG.api.deepseek_api_key, base_url=CONFIG.api.base_url,
+            api_key=api_key, base_url=base_url,
             http_client=httpx.AsyncClient(trust_env=False),
         )
         try:

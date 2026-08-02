@@ -84,7 +84,8 @@ class MemoryRuntime:
         model: str | None = None,
         workspace_root: str | None = None,
     ) -> None:
-        self.model = model or CONFIG.api.model
+        active_profile = CONFIG.model.active_profile
+        self.model = model or (active_profile.model if active_profile is not None else "")
         context_window = (
             compressor.context_window
             if compressor is not None
