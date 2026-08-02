@@ -96,6 +96,14 @@ class LongTermMemoryRuntime:
             source_message_count=len(state.messages),
         )
 
+    def schedule_deferred_extraction(self, session_id: str) -> str:
+        """将 session 标记为待抽取，但不立即调用 LLM 执行。
+
+        实际抽取由 startup_backfill 在下次启动时完成，
+        避免阻塞用户 exit 退出流程。
+        """
+        return self.mark_session_pending(session_id)
+
     async def extract_session_now(
         self,
         session_id: str,
