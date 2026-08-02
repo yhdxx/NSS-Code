@@ -280,8 +280,11 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     messages = rollover.new_messages
             try:  # 开始可能抛出异常的保护代码块。
                 print("----------------------------------------------\n\n")  # 执行当前步骤的业务逻辑。
-                print("\033[1;97m ⌨️  User(输入exit退出对话)：\033[0m", flush=True)
-                prompt = read_user_prompt("  ", command_registry)  # 保存配置值或中间计算结果。
+                prompt = read_user_prompt(
+                    "",
+                    command_registry,
+                    prompt_header="\033[1;97m ⌨️  User(输入exit退出对话)：\033[0m",
+                )  # 保存配置值或中间计算结果。
                 print("----------------------------------------------\n\n")  # 执行当前步骤的业务逻辑。
             except (EOFError, KeyboardInterrupt):  # 捕获并处理指定异常。
                 # Ctrl+D 或 Ctrl+C 安全退出

@@ -6,6 +6,7 @@ from mycodingagent.memory import SessionListItem
 from mycodingagent.terminal_ui.clipboard import clear_internal_clipboard, copy_to_clipboard, paste_from_clipboard
 from mycodingagent.terminal_ui.input import (
     InteractivePrompt,
+    format_styled_prompt_echo,
     key_name_for_char,
     key_name_for_escape_sequence,
     style_input_box_lines,
@@ -121,13 +122,39 @@ def test_shift_arrow_extends_application_selection(monkeypatch) -> None:
     assert paste_from_clipboard() == "de"
 
 
-def test_input_box_styles_entire_input_line_with_brown_background() -> None:
+def test_input_box_styles_entire_input_line_with_light_gray_background() -> None:
     lines = style_input_box_lines(["  hello", "hint"], input_row_count=1, columns=12)
 
-    assert lines[0].startswith("\033[48;5;94m\033[97m")
+    assert lines[0].startswith("\033[48;5;252m\033[30m")
     assert lines[0].endswith("\033[0m")
     assert "hello" in lines[0]
     assert lines[1] == "hint"
+
+
+def test_submitted_prompt_echo_keeps_light_gray_input_box_background() -> None:
+    echo = format_styled_prompt_echo("  ", 2, "one\ntwo", columns=12)
+
+    assert echo.count("\033[48;5;252m\033[30m") == 2
+    assert "one" in echo
+    assert "two" in echo
+    assert "\r\n" in echo
+
+
+def test_submitted_prompt_echo_omits_current_round_header(monkeypatch) -> None:
+    prompt = InteractivePrompt(prompt="", command_registry=None, prompt_header="HEADER")
+    prompt.buffer = "hello"
+    writes: list[str] = []
+    monkeypatch.setattr("sys.stdout.write", lambda value: writes.append(value))
+    monkeypatch.setattr("sys.stdout.flush", lambda: None)
+    monkeypatch.setattr("mycodingagent.terminal_ui.input.terminal_width", lambda: 20)
+
+    prompt._render()
+    writes.clear()
+    prompt._finish()
+
+    output = "".join(writes)
+    assert "HEADER" not in output
+    assert "hello" in output
 
 
 def test_session_selector_initial_render_leaves_list_visible(monkeypatch) -> None:

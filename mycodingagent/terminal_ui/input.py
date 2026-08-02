@@ -28,8 +28,8 @@ SAFE_COLUMN_MARGIN = 1
 BRACKETED_PASTE_START = "[200~"
 BRACKETED_PASTE_END = "\x1b[201~"
 ANSI_RESET = "\033[0m"
-INPUT_BOX_STYLE = "\033[48;5;94m\033[97m"
-INPUT_TEXT_STYLE = "\033[97m"
+INPUT_BOX_STYLE = "\033[48;5;252m\033[30m"
+INPUT_TEXT_STYLE = "\033[30m"
 INPUT_PASTE_STYLE = "\033[94m"
 INPUT_SELECTION_STYLE = "\033[48;5;240m\033[97m"
 CURSOR_BRIGHT_WHITE = "\033]12;#FFFFFF\a"
@@ -37,17 +37,31 @@ CURSOR_RESET = "\033]112\a"
 INDENT_TEXT = "    "
 
 
-def read_user_prompt(prompt: str, command_registry: CommandRegistry | None = None) -> str:
+def read_user_prompt(
+    prompt: str,
+    command_registry: CommandRegistry | None = None,
+    *,
+    prompt_header: str = "",
+) -> str:
     if not sys.stdin.isatty():
+        if prompt_header:
+            print(strip_readline_markers(prompt_header), flush=True)
         return input(prompt)
-    reader = InteractivePrompt(prompt=prompt, command_registry=command_registry)
+    reader = InteractivePrompt(prompt=prompt, command_registry=command_registry, prompt_header=prompt_header)
     return reader.read()
 
 
 class InteractivePrompt:
-    def __init__(self, *, prompt: str, command_registry: CommandRegistry | None) -> None:
+    def __init__(
+        self,
+        *,
+        prompt: str,
+        command_registry: CommandRegistry | None,
+        prompt_header: str = "",
+    ) -> None:
         self.prompt = strip_readline_markers(prompt)
         self.prompt_width = visible_width(self.prompt)
+        self.prompt_header = strip_readline_markers(prompt_header)
         self.command_registry = command_registry
         self._document = InputDocument()
         self.cursor_index = 0
@@ -102,7 +116,9 @@ class InteractivePrompt:
     def _finish(self) -> str:
         final_text = self.buffer
         self._clear_render()
-        sys.stdout.write(format_prompt_echo(self.prompt, self.prompt_width, final_text) + "\r\n")
+        sys.stdout.write(
+            format_styled_prompt_echo(self.prompt, self.prompt_width, final_text, safe_render_columns()) + "\r\n"
+        )
         sys.stdout.flush()
         return final_text
 
@@ -138,6 +154,10 @@ class InteractivePrompt:
             render_columns,
         )
         screen.lines = style_input_box_lines(screen.lines, input_row_count=len(input_screen.lines), columns=render_columns)
+        header_screen = render_screen([self.prompt_header], render_columns) if self.prompt_header else None
+        if header_screen is not None:
+            screen.lines = header_screen.lines + screen.lines
+            screen.cursor_row += len(header_screen.lines)
         self._clear_render()
         sys.stdout.write("\r\n".join(screen.lines))
         sys.stdout.flush()
@@ -776,6 +796,11 @@ def key_name_for_escape_sequence(sequence: str) -> str:
 def format_prompt_echo(prompt: str, prompt_width: int, text: str) -> str:
     continuation = " " * prompt_width
     return prompt + normalize_pasted_text(text).replace("\n", "\r\n" + continuation)
+
+
+def format_styled_prompt_echo(prompt: str, prompt_width: int, text: str, columns: int) -> str:
+    lines = format_prompt_echo(prompt, prompt_width, text).split("\r\n")
+    return "\r\n".join(style_input_box_lines(lines, input_row_count=len(lines), columns=columns))
 
 
 def safe_render_columns() -> int:
