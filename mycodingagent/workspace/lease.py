@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import atexit
 import hashlib
 import json
 import os
@@ -27,6 +28,8 @@ class WorkspaceLease:
         self._lock = FileLock(self.lock_path, timeout=0)
         self._stop = Event()
         self._thread: Thread | None = None
+        self._atexit_callback = self.release
+        self._atexit_registered = False
 
     def acquire(self) -> None:
         try:
@@ -35,7 +38,11 @@ class WorkspaceLease:
             owner = self.owner_metadata()
             detail = f" pid={owner.get('pid')} host={owner.get('host')}" if owner else ""
             raise WorkspaceLeaseError(f"workspace is already leased:{detail}") from exc
+        self._stop.clear()
         self._write_metadata()
+        if not self._atexit_registered:
+            atexit.register(self._atexit_callback)
+            self._atexit_registered = True
         self._thread = Thread(target=self._heartbeat, name="workspace-lease-heartbeat", daemon=True)
         self._thread.start()
 
@@ -49,6 +56,12 @@ class WorkspaceLease:
         finally:
             if self._lock.is_locked:
                 self._lock.release()
+            if self._atexit_registered:
+                try:
+                    atexit.unregister(self._atexit_callback)
+                except ValueError:
+                    pass
+                self._atexit_registered = False
 
     def owner_metadata(self) -> dict:
         try:

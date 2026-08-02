@@ -160,6 +160,6 @@
 
 # mcp:
 #   enabled: true                 # 环境变量：MYCODINGAGENT_MCP_ENABLED
-#   project_config_path: ".mycodingagent/mcp.json"  # 环境变量：MYCODINGAGENT_MCP_PROJECT_CONFIG
+#   project_config_path: ".mycodingagent/mcp.json"  # 环境变量：MYCODINGAGENT_MCP_PROJECT_CONFIG；相对当前工作目录
 #   user_config_path: "~/.config/myCodingAgent/mcp.json"  # 环境变量：MYCODINGAGENT_MCP_USER_CONFIG
 #   reconnect_server_step: 10    # 环境变量：MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP

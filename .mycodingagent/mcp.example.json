@@ -1,5 +1,5 @@
 {
-  "_comment": "myCodingAgent MCP 配置模板。复制为 `.mycodingagent/mcp.json` 或 `~/.config/myCodingAgent/mcp.json` 后使用。JSON 不支持注释，本模板用 `_comment` 字段写说明；loader 会忽略这些字段。",
+  "_comment": "myCodingAgent MCP 配置模板。复制为当前工作目录的 `.mycodingagent/mcp.json` 或用户级 `~/.config/myCodingAgent/mcp.json` 后使用。JSON 不支持注释，本模板用 `_comment` 字段写说明；loader 会忽略这些字段。",
   "servers": {
     "_comment": "servers 下每个对象名就是 MCP Server 名称；同名 server 在后加载的配置中会覆盖前者。",
     "github": {

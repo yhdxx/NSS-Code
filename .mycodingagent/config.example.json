@@ -1,5 +1,5 @@
 {
-  "_说明": "此文件仅展示 myCodingAgent 全量 JSON 配置格式。实际使用时请复制为 ~/.mycodingagent/config.json 并填入真实密钥。该文件不应提交到仓库。详细说明见 docs/configuration.md（首次启动会自动复制到 ~/.mycodingagent/README.md）。",
+  "_说明": "此文件是 myCodingAgent 全量 JSON 配置模板。首次启动会自动复制为 ~/.mycodingagent/config.json；实际使用时请在用户目录文件中填入真实密钥。详细说明见 docs/configuration.md（每次启动会自动复制到 ~/.mycodingagent/README.md）。",
   "api": {
     "deepseek_api_key": "",
     "base_url": "https://api.deepseek.com",
@@ -38,6 +38,9 @@
   "memory": {
     "enabled": true,
     "output_context_compression": true,
+    "state_dir": "",
+    "db_path": "",
+    "prompt_path": "",
     "default_context_window": 128000,
     "session_ttl_days": 90,
     "default_work_mode": "general",
@@ -75,6 +78,7 @@
     }
   },
   "sandbox": {
+    "root": "",
     "max_output_chars": 10000,
     "workspace_lease_enabled": true
   },
@@ -91,7 +95,14 @@
     "pull_timeout": 300
   },
   "skills": {
+    "builtin_root": "",
+    "workspace_root": "",
+    "extra_roots": [],
+    "index_dir": "",
+    "markdown_filename": "SKILL.md",
+    "json_suffix": ".skill.json",
     "small_count": 8,
+    "user_id": "",
     "default_tool_names": ["coding-standards"],
     "prefetch_top_k": 3,
     "search_top_k": 8,
@@ -133,6 +144,7 @@
   },
   "milvus": {
     "enabled": true,
+    "uri": "",
     "host": "127.0.0.1",
     "port": "19530",
     "collection": "mycodingagent_skills",
@@ -151,6 +163,8 @@
   },
   "mcp": {
     "enabled": true,
+    "project_config_path": ".mycodingagent/mcp.json",
+    "user_config_path": "~/.config/myCodingAgent/mcp.json",
     "reconnect_server_step": 10
   }
 }

@@ -71,19 +71,17 @@ myAgent --upgrade
 
 ### 2.1 配置加载
 
-启动时先读取 `mycodingagent/configuration/settings.py` 的内置默认值，再合并 YAML/JSON 配置文件，最后用环境变量覆盖。
-默认配置文件路径如下，后者覆盖前者：
+启动时先由 `mycodingagent/configuration/bootstrap.py` 确保用户配置目录存在，再读取
+`mycodingagent/configuration/settings.py` 的内置默认值、用户 JSON 配置和环境变量。
+运行时只读取两个来源，优先级如下：
 
-1. `~/.config/myCodingAgent/config.yaml`
-2. Agent 安装目录 `.mycodingagent/config.yaml`
-3. `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG=1` 时，当前工作区 `.mycodingagent/config.yaml`
-4. `MYCODINGAGENT_CONFIG` 指定的一个或多个文件（多个路径用系统路径分隔符分隔）
+1. `~/.mycodingagent/config.json`
+2. 环境变量（当 JSON 字段缺失或为空字符串时生效）
 
-可复制 `.mycodingagent/config.example.yaml` 作为本地配置模板；模板里每个常用字段都用中文注释标出对应环境变量名。
-完整配置说明、环境变量表、按场景可复制示例、Embedding、Milvus 和 MCP Server 示例见 `docs/configuration.md`。
-如果希望在任意目录启动都使用同一套配置，把配置放在 `~/.config/myCodingAgent/config.yaml`
-或 Agent 安装目录 `.mycodingagent/config.yaml`，不要开启 `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG`。
-所有核心参数都可以放入配置文件，也仍然支持环境变量临时覆盖，包括：
+首次启动会从仓库 `.mycodingagent/config.example.json` 创建 `~/.mycodingagent/config.json`，
+并且每次启动都会把 `docs/configuration.md` 复制到 `~/.mycodingagent/README.md`。
+仓库内 `.mycodingagent/config.example.json` / `.mycodingagent/config.example.yaml` 仅作为字段参考，
+不参与运行时配置读取。所有核心参数都可以放入配置文件，也仍然支持环境变量兜底，包括：
 
 - API 地址、模型名、密钥
 - Docker 沙箱镜像、CPU/内存/超时限制
@@ -395,13 +393,13 @@ MCP 配置加载顺序：
 
 ```text
 ~/.config/myCodingAgent/mcp.json
-  -> .mycodingagent/mcp.json
+  -> 当前工作目录/.mycodingagent/mcp.json
   -> MYCODINGAGENT_MCP_CONFIG
 ```
 
 后加载的同名 server 覆盖前者。
 
-MCP 配置模板见 `.mycodingagent/mcp.example.json`；完整字段说明和 GitHub token 配置示例见 `docs/configuration.md`。
+仓库只保留 MCP 配置模板 `.mycodingagent/mcp.example.json`；需要项目级 MCP 配置时，将模板复制到当前工作目录的 `.mycodingagent/mcp.json`。完整字段说明和 GitHub token 配置示例见 `docs/configuration.md`。
 
 ### 8.1 Discovery
 

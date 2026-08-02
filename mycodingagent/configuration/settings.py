@@ -14,7 +14,7 @@ _MISSING = object()
 def _load_user_json_config() -> dict:
     """加载 ~/.mycodingagent/config.json。
 
-    文件不存在或解析失败时静默返回 {}，格式诊断由 app/main.py 处理。
+    文件不存在或解析失败时静默返回 {}，格式诊断由 bootstrap.py 处理。
     """
     try:
         raw_text = _USER_CONFIG_PATH.read_text(encoding="utf-8")
@@ -205,7 +205,7 @@ def _default_memory_db_path() -> Path:
 
 
 def _default_mcp_project_config_path() -> Path:
-    return Path(__file__).resolve().parents[2] / ".mycodingagent" / "mcp.json"
+    return Path.cwd() / ".mycodingagent" / "mcp.json"
 
 
 def _default_mcp_user_config_path() -> Path:

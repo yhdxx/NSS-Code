@@ -1,6 +1,6 @@
 # myCodingAgent 配置指南
 
-> 本文件会在首次启动时自动复制到 `~/.mycodingagent/README.md`，方便离线查阅。
+> 本文件会在每次 `myAgent` 启动时自动复制到 `~/.mycodingagent/README.md`，方便离线查阅。
 
 ---
 
@@ -11,9 +11,10 @@ myCodingAgent 所有运行配置通过以下**两个来源**读取（优先级�
 | 优先级 | 来源 | 说明 |
 |--------|------|------|
 | **1（最高）** | `~/.mycodingagent/config.json` | 用户级 JSON 配置文件 |
-| **2** | 环境变量 | 临时覆盖，与旧版本兼容 |
+| **2** | 环境变量 | JSON 字段缺失或为空字符串时生效，与旧版本兼容 |
 
-仓库内 `.mycodingagent/config.example.yaml` 和 `.mycodingagent/config.example.json` **仅供字段参考**，不参与运行时配置读取。
+仓库内 `.mycodingagent/config.example.json` 是首次启动时复制到用户目录的全量模板；
+`.mycodingagent/config.example.yaml` 仅供旧配置迁移参考。两者都不参与运行时配置读取。
 
 ---
 
@@ -21,6 +22,7 @@ myCodingAgent 所有运行配置通过以下**两个来源**读取（优先级�
 
 ```bash
 # 首次启动会自动创建 ~/.mycodingagent/config.json 全量模板
+# 每次启动会同步 ~/.mycodingagent/README.md
 myAgent
 
 # 编辑配置文件
@@ -38,7 +40,7 @@ myAgent
 
 ## 3. 配置结构总览
 
-`~/.mycodingagent/config.json` 包含以下 12 个顶层模块：
+`~/.mycodingagent/config.json` 包含以下 11 个顶层模块：
 
 | Key | 说明 |
 |-----|------|
@@ -196,7 +198,7 @@ myAgent
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `mcp.enabled` | `MYCODINGAGENT_MCP_ENABLED` | `true` | 是否启用 MCP |
-| `mcp.project_config_path` | `MYCODINGAGENT_MCP_PROJECT_CONFIG` | `.mycodingagent/mcp.json` | 项目级 MCP 配置路径 |
+| `mcp.project_config_path` | `MYCODINGAGENT_MCP_PROJECT_CONFIG` | `.mycodingagent/mcp.json` | 项目级 MCP 配置路径，默认相对当前工作目录 |
 | `mcp.user_config_path` | `MYCODINGAGENT_MCP_USER_CONFIG` | `~/.config/myCodingAgent/mcp.json` | 用户级 MCP 配置路径 |
 | `mcp.reconnect_server_step` | `MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP` | `10` | 后台重连间隔（秒） |
 
@@ -204,7 +206,8 @@ myAgent
 
 ## 5. 完整配置示例
 
-完整 JSON 模板见仓库中 `.mycodingagent/config.example.json`，首次启动时也会自动创建。
+完整 JSON 模板见仓库中 `.mycodingagent/config.example.json`，首次启动时会复制为 `~/.mycodingagent/config.json`。
+仓库内 MCP 配置只保留 `.mycodingagent/mcp.example.json` 模板；如需启用 MCP，请复制到当前工作目录的 `.mycodingagent/mcp.json` 或用户级 `~/.config/myCodingAgent/mcp.json`。
 
 ---
 
@@ -348,11 +351,11 @@ A: 编辑 `~/.mycodingagent/config.json`，在 `api.deepseek_api_key` 填入密�
 
 **Q: 配置文件格式错误怎么办？**
 
-A: 启动时会自动检测 JSON 格式，如果格式错误会删除并重建模板。你也可以手动删除 `~/.mycodingagent/config.json`，下次启动会自动重建。
+A: 启动时会自动检测 JSON 格式，如果格式错误会先备份为 `config.json.broken.<timestamp>`，再重建模板。你也可以手动删除 `~/.mycodingagent/config.json`，下次启动会自动重建。
 
 **Q: 如何查看当前生效的配置？**
 
-A: 所有配置项、默认值和环境变量名详见本文档。你编辑 `~/.mycodingagent/config.json` 的内容即为生效配置（环境变量会覆盖对应字段）。
+A: 所有配置项、默认值和环境变量名详见本文档。你编辑 `~/.mycodingagent/config.json` 的内容即为生效配置；环境变量只在 JSON 字段缺失或为空字符串时生效。
 
 **Q: 旧版本的 YAML 配置还能用吗？**
 
