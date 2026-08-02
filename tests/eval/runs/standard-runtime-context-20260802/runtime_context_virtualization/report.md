@@ -5,12 +5,13 @@
 
 ## 指标定义
 
-通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。
+通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw 质量参考、Claude-style 压缩基线、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。
 
 ## 计算公式
 
 - 任务成功率 = 正确回答隐藏历史证据锚点的运行数 / 总运行数
-- 未缓存输入降幅 = (Raw 未缓存输入 token - 候选未缓存输入 token) / Raw 未缓存输入 token
+- Raw 仅作为无压缩质量参考，不作为降本基线
+- 相对 Claude 压缩基线的未缓存输入降幅 = (Claude-style baseline 未缓存输入 token - 候选未缓存输入 token) / Claude-style baseline 未缓存输入 token
 - 缓存命中率 = prompt_cache_hit_tokens / (prompt_cache_hit_tokens + prompt_cache_miss_tokens)
 - 恢复成功率 = 需要恢复且恢复后答对的运行数 / 需要恢复的运行数
 
@@ -20,7 +21,7 @@
 {
   "dataset_path": "tests/eval/datasets/runtime_context_virtualization_cases.jsonl",
   "dataset_sha256": "7d98b83333f45c5bf177632b2a43740db68a8ba26d0dd1db8a20bc299ae24f86",
-  "sample_count": 270,
+  "sample_count": 360,
   "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
 }
 ```
@@ -53,6 +54,33 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
 ```json
 {
   "by_strategy": {
+    "claude_compression_baseline": {
+      "api_completed_count": 90,
+      "cache_hit_rate_token_weighted": 0.767101,
+      "duration_mean_seconds": 3.646544,
+      "duration_p95_seconds": 4.7903,
+      "false_recovery_rate": 0.011111,
+      "final_virtualized_rate": 0.0,
+      "invalid_tool_calls_mean": 0.0,
+      "prompt_tokens_mean": 5880.955556,
+      "prompt_tokens_p50": 5816.0,
+      "prompt_tokens_p95": 5816.0,
+      "recovery_call_rate": 0.011111,
+      "recovery_success_rate": null,
+      "request_count_mean": 1.011111,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 0.011111,
+      "total_tokens_mean": 6076.811111,
+      "uncached_prompt_tokens_mean": 1369.666667,
+      "uncached_prompt_tokens_p50": 56.0,
+      "uncached_prompt_tokens_p95": 4280.0
+    },
     "forced_virtualized": {
       "api_completed_count": 90,
       "cache_hit_rate_token_weighted": 0.813144,
@@ -136,9 +164,39 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
     }
   },
   "case_count": 30,
-  "completed_run_count": 270,
+  "claude_baseline_quality_gate_passed": true,
+  "completed_run_count": 360,
+  "cost_baseline_strategy": "claude_compression_baseline",
   "efficiency_claim_gate_passed": false,
-  "paired_reduction_vs_raw": {
+  "paired_delta_vs_raw_quality_reference": {
+    "claude_compression_baseline": {
+      "duration_seconds": {
+        "high": 0.15391,
+        "low": 0.068631,
+        "mean": 0.112172
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": 0.445937,
+        "low": 0.425669,
+        "mean": 0.438945
+      },
+      "tool_calls": {
+        "high": 1.0,
+        "low": 0.993333,
+        "mean": 0.997778
+      },
+      "total_tokens": {
+        "high": 0.438001,
+        "low": 0.416904,
+        "mean": 0.43055
+      },
+      "uncached_prompt_tokens": {
+        "high": 0.330228,
+        "low": 0.197496,
+        "mean": 0.251207
+      }
+    },
     "forced_virtualized": {
       "duration_seconds": {
         "high": -0.349079,
@@ -196,13 +254,73 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
       }
     }
   },
+  "paired_reduction_vs_claude_compression_baseline": {
+    "forced_virtualized": {
+      "duration_seconds": {
+        "high": -0.496232,
+        "low": -1.145861,
+        "mean": -0.725551
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": -1.609079,
+        "low": -2.245582,
+        "mean": -1.845892
+      },
+      "tool_calls": {
+        "high": -179.0,
+        "low": -572.0,
+        "mean": -550.0
+      },
+      "total_tokens": {
+        "high": -1.566305,
+        "low": -2.19957,
+        "mean": -1.800147
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.76995,
+        "low": -2.183324,
+        "mean": -1.283272
+      }
+    },
+    "natural": {
+      "duration_seconds": {
+        "high": -0.472016,
+        "low": -0.829536,
+        "mean": -0.611532
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": -1.632642,
+        "low": -1.899564,
+        "mean": -1.740384
+      },
+      "tool_calls": {
+        "high": -179.0,
+        "low": -555.0,
+        "mean": -545.0
+      },
+      "total_tokens": {
+        "high": -1.588642,
+        "low": -1.857471,
+        "mean": -1.697217
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.751467,
+        "low": -2.143488,
+        "mean": -1.272597
+      }
+    }
+  },
   "quality_gate_passed": true,
+  "quality_reference_strategy": "raw",
   "reason": "",
   "repeats": 3,
-  "resume_conclusion": "真实 Runtime 虚拟化在 30 条长会话轨迹、三策略、每策略 3 次中基本保持答案质量，但未缓存输入和总 token 成本未下降；不可表述为端到端降本。",
-  "run_count": 270,
+  "resume_conclusion": "真实 Runtime 虚拟化在 30 条长会话轨迹、四策略、每策略 3 次中基本保持答案质量，但相对 Claude-style 压缩基线的未缓存输入成本未下降；不可表述为相对 Claude 压缩策略降本。",
+  "run_count": 360,
   "strategies": [
     "raw",
+    "claude_compression_baseline",
     "forced_virtualized",
     "natural"
   ],
@@ -923,10 +1041,10 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
 
 ## 局限与有效性威胁
 
-- 结论门禁：至少 30 条长会话轨迹、raw/forced_virtualized/natural 三策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点，且未缓存输入 token 必须下降。
+- 结论门禁：至少 30 条长会话轨迹、raw/claude_compression_baseline/forced_virtualized/natural 四策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点；Claude-style baseline 也需通过质量门禁；降本结论只看相对 Claude-style baseline 的未缓存输入 token 是否下降。
 - 固定模型与固定 commit 提高可复现性，但不能代表所有模型、语言和真实项目分布。
 - 失败、超时和缺失字段计入产物，不从分母中静默剔除。
 
 ## 简历可用结论
 
-真实 Runtime 虚拟化在 30 条长会话轨迹、三策略、每策略 3 次中基本保持答案质量，但未缓存输入和总 token 成本未下降；不可表述为端到端降本。
+真实 Runtime 虚拟化在 30 条长会话轨迹、四策略、每策略 3 次中基本保持答案质量，但相对 Claude-style 压缩基线的未缓存输入成本未下降；不可表述为相对 Claude 压缩策略降本。

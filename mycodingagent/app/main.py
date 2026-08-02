@@ -22,6 +22,7 @@ from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.code_intelligence import ProjectGraphService, WorkspaceCodeIndex
 from mycodingagent.terminal_ui.input import read_user_prompt
 from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
+from mycodingagent.terminal_ui.output import mark_terminal_region_start
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration import CONFIG  # 统一读取项目运行配置。
@@ -271,6 +272,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         long_term_memory_runtime.schedule_startup_backfill()
 
     mcp_user_rounds = 0
+    mark_terminal_region_start()
 
     try:  # 开始可能抛出异常的保护代码块。
         while True:  # 在条件满足时持续循环。

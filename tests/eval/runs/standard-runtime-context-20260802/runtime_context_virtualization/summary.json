@@ -1,5 +1,32 @@
 {
   "by_strategy": {
+    "claude_compression_baseline": {
+      "api_completed_count": 90,
+      "cache_hit_rate_token_weighted": 0.767101,
+      "duration_mean_seconds": 3.646544,
+      "duration_p95_seconds": 4.7903,
+      "false_recovery_rate": 0.011111,
+      "final_virtualized_rate": 0.0,
+      "invalid_tool_calls_mean": 0.0,
+      "prompt_tokens_mean": 5880.955556,
+      "prompt_tokens_p50": 5816.0,
+      "prompt_tokens_p95": 5816.0,
+      "recovery_call_rate": 0.011111,
+      "recovery_success_rate": null,
+      "request_count_mean": 1.011111,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 0.011111,
+      "total_tokens_mean": 6076.811111,
+      "uncached_prompt_tokens_mean": 1369.666667,
+      "uncached_prompt_tokens_p50": 56.0,
+      "uncached_prompt_tokens_p95": 4280.0
+    },
     "forced_virtualized": {
       "api_completed_count": 90,
       "cache_hit_rate_token_weighted": 0.813144,
@@ -83,10 +110,40 @@
     }
   },
   "case_count": 30,
-  "completed_run_count": 270,
+  "claude_baseline_quality_gate_passed": true,
+  "completed_run_count": 360,
+  "cost_baseline_strategy": "claude_compression_baseline",
   "efficiency_claim_gate_passed": false,
   "module": "runtime_context_virtualization",
-  "paired_reduction_vs_raw": {
+  "paired_delta_vs_raw_quality_reference": {
+    "claude_compression_baseline": {
+      "duration_seconds": {
+        "high": 0.15391,
+        "low": 0.068631,
+        "mean": 0.112172
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": 0.445937,
+        "low": 0.425669,
+        "mean": 0.438945
+      },
+      "tool_calls": {
+        "high": 1.0,
+        "low": 0.993333,
+        "mean": 0.997778
+      },
+      "total_tokens": {
+        "high": 0.438001,
+        "low": 0.416904,
+        "mean": 0.43055
+      },
+      "uncached_prompt_tokens": {
+        "high": 0.330228,
+        "low": 0.197496,
+        "mean": 0.251207
+      }
+    },
     "forced_virtualized": {
       "duration_seconds": {
         "high": -0.349079,
@@ -144,14 +201,74 @@
       }
     }
   },
+  "paired_reduction_vs_claude_compression_baseline": {
+    "forced_virtualized": {
+      "duration_seconds": {
+        "high": -0.496232,
+        "low": -1.145861,
+        "mean": -0.725551
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": -1.609079,
+        "low": -2.245582,
+        "mean": -1.845892
+      },
+      "tool_calls": {
+        "high": -179.0,
+        "low": -572.0,
+        "mean": -550.0
+      },
+      "total_tokens": {
+        "high": -1.566305,
+        "low": -2.19957,
+        "mean": -1.800147
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.76995,
+        "low": -2.183324,
+        "mean": -1.283272
+      }
+    },
+    "natural": {
+      "duration_seconds": {
+        "high": -0.472016,
+        "low": -0.829536,
+        "mean": -0.611532
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": -1.632642,
+        "low": -1.899564,
+        "mean": -1.740384
+      },
+      "tool_calls": {
+        "high": -179.0,
+        "low": -555.0,
+        "mean": -545.0
+      },
+      "total_tokens": {
+        "high": -1.588642,
+        "low": -1.857471,
+        "mean": -1.697217
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.751467,
+        "low": -2.143488,
+        "mean": -1.272597
+      }
+    }
+  },
   "quality_gate_passed": true,
+  "quality_reference_strategy": "raw",
   "reason": "",
   "repeats": 3,
-  "resume_conclusion": "真实 Runtime 虚拟化在 30 条长会话轨迹、三策略、每策略 3 次中基本保持答案质量，但未缓存输入和总 token 成本未下降；不可表述为端到端降本。",
-  "run_count": 270,
+  "resume_conclusion": "真实 Runtime 虚拟化在 30 条长会话轨迹、四策略、每策略 3 次中基本保持答案质量，但相对 Claude-style 压缩基线的未缓存输入成本未下降；不可表述为相对 Claude 压缩策略降本。",
+  "run_count": 360,
   "status": "passed",
   "strategies": [
     "raw",
+    "claude_compression_baseline",
     "forced_virtualized",
     "natural"
   ],

@@ -20,6 +20,8 @@ except ImportError:  # pragma: no cover - only relevant before dependencies are 
 from mycodingagent.terminal_ui.highlighters import detect_language, highlight_for_terminal
 
 
+_TERMINAL_REGION_MARKED = False
+
 READ_LIKE_TOOLS = {
     "Glob",
     "Grep",
@@ -125,12 +127,26 @@ def render_status_line(message: str, *, file: TextIO | None = None) -> None:
 
 
 def clear_terminal(*, file: TextIO | None = None) -> None:
-    """Clear the interactive terminal before redrawing restored UI state."""
+    """Clear the Agent-controlled terminal region without erasing scrollback."""
     output = _resolve_file(file)
     if not _isatty(output):
         return
-    output.write("\033[2J\033[H")
+    if _TERMINAL_REGION_MARKED:
+        output.write("\033[u\033[J")
+    else:
+        output.write("\r\033[J")
     output.flush()
+
+
+def mark_terminal_region_start(*, file: TextIO | None = None) -> None:
+    """Save the cursor position used as the top of the Agent redraw region."""
+    global _TERMINAL_REGION_MARKED
+    output = _resolve_file(file)
+    if not _isatty(output):
+        return
+    output.write("\033[s")
+    output.flush()
+    _TERMINAL_REGION_MARKED = True
 
 
 def processing_status(

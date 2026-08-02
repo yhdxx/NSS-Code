@@ -111,12 +111,14 @@ read_user_prompt()
 
 交互式输入支持：
 
-- 光标左右移动。
-- Home/End。
-- Backspace/Delete。
-- 多行 bracketed paste。
+- 左右方向键移动光标，上下方向键选择命令候选或按视觉换行移动。
+- Home/End 与 Ctrl+A/Ctrl+E 跳转当前行首/行尾。
+- Backspace/Delete；粘贴 token 作为整体删除。
+- 多行 bracketed paste，编辑期间显示为 `[Pasted Content N chars]`，提交时展开真实内容。
+- Ctrl+J 换行，Tab/Shift+Tab 缩进或取消缩进，Alt+A 全选。
+- Ctrl+C 在有输入框选区时复制，否则中断；Ctrl+V 粘贴。
+- `MYCODINGAGENT_KEYMAP` 可指定 JSON 文件覆盖快捷键 action 绑定。
 - `/` 命令候选。
-- 上下方向键选择命令或多行移动。
 
 ### 3.2 命令分流
 

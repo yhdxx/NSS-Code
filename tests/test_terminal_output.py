@@ -8,6 +8,7 @@ from mycodingagent.terminal_ui.output import (
     TERMINAL_THEME_STYLES,
     clear_terminal,
     default_bash_display_level,
+    mark_terminal_region_start,
     render_assistant_markdown,
     render_tool_calls,
 )
@@ -151,16 +152,25 @@ class _TTYBuffer:
         self.flushed = True
 
 
-def test_clear_terminal_only_emits_control_sequence_for_tty():
+def test_clear_terminal_clears_agent_region_without_full_screen_reset(monkeypatch):
     tty_buffer = _TTYBuffer(tty=True)
     plain_buffer = _TTYBuffer(tty=False)
+    monkeypatch.setattr("mycodingagent.terminal_ui.output._TERMINAL_REGION_MARKED", False)
 
     clear_terminal(file=tty_buffer)
     clear_terminal(file=plain_buffer)
 
-    assert tty_buffer.content == "\033[2J\033[H"
+    assert tty_buffer.content == "\r\033[J"
     assert tty_buffer.flushed is True
     assert plain_buffer.content == ""
+
+    marked_buffer = _TTYBuffer(tty=True)
+    mark_terminal_region_start(file=marked_buffer)
+    clear_terminal(file=marked_buffer)
+
+    assert marked_buffer.content == "\033[s\033[u\033[J"
+    assert "\033[2J" not in marked_buffer.content
+    assert "\033[3J" not in marked_buffer.content
 
 
 def test_write_file_preview_uses_neutral_block_not_green_action_color(capsys):

@@ -115,8 +115,6 @@ def _render_selector(
     screen = render_screen(lines, safe_render_columns())
     sys.stdout.write("\r")
     sys.stdout.write("\r\n".join(screen.lines))
-    if len(screen.lines) > 1:
-        sys.stdout.write(f"\033[{len(screen.lines) - 1}A")
     sys.stdout.write("\r")
     sys.stdout.flush()
     return len(screen.lines)
@@ -126,11 +124,11 @@ def _clear_selector(rendered_row_count: int) -> None:
     if rendered_row_count <= 0:
         return
     sys.stdout.write("\r")
+    if rendered_row_count > 1:
+        sys.stdout.write(f"\033[{rendered_row_count - 1}A")
     for index in range(rendered_row_count):
         sys.stdout.write("\033[2K")
         if index < rendered_row_count - 1:
             sys.stdout.write("\033[1B")
-    if rendered_row_count > 1:
-        sys.stdout.write(f"\033[{rendered_row_count - 1}A")
     sys.stdout.write("\r")
     sys.stdout.flush()
