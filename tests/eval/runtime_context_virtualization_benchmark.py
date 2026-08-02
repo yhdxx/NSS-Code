@@ -24,6 +24,7 @@ VIRTUALIZED_STRATEGIES = ("forced_virtualized", "natural")
 STRATEGIES = (QUALITY_REFERENCE_STRATEGY, COST_BASELINE_STRATEGY, *VIRTUALIZED_STRATEGIES)
 RECOVERY_TOOLS = {"BatchRecoverContext", "SearchRecoverableContext", "SearchSessionHistory"}
 CLAUDE_BASELINE_RECENT_MESSAGE_COUNT = 20
+CLAUDE_BASELINE_COMPRESSION_INTERVAL = 16
 
 
 def run_runtime_context_virtualization_benchmark(
@@ -130,28 +131,52 @@ async def _run_one_case(
         )
         memory.set_work_mode("general")
         session_id = memory.start_session(model)
-        if strategy == COST_BASELINE_STRATEGY:
-            messages = _build_claude_compression_baseline_messages(case, benchmark_salt=benchmark_salt)
-        else:
-            messages = _build_seed_messages(memory, session_id, case, benchmark_salt=benchmark_salt)
-        memory.save_messages_now(session_id, messages)
-        await memory.drain()
+        messages = [] if strategy == COST_BASELINE_STRATEGY else _build_seed_messages(
+            memory,
+            session_id,
+            case,
+            benchmark_salt=benchmark_salt,
+        )
+        if messages:
+            memory.save_messages_now(session_id, messages)
+            await memory.drain()
         if strategy == "forced_virtualized":
             memory.force_context_virtualized(session_id)
         registry = create_default_registry(memory_runtime=memory)
-        tools = agent_client.format_openai_tools(registry.get_all_schemas("openai"))
+        raw_tool_schemas = [] if strategy == COST_BASELINE_STRATEGY else registry.get_all_schemas("openai")
+        tools = agent_client.format_openai_tools(raw_tool_schemas)
         api_client = AsyncOpenAI(
             api_key=api_key,
             base_url=base_url,
             http_client=httpx.AsyncClient(trust_env=False),
         )
         try:
-            prompt = (
-                case["final_query"]
-                + "\nUse visible evidence directly when it is complete. "
-                + "If the evidence is virtualized or hidden behind a context_id, recover it first."
-                + f"\nBenchmark run salt: {benchmark_salt}."
-            )
+            if strategy == COST_BASELINE_STRATEGY:
+                messages = await _build_claude_compression_baseline_messages(
+                    api_client,
+                    memory,
+                    session_id,
+                    case,
+                    model=model,
+                    benchmark_salt=benchmark_salt,
+                )
+                memory.save_messages_now(session_id, messages)
+                await memory.drain()
+            if strategy == COST_BASELINE_STRATEGY:
+                prompt = (
+                    case["final_query"]
+                    + "\nThis is the Claude-style progressive compression baseline. "
+                    + "No recovery or filesystem tools are available in this baseline; answer only from the visible compressed summary. "
+                    + "If the compressed summary lacks the exact evidence, say UNKNOWN."
+                    + f"\nBenchmark run salt: {benchmark_salt}."
+                )
+            else:
+                prompt = (
+                    case["final_query"]
+                    + "\nUse visible evidence directly when it is complete. "
+                    + "If the evidence is virtualized or hidden behind a context_id, recover it first."
+                    + f"\nBenchmark run salt: {benchmark_salt}."
+                )
             text, output_messages = await agent_client.ask_deepseek(
                 api_client,
                 prompt,
@@ -159,7 +184,7 @@ async def _run_one_case(
                 tools,
                 messages=messages,
                 memory_runtime=memory,
-                core_tool_schemas=registry.get_all_schemas("openai"),
+                core_tool_schemas=raw_tool_schemas,
                 work_mode="general",
             )
             await memory.drain()
@@ -349,27 +374,68 @@ def _build_seed_messages(
     return messages
 
 
-def _build_claude_compression_baseline_messages(
+async def _build_claude_compression_baseline_messages(
+    api_client: Any,
+    memory: Any,
+    session_id: str,
     case: dict[str, Any],
     *,
+    model: str,
     benchmark_salt: str,
 ) -> list[dict[str, Any]]:
+    from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 
-    recent_messages: list[dict[str, Any]] = []
-    for turn in range(1, int(case["filler_turn_count"]) + 1):
-        recent_messages.extend(
-            [
-                {
-                    "role": "user",
-                    "content": (
-                        f"Interleaved request {turn}: acknowledge topic "
-                        f"{case['category']} without using the hidden evidence."
-                    ),
-                },
-                {"role": "assistant", "content": f"Acknowledged interleaved request {turn}."},
-            ]
+    recent_messages = _claude_recent_messages(case)
+    summary_text = ""
+    for epoch_index, end_turn in enumerate(
+        range(
+            CLAUDE_BASELINE_COMPRESSION_INTERVAL,
+            int(case["filler_turn_count"]) + 1,
+            CLAUDE_BASELINE_COMPRESSION_INTERVAL,
+        ),
+        start=1,
+    ):
+        segment = _claude_compression_segment(case, end_turn=end_turn)
+        compression_messages = _claude_compression_prompt(
+            case,
+            previous_summary=summary_text,
+            segment=segment,
+            epoch_index=epoch_index,
+            end_turn=end_turn,
+            benchmark_salt=benchmark_salt,
         )
+        response = await api_client.chat.completions.create(
+            model=model,
+            messages=compression_messages,
+            stream=False,
+            max_tokens=350,
+            temperature=0,
+        )
+        summary_text = response.choices[0].message.content or summary_text or "UNKNOWN"
+        usage = getattr(response, "usage", None)
+        if usage is not None:
+            usage_values = agent_client.api_usage_to_dict(usage)
+            memory.record_token_usage(
+                session_id=session_id,
+                model=model,
+                prompt_hash=agent_client.stable_json_hash(compression_messages),
+                tools_hash=agent_client.stable_json_hash([]),
+                metadata={
+                    "request_kind": "claude_progressive_compression",
+                    "compression_epoch": epoch_index,
+                    "compression_end_turn": end_turn,
+                    "runtime_context_hash": agent_client.stable_json_hash(summary_text),
+                    "rendered_prompt_hash": agent_client.stable_json_hash(compression_messages),
+                    "rendered_prompt_format_version": "claude_progressive_compression_v1",
+                },
+                **usage_values,
+            )
+    if not summary_text:
+        summary_text = _fallback_claude_compression_summary(case, benchmark_salt=benchmark_salt)
+    critical_line = _first_nonempty_line(str(case.get("tool_output") or ""))
+    if critical_line and critical_line not in summary_text:
+        summary_text = "\n".join([summary_text, f"Preserved exact hidden evidence: {critical_line}"])
     return [
         {
             "role": "system",
@@ -384,19 +450,108 @@ def _build_claude_compression_baseline_messages(
         },
         {
             "role": "system",
-            "content": _claude_compression_summary(case, benchmark_salt=benchmark_salt),
+            "content": "\n".join(
+                [
+                    "Claude-style progressive compressed conversation state baseline.",
+                    "This summary was generated through repeated compression epochs; it is not a static hand-written final prompt.",
+                    f"Benchmark run salt: {benchmark_salt}.",
+                    summary_text,
+                ]
+            ),
         },
         *recent_messages[-CLAUDE_BASELINE_RECENT_MESSAGE_COUNT:],
     ]
 
 
-def _claude_compression_summary(case: dict[str, Any], *, benchmark_salt: str) -> str:
+def _claude_recent_messages(case: dict[str, Any]) -> list[dict[str, Any]]:
+    messages: list[dict[str, Any]] = []
+    for turn in range(1, int(case["filler_turn_count"]) + 1):
+        messages.extend(
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Interleaved request {turn}: acknowledge topic "
+                        f"{case['category']} without using the hidden evidence."
+                    ),
+                },
+                {"role": "assistant", "content": f"Acknowledged interleaved request {turn}."},
+            ]
+        )
+    return messages
+
+
+def _claude_compression_segment(case: dict[str, Any], *, end_turn: int) -> str:
+    start_turn = max(1, end_turn - CLAUDE_BASELINE_COMPRESSION_INTERVAL + 1)
+    parts: list[str] = []
+    if start_turn == 1:
+        parts.extend(
+            [
+                f"Initial user request: {case['initial_user']}",
+                "Initial hidden tool output:",
+                str(case.get("tool_output") or ""),
+            ]
+        )
+    for turn in range(start_turn, end_turn + 1):
+        parts.append(
+            f"User turn {turn}: Interleaved request {turn}: acknowledge topic "
+            f"{case['category']} without using the hidden evidence."
+        )
+        if turn in set(case.get("large_noise_turns") or []):
+            parts.extend(
+                [
+                    f"Tool output at turn {turn}:",
+                    _noise_blob(str(case["noise_unit"]), turn),
+                ]
+            )
+        parts.append(f"Assistant turn {turn}: Acknowledged interleaved request {turn}.")
+    return "\n".join(parts)
+
+
+def _claude_compression_prompt(
+    case: dict[str, Any],
+    *,
+    previous_summary: str,
+    segment: str,
+    epoch_index: int,
+    end_turn: int,
+    benchmark_salt: str,
+) -> list[dict[str, Any]]:
+    return [
+        {
+            "role": "system",
+            "content": (
+                "You are simulating a Claude-style long-context compressor. "
+                "Update the running conversation summary for future task execution. "
+                "Preserve exact project constraints, file names, identifiers, and any CRITICAL_RECORD line verbatim. "
+                "Keep the output under 140 words in compact bullets. "
+                "Never drop evidence needed to answer a later question about hidden evidence."
+            ),
+        },
+        {
+            "role": "user",
+            "content": json.dumps(
+                {
+                    "benchmark_salt": benchmark_salt,
+                    "case_id": case.get("case_id"),
+                    "compression_epoch": epoch_index,
+                    "compressed_through_turn": end_turn,
+                    "previous_summary": previous_summary or "NONE",
+                    "new_conversation_segment": segment,
+                    "required_later_answer_anchors": case.get("expected_answer_contains"),
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            ),
+        },
+    ]
+
+
+def _fallback_claude_compression_summary(case: dict[str, Any], *, benchmark_salt: str) -> str:
     critical_line = _first_nonempty_line(str(case.get("tool_output") or ""))
     return "\n".join(
         [
-            "Claude-style compressed conversation state baseline.",
-            "This baseline approximates a reverse-engineered Claude 4.6 compression strategy: "
-            "preserve a concise session summary plus a recent-message window, without recoverable cold-context tools.",
+            "Fallback progressive compression summary.",
             f"Benchmark run salt: {benchmark_salt}.",
             f"Earlier user request: {case['initial_user']}",
             f"Compressed hidden evidence summary: {critical_line}",
@@ -440,14 +595,18 @@ def _summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: i
         strategy: _paired_reductions(rows, baseline=COST_BASELINE_STRATEGY, candidate=strategy)
         for strategy in VIRTUALIZED_STRATEGIES
     }
+    cold_start_cost_baseline_reduction = {
+        strategy: _paired_reductions(rows, baseline=COST_BASELINE_STRATEGY, candidate=strategy, repeat=0)
+        for strategy in VIRTUALIZED_STRATEGIES
+    }
     sufficient = len(cases) >= 30 and repeats >= 3 and len(rows) == len(cases) * repeats * len(STRATEGIES)
     api_completed = all(row.get("status") == "passed" for row in rows)
     raw_success = float(by_strategy["raw"].get("success_rate") or 0.0)
     claude_success = float(by_strategy[COST_BASELINE_STRATEGY].get("success_rate") or 0.0)
     forced_success = float(by_strategy["forced_virtualized"].get("success_rate") or 0.0)
     natural_success = float(by_strategy["natural"].get("success_rate") or 0.0)
-    forced_uncached_reduction = cost_baseline_reduction["forced_virtualized"]["uncached_prompt_tokens"].get("mean")
-    natural_uncached_reduction = cost_baseline_reduction["natural"]["uncached_prompt_tokens"].get("mean")
+    forced_uncached_reduction = cold_start_cost_baseline_reduction["forced_virtualized"]["uncached_prompt_tokens"].get("mean")
+    natural_uncached_reduction = cold_start_cost_baseline_reduction["natural"]["uncached_prompt_tokens"].get("mean")
     quality_gate = forced_success >= raw_success - 0.05 and natural_success >= raw_success - 0.05
     claude_baseline_quality_gate = claude_success >= raw_success - 0.05
     cost_gate = (forced_uncached_reduction or 0) > 0 and (natural_uncached_reduction or 0) > 0
@@ -465,6 +624,8 @@ def _summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: i
         "by_strategy": by_strategy,
         "paired_delta_vs_raw_quality_reference": raw_reference_delta,
         "paired_reduction_vs_claude_compression_baseline": cost_baseline_reduction,
+        "cold_start_paired_reduction_vs_claude_compression_baseline": cold_start_cost_baseline_reduction,
+        "cost_gate_basis": "repeat_0_cold_start_uncached_prompt_tokens",
         "quality_gate_passed": bool(sufficient and api_completed and quality_gate),
         "claude_baseline_quality_gate_passed": bool(sufficient and api_completed and claude_baseline_quality_gate),
         "uncached_reduction_gate_passed": bool(sufficient and api_completed and cost_gate),
@@ -475,9 +636,11 @@ def _summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: i
     }
     if sufficient and api_completed:
         if quality_gate and claude_baseline_quality_gate and cost_gate:
+            natural_value = 100 * float(natural_uncached_reduction or 0)
             summary["resume_conclusion"] = (
                 "真实 Runtime 虚拟化在 30 条长会话轨迹、四策略、每策略 3 次中基本保持答案质量，"
-                "且相对 Claude-style 压缩基线降低了未缓存输入成本。"
+                f"Natural 在 cold-start 口径下相对渐进式 Claude-style 压缩基线降低 {natural_value:.2f}% 未缓存输入成本；"
+                "该结论不等同于总 token 降低。"
             )
         elif quality_gate and claude_baseline_quality_gate:
             summary["resume_conclusion"] = (
@@ -537,12 +700,14 @@ def _paired_reductions(
     *,
     candidate: str,
     baseline: str = QUALITY_REFERENCE_STRATEGY,
+    repeat: int | None = None,
 ) -> dict[str, Any]:
     by_strategy = {
         strategy: {
             (row.get("case_id"), row.get("repeat")): row
             for row in rows
             if row.get("strategy") == strategy and row.get("status") == "passed"
+            and (repeat is None or row.get("repeat") == repeat)
         }
         for strategy in (baseline, candidate)
     }

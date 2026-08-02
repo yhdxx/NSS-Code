@@ -45,11 +45,11 @@ METRIC_SPECS: dict[str, dict[str, Any]] = {
         "formulas": [
             "任务成功率 = 正确回答隐藏历史证据锚点的运行数 / 总运行数",
             "Raw 仅作为无压缩质量参考，不作为降本基线",
-            "相对 Claude 压缩基线的未缓存输入降幅 = (Claude-style baseline 未缓存输入 token - 候选未缓存输入 token) / Claude-style baseline 未缓存输入 token",
+            "cold-start 未缓存输入降幅 = (渐进式 Claude-style baseline 第 1 次重复未缓存输入 token - 候选第 1 次重复未缓存输入 token) / 渐进式 Claude-style baseline 第 1 次重复未缓存输入 token",
             "缓存命中率 = prompt_cache_hit_tokens / (prompt_cache_hit_tokens + prompt_cache_miss_tokens)",
             "恢复成功率 = 需要恢复且恢复后答对的运行数 / 需要恢复的运行数",
         ],
-        "gate": "至少 30 条长会话轨迹、raw/claude_compression_baseline/forced_virtualized/natural 四策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点；Claude-style baseline 也需通过质量门禁；降本结论只看相对 Claude-style baseline 的未缓存输入 token 是否下降。",
+        "gate": "至少 30 条长会话轨迹、raw/claude_compression_baseline/forced_virtualized/natural 四策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点；Claude-style baseline 也需通过质量门禁；降本门禁按第 1 次重复的 cold-start 未缓存输入 token 计算，避免相同 repeat 被服务商前缀缓存污染。",
     },
     "prefix_cache": {
         "title": "前缀缓存命中率评测",
