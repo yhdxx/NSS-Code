@@ -1,0 +1,24 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "dataset_path": "tests/eval/datasets/runtime_context_virtualization_cases.jsonl",
+  "dataset_sha256": "7d98b83333f45c5bf177632b2a43740db68a8ba26d0dd1db8a20bc299ae24f86",
+  "extra": {
+    "runtime_path": "MemoryRuntime.prepare_messages_for_model -> ask_deepseek",
+    "strategies": [
+      "raw",
+      "forced_virtualized",
+      "natural"
+    ],
+    "synthetic_prompt_only": false
+  },
+  "generated_at": "2026-08-02T17:28:34+0800",
+  "git_commit": "131d1ec505269ea0f0dbb7e1357d1d55840c7aca",
+  "git_dirty": false,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 1,
+  "run_id": "smoke-runtime-context-v5-20260802",
+  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
+}

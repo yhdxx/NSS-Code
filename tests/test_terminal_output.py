@@ -4,7 +4,12 @@ from pathlib import Path
 import json
 
 from mycodingagent.llm_runtime.streaming import PendingToolCall
-from mycodingagent.terminal_ui.output import TERMINAL_THEME_STYLES, default_bash_display_level, render_tool_calls
+from mycodingagent.terminal_ui.output import (
+    TERMINAL_THEME_STYLES,
+    default_bash_display_level,
+    render_assistant_markdown,
+    render_tool_calls,
+)
 from mycodingagent.tool_runtime.command_policy import analyze_command
 
 
@@ -110,7 +115,32 @@ def test_terminal_theme_is_greyscale_first_with_limited_semantic_color():
     neutral_count = len(TERMINAL_THEME_STYLES) - accent_count
     assert neutral_count > accent_count
     assert TERMINAL_THEME_STYLES["tool.write"].startswith("grey")
+    assert TERMINAL_THEME_STYLES["tool.section"] == "bold bright_white"
+    assert TERMINAL_THEME_STYLES["tool.arg"].startswith("grey")
+    assert TERMINAL_THEME_STYLES["tool.read"] == "bright_blue"
     assert TERMINAL_THEME_STYLES["markdown.h1"] == "bold bright_white"
+    assert TERMINAL_THEME_STYLES["markdown.base"] == "bright_white"
+    assert TERMINAL_THEME_STYLES["markdown.paragraph"] == "bright_white"
+
+
+def test_final_answer_markdown_is_rendered_bright_white_by_default(capsys):
+    render_assistant_markdown("普通文本\n\n# 标题\n\n- item")
+
+    output = capsys.readouterr().out
+
+    assert "模型：" in output
+    assert "普通文本" in output
+    assert "标题" in output
+
+
+def test_write_file_preview_uses_neutral_block_not_green_action_color(capsys):
+    render_tool_calls([_call("WriteFile", file_path="app.py", content="print('ok')")])
+
+    output = capsys.readouterr().out
+
+    assert "• Write app.py" in output
+    assert "print('ok')" in output
+    assert TERMINAL_THEME_STYLES["tool.output"].startswith("grey")
 
 
 def test_terminal_output_does_not_import_tool_runtime_policy():

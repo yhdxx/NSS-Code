@@ -10,14 +10,14 @@ from typing import Any, Literal, TextIO
 
 try:
     from rich.console import Console
-    from rich.markdown import Markdown
     from rich.text import Text
     from rich.theme import Theme
 except ImportError:  # pragma: no cover - only relevant before dependencies are installed
     Console = None  # type: ignore[assignment]
-    Markdown = None  # type: ignore[assignment]
     Text = None  # type: ignore[assignment]
     Theme = None  # type: ignore[assignment]
+
+from mycodingagent.terminal_ui.highlighters import detect_language, highlight_for_terminal
 
 
 READ_LIKE_TOOLS = {
@@ -58,15 +58,19 @@ TERMINAL_THEME_STYLES: dict[str, str] = {
     "error": "bold red",
     "tool.output": "grey58",
     "tool.generic": "grey70",
+    "tool.section": "bold bright_white",
+    "tool.branch": "grey50",
+    "tool.arg": "grey70",
     "tool.read": "bright_blue",
     "tool.write": "grey70",
+    "bash.command": "grey70",
     "bash.low": "green",
     "bash.approval": "yellow",
     "bash.high": "bold red",
     "edit.old": "yellow",
     "edit.new": "green",
-    "markdown.base": "grey70",
-    "markdown.paragraph": "grey70",
+    "markdown.base": "bright_white",
+    "markdown.paragraph": "bright_white",
     "markdown.h1": "bold bright_white",
     "markdown.h2": "bold bright_white",
     "markdown.h3": "bold bright_white",
@@ -87,10 +91,10 @@ def render_assistant_markdown(text: str, *, label: str = "模型", file: TextIO 
     _print_text(console, f"{label}：", style="label")
     if not text:
         return
-    if Console is None or Markdown is None:
+    if Console is None:
         print(text, file=output, flush=True)
         return
-    console.print(Markdown(text, style="markdown.base"))
+    console.print(highlight_for_terminal(text, declared_language="markdown", style="bright_white"))
 
 
 def render_assistant_text(
@@ -159,10 +163,10 @@ def render_tool_calls(
     def flush_reads() -> None:
         if not pending_reads:
             return
-        _print_text(console, "• Explored", style="tool.read")
+        _print_text(console, "• Explored", style="tool.section")
         for index, call in enumerate(pending_reads):
             prefix = "  └ " if index == 0 else "    "
-            _print_text(console, prefix + read_call_summary(call), style="tool.read")
+            _print_read_summary(console, prefix, read_call_summary(call))
         pending_reads.clear()
 
     for raw_call in tool_calls:
@@ -190,8 +194,10 @@ def render_tool_result_preview(
     _print_text(console, title, style=style)
     preview = truncate_text(content, max_chars)
     if preview:
-        for line in preview.splitlines() or [preview]:
-            _print_text(console, "    " + line, style=style)
+        if is_error:
+            _print_block(console, preview, prefix="    ", style=style, max_chars=max_chars)
+        else:
+            _print_highlighted_block(console, preview, prefix="    ", style=style, max_chars=max_chars)
 
 
 def render_command_approval_request(
@@ -212,7 +218,7 @@ def render_command_approval_request(
     if intent:
         _print_text(console, f"  目的：{intent}", style="text")
     _print_text(console, "  命令：", style=style)
-    _print_block(console, command, prefix="    ", style=style, max_chars=2000)
+    _print_block(console, command, prefix="    ", style="bash.command", max_chars=2000)
 
 
 def render_write_approval_request(
@@ -330,16 +336,17 @@ def render_bash_call(
     level, reason = bash_classifier(command) if bash_classifier is not None else default_bash_display_level(command)
     style = f"bash.{level}"
     labels = {"low": "低危", "approval": "需审批", "high": "高危"}
-    suffix = f" [{labels[level]}]"
+    suffix = f"[{labels[level]}]"
+    segments = [("• Bash ", "tool.section"), (suffix, style)]
     if reason:
-        suffix += f" — {compact_one_line(reason, 80)}"
-    _print_text(console, f"• Bash{suffix}", style=style)
-    _print_block(console, command, prefix="  └ ", style=style, max_chars=MAX_BLOCK_TEXT)
+        segments.extend([(" — ", "tool.arg"), (compact_one_line(reason, 80), "tool.arg")])
+    _print_segments(console, segments)
+    _print_block(console, command, prefix="  └ ", style="bash.command", max_chars=MAX_BLOCK_TEXT)
 
 
 def render_edit_call(console: Any, call: _ToolCallView) -> None:
     path = str(call.args.get("file_path") or "")
-    _print_text(console, f"• Edit {path}", style="tool.write")
+    _print_segments(console, [("• Edit ", "tool.section"), (path, "tool.arg")])
     old_text = str(call.args.get("old_string") or "")
     new_text = str(call.args.get("new_string") or "")
     _print_text(console, "  ├ Replace", style="edit.old")
@@ -350,49 +357,62 @@ def render_edit_call(console: Any, call: _ToolCallView) -> None:
 
 def render_write_call(console: Any, call: _ToolCallView) -> None:
     path = str(call.args.get("file_path") or "")
-    _print_text(console, f"• Write {path}", style="tool.write")
+    _print_segments(console, [("• Write ", "tool.section"), (path, "tool.arg")])
     content = str(call.args.get("content") or "")
     if content:
-        _print_block(console, content, prefix="  └ ", style="edit.new", max_chars=MAX_BLOCK_TEXT)
+        _print_highlighted_block(
+            console,
+            content,
+            prefix="  └ ",
+            style="tool.output",
+            max_chars=MAX_BLOCK_TEXT,
+            file_path=path,
+        )
 
 
 def render_generic_call(console: Any, call: _ToolCallView) -> None:
     summary = compact_arguments(call.args) if call.args else call.arguments
-    _print_text(console, f"• {call.name}", style="tool.generic")
+    _print_text(console, f"• {call.name}", style="tool.section")
     if summary:
         _print_text(console, f"  └ {summary}", style="tool.generic")
 
 
-def read_call_summary(call: _ToolCallView) -> str:
+@dataclass(frozen=True)
+class _ReadSummary:
+    verb: str
+    detail: str
+
+
+def read_call_summary(call: _ToolCallView) -> _ReadSummary:
     if call.name == "Glob":
         pattern = compact_one_line(call.args.get("pattern"), 80)
         path = compact_one_line(call.args.get("path") or ".", 80)
-        return f"Search files {pattern} in {path}"
+        return _ReadSummary("Search", f"files {pattern} in {path}")
     if call.name == "Grep":
         pattern = compact_one_line(call.args.get("pattern"), 80)
         path = compact_one_line(call.args.get("path") or ".", 80)
         include = compact_one_line(call.args.get("include"), 60)
         suffix = f" ({include})" if include else ""
-        return f"Search {pattern} in {path}{suffix}"
+        return _ReadSummary("Search", f"{pattern} in {path}{suffix}")
     if call.name == "ReadFile":
         path = compact_one_line(call.args.get("file_path"), 120)
         offset = int(call.args.get("offset") or 0)
         limit = call.args.get("limit")
         if limit:
-            return f"Read {path} lines {offset + 1}-{offset + int(limit)}"
-        return f"Read {path}"
+            return _ReadSummary("Read", f"{path} lines {offset + 1}-{offset + int(limit)}")
+        return _ReadSummary("Read", path)
     if call.name == "BatchRecoverContext":
         items = call.args.get("items")
         if isinstance(items, list):
             ids = [compact_one_line(item.get("context_id"), 12) for item in items if isinstance(item, dict)]
-            return "Recover context " + ", ".join(ids)
-        return "Recover stored context"
+            return _ReadSummary("Recover", "context " + ", ".join(ids))
+        return _ReadSummary("Recover", "stored context")
     if call.name in {"SearchRecoverableContext", "SearchSessionHistory"}:
         query = compact_one_line(call.args.get("query"), 120)
-        return f"Search history {query}" if query else "Search history"
+        return _ReadSummary("Search", f"history {query}" if query else "history")
     if call.name == "GetRecentConversationTurns":
-        return "Read recent conversation"
-    return call.name + (" " + compact_arguments(call.args) if call.args else "")
+        return _ReadSummary("Read", "recent conversation")
+    return _ReadSummary(call.name, compact_arguments(call.args) if call.args else "")
 
 
 def default_bash_display_level(command: str) -> tuple[BashDisplayLevel, str]:
@@ -436,12 +456,71 @@ def truncate_text(text: str, max_chars: int) -> str:
     return text[:max_chars] + f"\n... <truncated {remaining} chars>"
 
 
+def _print_read_summary(console: Any, prefix: str, summary: _ReadSummary) -> None:
+    detail = f" {summary.detail}" if summary.detail else ""
+    _print_segments(
+        console,
+        [
+            (prefix, "tool.branch"),
+            (summary.verb, "tool.read"),
+            (detail, "tool.arg"),
+        ],
+    )
+
+
 def _print_block(console: Any, text: str, *, prefix: str, style: str, max_chars: int) -> None:
     preview = truncate_text(text, max_chars)
     lines = preview.splitlines() or [""]
     for index, line in enumerate(lines):
         line_prefix = prefix if index == 0 else " " * len(prefix)
         _print_text(console, line_prefix + line, style=style)
+
+
+def _print_highlighted_block(
+    console: Any,
+    text: str,
+    *,
+    prefix: str,
+    style: str,
+    max_chars: int,
+    file_path: str = "",
+    declared_language: str = "",
+) -> None:
+    preview = truncate_text(text, max_chars)
+    if not preview:
+        return
+    if Console is None:
+        _print_block(console, preview, prefix=prefix, style=style, max_chars=max_chars)
+        return
+    language = detect_language(preview, file_path=file_path, declared_language=declared_language)
+    if language == "text":
+        _print_block(console, preview, prefix=prefix, style=style, max_chars=max_chars)
+        return
+    branch = prefix.rstrip()
+    if branch:
+        _print_text(console, branch, style="tool.branch")
+    render_text = preview if language == "markdown" else _indent_text(preview, " " * max(len(prefix), 2))
+    renderable = highlight_for_terminal(
+        render_text,
+        file_path=file_path,
+        declared_language=language,
+        style=style,
+    )
+    console.print(renderable)
+
+
+def _indent_text(text: str, indentation: str) -> str:
+    return "\n".join(indentation + line if line else indentation.rstrip() for line in text.splitlines())
+
+
+def _print_segments(console: Any, segments: Sequence[tuple[str, str]]) -> None:
+    if Text is None:
+        print("".join(text for text, _style in segments), flush=True)
+        return
+    line = Text()
+    for text, style in segments:
+        line.append(text, style=style)
+    console.print(line)
 
 
 def _print_text(console: Any, text: str, *, style: str) -> None:

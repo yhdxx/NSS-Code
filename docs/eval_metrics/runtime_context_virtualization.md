@@ -30,15 +30,15 @@
 ```json
 {
   "base_url": "https://api.deepseek.com",
-  "generated_at": "2026-08-02T17:26:22+0800",
-  "git_commit": "9fb581c0c63e7e7343dd926cbc70b85d95536708",
-  "git_dirty": true,
+  "generated_at": "2026-08-02T17:28:34+0800",
+  "git_commit": "131d1ec505269ea0f0dbb7e1357d1d55840c7aca",
+  "git_dirty": false,
   "model": "deepseek-v4-pro",
   "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
   "python": "3.12.6",
   "random_seed": 20260801,
   "repeats": 1,
-  "run_id": "smoke-runtime-context-v4-20260802"
+  "run_id": "smoke-runtime-context-v5-20260802"
 }
 ```
 
@@ -55,15 +55,15 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
   "by_strategy": {
     "forced_virtualized": {
       "api_completed_count": 1,
-      "cache_hit_rate_token_weighted": 0.808091,
-      "duration_mean_seconds": 6.363,
-      "duration_p95_seconds": 6.363,
+      "cache_hit_rate_token_weighted": 0.803227,
+      "duration_mean_seconds": 9.2,
+      "duration_p95_seconds": 9.2,
       "false_recovery_rate": null,
       "final_virtualized_rate": 1.0,
       "invalid_tool_calls_mean": 0.0,
-      "prompt_tokens_mean": 15523.0,
-      "prompt_tokens_p50": 15523.0,
-      "prompt_tokens_p95": 15523.0,
+      "prompt_tokens_mean": 15617.0,
+      "prompt_tokens_p50": 15617.0,
+      "prompt_tokens_p95": 15617.0,
       "recovery_call_rate": 1.0,
       "recovery_success_rate": 1.0,
       "request_count_mean": 2.0,
@@ -75,22 +75,22 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
         "mean": 1.0
       },
       "tool_calls_mean": 6.0,
-      "total_tokens_mean": 15794.0,
-      "uncached_prompt_tokens_mean": 2979.0,
-      "uncached_prompt_tokens_p50": 2979.0,
-      "uncached_prompt_tokens_p95": 2979.0
+      "total_tokens_mean": 15855.0,
+      "uncached_prompt_tokens_mean": 3073.0,
+      "uncached_prompt_tokens_p50": 3073.0,
+      "uncached_prompt_tokens_p95": 3073.0
     },
     "natural": {
       "api_completed_count": 1,
-      "cache_hit_rate_token_weighted": 0.807363,
-      "duration_mean_seconds": 5.542,
-      "duration_p95_seconds": 5.542,
+      "cache_hit_rate_token_weighted": 0.803227,
+      "duration_mean_seconds": 5.477,
+      "duration_p95_seconds": 5.477,
       "false_recovery_rate": null,
       "final_virtualized_rate": 1.0,
       "invalid_tool_calls_mean": 0.0,
-      "prompt_tokens_mean": 15537.0,
-      "prompt_tokens_p50": 15537.0,
-      "prompt_tokens_p95": 15537.0,
+      "prompt_tokens_mean": 15617.0,
+      "prompt_tokens_p50": 15617.0,
+      "prompt_tokens_p95": 15617.0,
       "recovery_call_rate": 1.0,
       "recovery_success_rate": 1.0,
       "request_count_mean": 2.0,
@@ -102,22 +102,22 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
         "mean": 1.0
       },
       "tool_calls_mean": 6.0,
-      "total_tokens_mean": 15797.0,
-      "uncached_prompt_tokens_mean": 2993.0,
-      "uncached_prompt_tokens_p50": 2993.0,
-      "uncached_prompt_tokens_p95": 2993.0
+      "total_tokens_mean": 15887.0,
+      "uncached_prompt_tokens_mean": 3073.0,
+      "uncached_prompt_tokens_p50": 3073.0,
+      "uncached_prompt_tokens_p95": 3073.0
     },
     "raw": {
       "api_completed_count": 1,
-      "cache_hit_rate_token_weighted": 0.995487,
-      "duration_mean_seconds": 6.492,
-      "duration_p95_seconds": 6.492,
+      "cache_hit_rate_token_weighted": 0.159265,
+      "duration_mean_seconds": 5.115,
+      "duration_p95_seconds": 5.115,
       "false_recovery_rate": 0.0,
       "final_virtualized_rate": 0.0,
       "invalid_tool_calls_mean": 0.0,
-      "prompt_tokens_mean": 10415.0,
-      "prompt_tokens_p50": 10415.0,
-      "prompt_tokens_p95": 10415.0,
+      "prompt_tokens_mean": 10448.0,
+      "prompt_tokens_p50": 10448.0,
+      "prompt_tokens_p95": 10448.0,
       "recovery_call_rate": 0.0,
       "recovery_success_rate": null,
       "request_count_mean": 1.0,
@@ -129,10 +129,10 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
         "mean": 1.0
       },
       "tool_calls_mean": 5.0,
-      "total_tokens_mean": 10610.0,
-      "uncached_prompt_tokens_mean": 47.0,
-      "uncached_prompt_tokens_p50": 47.0,
-      "uncached_prompt_tokens_p95": 47.0
+      "total_tokens_mean": 10643.0,
+      "uncached_prompt_tokens_mean": 8784.0,
+      "uncached_prompt_tokens_p50": 8784.0,
+      "uncached_prompt_tokens_p95": 8784.0
     }
   },
   "case_count": 1,
@@ -141,15 +141,15 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
   "paired_reduction_vs_raw": {
     "forced_virtualized": {
       "duration_seconds": {
-        "high": 0.019871,
-        "low": 0.019871,
-        "mean": 0.019871
+        "high": -0.798631,
+        "low": -0.798631,
+        "mean": -0.798631
       },
       "paired_run_count": 1,
       "prompt_tokens": {
-        "high": -0.490446,
-        "low": -0.490446,
-        "mean": -0.490446
+        "high": -0.494736,
+        "low": -0.494736,
+        "mean": -0.494736
       },
       "tool_calls": {
         "high": -0.2,
@@ -157,27 +157,27 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
         "mean": -0.2
       },
       "total_tokens": {
-        "high": -0.488596,
-        "low": -0.488596,
-        "mean": -0.488596
+        "high": -0.489712,
+        "low": -0.489712,
+        "mean": -0.489712
       },
       "uncached_prompt_tokens": {
-        "high": -62.382979,
-        "low": -62.382979,
-        "mean": -62.382979
+        "high": 0.650159,
+        "low": 0.650159,
+        "mean": 0.650159
       }
     },
     "natural": {
       "duration_seconds": {
-        "high": 0.146334,
-        "low": 0.146334,
-        "mean": 0.146334
+        "high": -0.070772,
+        "low": -0.070772,
+        "mean": -0.070772
       },
       "paired_run_count": 1,
       "prompt_tokens": {
-        "high": -0.491791,
-        "low": -0.491791,
-        "mean": -0.491791
+        "high": -0.494736,
+        "low": -0.494736,
+        "mean": -0.494736
       },
       "tool_calls": {
         "high": -0.2,
@@ -185,14 +185,14 @@ python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset
         "mean": -0.2
       },
       "total_tokens": {
-        "high": -0.488878,
-        "low": -0.488878,
-        "mean": -0.488878
+        "high": -0.492718,
+        "low": -0.492718,
+        "mean": -0.492718
       },
       "uncached_prompt_tokens": {
-        "high": -62.680851,
-        "low": -62.680851,
-        "mean": -62.680851
+        "high": 0.650159,
+        "low": 0.650159,
+        "mean": 0.650159
       }
     }
   },
