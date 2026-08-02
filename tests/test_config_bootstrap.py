@@ -21,11 +21,13 @@ def _fake_repo(tmp_path: Path) -> Path:
             {
                 "model": {
                     "active": "main",
+                    "providers": {
+                        "deepseek": {"api": ""},
+                    },
                     "profiles": {
                         "main": {
                             "provider": "deepseek",
                             "model": "demo-model",
-                            "api": "",
                         }
                     },
                     "long_term_memory": {"storage": "main", "search": "main"},
@@ -63,8 +65,11 @@ def test_bootstrap_preserves_existing_valid_config(tmp_path):
             {
                 "model": {
                     "active": "custom",
+                    "providers": {
+                        "qwen": {"api": "keep"}
+                    },
                     "profiles": {
-                        "custom": {"provider": "qwen", "model": "qwen-plus", "api": "keep"}
+                        "custom": {"provider": "qwen", "model": "qwen-plus"}
                     },
                 }
             }
@@ -77,7 +82,7 @@ def test_bootstrap_preserves_existing_valid_config(tmp_path):
     assert result.created_config is False
     assert result.recreated_invalid_config is False
     config = json.loads(config_path.read_text(encoding="utf-8"))
-    assert config["model"]["profiles"]["custom"]["api"] == "keep"
+    assert config["model"]["providers"]["qwen"]["api"] == "keep"
     assert config["client"]["max_tool_rounds"] == 50
 
 
@@ -115,6 +120,7 @@ def test_repository_config_template_exposes_external_configuration_fields():
     template = json.loads((ROOT / ".mycodingagent" / "config.example.json").read_text(encoding="utf-8"))
     required_paths = [
         ("model", "active"),
+        ("model", "providers"),
         ("model", "profiles"),
         ("model", "long_term_memory"),
         ("embedding", "provider"),
@@ -130,6 +136,20 @@ def test_repository_config_template_exposes_external_configuration_fields():
     ]
     for section, key in required_paths:
         assert key in template[section], f"missing {section}.{key}"
+    assert template["model"]["profiles"]["main"] == {
+        "provider": "deepseek",
+        "model": "deepseek-v4-pro",
+    }
+    assert template["model"]["profiles"]["memory_search"] == {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "reasoning": {"thinking": "disabled"},
+    }
+    assert template["model"]["long_term_memory"] == {
+        "storage": "main",
+        "search": "memory_search",
+    }
+    assert "api" not in template["model"]["profiles"]["main"]
 
 
 def test_main_bootstrap_creates_config_before_runtime_config_import(tmp_path):

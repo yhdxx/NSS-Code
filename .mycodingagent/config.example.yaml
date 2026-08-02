@@ -8,14 +8,21 @@
 
 # model:
 #   active: "main"
+#   providers:
+#     deepseek:
+#       api: ""
 #   profiles:
 #     main:
 #       provider: "deepseek"
 #       model: "deepseek-v4-pro"
-#       api: ""
+#     memory_search:
+#       provider: "deepseek"
+#       model: "deepseek-v4-flash"
+#       reasoning:
+#         thinking: "disabled"
 #   long_term_memory:
 #     storage: "main"
-#     search: "main"
+#     search: "memory_search"
 
 # client:
 #   max_tool_rounds: 50            # 环境变量：MYCODINGAGENT_MAX_TOOL_ROUNDS

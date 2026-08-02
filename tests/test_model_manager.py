@@ -4,9 +4,15 @@ import json
 from pathlib import Path
 
 from mycodingagent.commands.handlers import build_command_registry
-from mycodingagent.configuration.settings import ModelConfig, ModelLongTermMemoryConfig, ModelProfileConfig
+from mycodingagent.configuration.settings import (
+    ModelConfig,
+    ModelLongTermMemoryConfig,
+    ModelProfileConfig,
+    ModelProviderConfig,
+)
 from mycodingagent.llm_runtime.model_manager import ModelManager, load_model_config
 from mycodingagent.llm_runtime.providers import registered_provider_names
+from mycodingagent.llm_runtime.providers.vendors import DeepSeekProvider, OpenAIProvider
 
 
 def _write_model_config(path: Path) -> None:
@@ -15,21 +21,23 @@ def _write_model_config(path: Path) -> None:
             {
                 "model": {
                     "active": "deepseek_main",
+                    "providers": {
+                        "deepseek": {"api": "sk-deepseek", "base_url": "https://api.deepseek.com"},
+                        "qwen": {"api": "sk-qwen"},
+                        "openai": {"api": ""},
+                    },
                     "profiles": {
                         "deepseek_main": {
                             "provider": "deepseek",
                             "model": "deepseek-v4-pro",
-                            "api": "sk-deepseek",
                         },
                         "qwen_main": {
                             "provider": "qwen",
                             "model": "qwen-plus",
-                            "api": "sk-qwen",
                         },
                         "missing_api": {
                             "provider": "openai",
                             "model": "gpt-5",
-                            "api": "",
                         },
                     },
                     "long_term_memory": {
@@ -68,6 +76,8 @@ def test_model_manager_groups_only_configured_profiles_with_api(tmp_path):
     grouped = manager.profiles_by_provider()
 
     assert [profile.key for profile in grouped["deepseek"]] == ["deepseek_main"]
+    assert grouped["deepseek"][0].api == "sk-deepseek"
+    assert grouped["deepseek"][0].base_url == "https://api.deepseek.com"
     assert [profile.key for profile in grouped["qwen"]] == ["qwen_main"]
     assert "openai" not in grouped
 
@@ -103,8 +113,9 @@ def test_model_manager_reports_only_critical_model_config_errors():
     manager = ModelManager(
         model_config=ModelConfig(
             active="main",
+            providers={"deepseek": ModelProviderConfig(api="")},
             profiles={
-                "main": ModelProfileConfig(provider="deepseek", model="", api=""),
+                "main": ModelProfileConfig(provider="deepseek", model=""),
             },
             long_term_memory=ModelLongTermMemoryConfig(storage="main", search="unknown"),
         )
@@ -112,7 +123,8 @@ def test_model_manager_reports_only_critical_model_config_errors():
 
     errors = manager.validation_errors(require_long_term_memory=True)
 
-    assert "model.profiles.main 缺少必要字段：model, api" in errors
+    assert "model.profiles.main 缺少必要字段：model" in errors
+    assert "model.providers.deepseek.api 缺少必要字段：api" in errors
     assert "model.long_term_memory.search 指向不存在的 profile：unknown" in errors
 
 
@@ -122,3 +134,11 @@ def test_model_switch_commands_are_registered():
     assert registry.match("/model") is not None
     assert registry.match("/long_mem_model_storage") is not None
     assert registry.match("/long_mem_model_search") is not None
+
+
+def test_vendor_specific_reasoning_config_is_normalized():
+    deepseek = object.__new__(DeepSeekProvider)
+    openai = object.__new__(OpenAIProvider)
+
+    assert deepseek._reasoning_payload({"thinking": "disabled"}) == {"thinking": {"type": "disabled"}}
+    assert openai._reasoning_payload({"effort": "high"}) == {"reasoning_effort": "high"}

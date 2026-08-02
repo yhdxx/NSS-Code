@@ -17,12 +17,40 @@ class DeepSeekProvider(OpenAICompatibleProvider):
 
     def _reasoning_payload(self, reasoning: str | dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(reasoning, dict):
+            thinking = reasoning.get("thinking")
+            if isinstance(thinking, dict):
+                return {"thinking": thinking}
+            if thinking is not None:
+                normalized = _normalize_deepseek_thinking(str(thinking))
+                return {"thinking": {"type": normalized}} if normalized else dict(reasoning)
             return dict(reasoning)
-        if reasoning in {"enabled", "able", "on", "true"}:
-            return {"thinking": {"type": "enabled"}}
-        if reasoning in {"disabled", "disable", "off", "false"}:
-            return {"thinking": {"type": "disabled"}}
+        normalized = _normalize_deepseek_thinking(str(reasoning or ""))
+        if normalized:
+            return {"thinking": {"type": normalized}}
         return {}
+
+
+def _normalize_deepseek_thinking(value: str) -> str:
+    if value in {"enabled", "able", "on", "true"}:
+        return "enabled"
+    if value in {"disabled", "disable", "off", "false"}:
+        return "disabled"
+    return ""
+
+
+def _reasoning_effort_payload(reasoning: str | dict[str, Any] | None) -> dict[str, Any]:
+    if isinstance(reasoning, dict):
+        if "reasoning_effort" in reasoning:
+            return {"reasoning_effort": reasoning["reasoning_effort"]}
+        nested = reasoning.get("reasoning")
+        if isinstance(nested, dict) and nested.get("effort") in {"low", "medium", "high"}:
+            return {"reasoning_effort": nested["effort"]}
+        if reasoning.get("effort") in {"low", "medium", "high"}:
+            return {"reasoning_effort": reasoning["effort"]}
+        return dict(reasoning)
+    if reasoning in {"low", "medium", "high"}:
+        return {"reasoning_effort": reasoning}
+    return {}
 
 
 class QwenProvider(OpenAICompatibleProvider):
@@ -66,11 +94,7 @@ class OpenAIProvider(OpenAICompatibleProvider):
     )
 
     def _reasoning_payload(self, reasoning: str | dict[str, Any] | None) -> dict[str, Any]:
-        if isinstance(reasoning, dict):
-            return dict(reasoning)
-        if reasoning in {"low", "medium", "high"}:
-            return {"reasoning_effort": reasoning}
-        return {}
+        return _reasoning_effort_payload(reasoning)
 
 
 class GrokProvider(OpenAICompatibleProvider):
@@ -84,11 +108,7 @@ class GrokProvider(OpenAICompatibleProvider):
     )
 
     def _reasoning_payload(self, reasoning: str | dict[str, Any] | None) -> dict[str, Any]:
-        if isinstance(reasoning, dict):
-            return dict(reasoning)
-        if reasoning in {"low", "medium", "high"}:
-            return {"reasoning_effort": reasoning}
-        return {}
+        return _reasoning_effort_payload(reasoning)
 
 
 class MetaProvider(OpenAICompatibleProvider):

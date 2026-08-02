@@ -150,6 +150,21 @@ def _user_paths(
     )
 
 
+def _optional_float(value: Any) -> float | None:
+    if value in (None, ""):
+        return None
+    try:
+        return float(value)
+    except (TypeError, ValueError):
+        return None
+
+
+def _string_dict(value: Any) -> dict[str, str]:
+    if not isinstance(value, dict):
+        return {}
+    return {str(key): str(raw) for key, raw in value.items() if str(key).strip()}
+
+
 # ── 辅助函数（非配置查找，保留原逻辑） ──
 
 def _dedupe_paths(paths: tuple[Path, ...]) -> tuple[Path, ...]:
@@ -216,13 +231,33 @@ def _default_mcp_user_config_path() -> Path:
 # ── 配置类定义 ──
 
 @dataclass(frozen=True)
+class ModelProviderConfig:
+    """单个推理模型厂商的连接配置。API Key 按厂商统一配置。"""
+
+    api: str = ""
+    base_url: str = ""
+    timeout: float | None = None
+    extra_headers: dict[str, str] = field(default_factory=dict)
+    extra_body: dict[str, Any] = field(default_factory=dict)
+
+    @classmethod
+    def from_raw(cls, raw: object) -> "ModelProviderConfig":
+        data = raw if isinstance(raw, dict) else {}
+        return cls(
+            api=str(data.get("api") or "").strip(),
+            base_url=str(data.get("base_url") or "").strip(),
+            timeout=_optional_float(data.get("timeout")),
+            extra_headers=_string_dict(data.get("extra_headers")),
+            extra_body=dict(data.get("extra_body")) if isinstance(data.get("extra_body"), dict) else {},
+        )
+
+
+@dataclass(frozen=True)
 class ModelProfileConfig:
-    """单个推理模型 profile。provider/model/api 为连接模型的必要字段。"""
+    """单个推理模型 profile。provider/model 为选择模型的必要字段。"""
 
     provider: str
     model: str
-    api: str
-    base_url: str = ""
     reasoning: str | dict[str, Any] | None = None
     timeout: float | None = None
     extra_headers: dict[str, str] = field(default_factory=dict)
@@ -231,28 +266,13 @@ class ModelProfileConfig:
     @classmethod
     def from_raw(cls, raw: object) -> "ModelProfileConfig":
         data = raw if isinstance(raw, dict) else {}
-        timeout_raw = data.get("timeout")
-        timeout = None
-        if timeout_raw not in (None, ""):
-            try:
-                timeout = float(timeout_raw)
-            except (TypeError, ValueError):
-                timeout = None
-        extra_headers_raw = data.get("extra_headers")
-        extra_body_raw = data.get("extra_body")
         return cls(
             provider=str(data.get("provider") or "").strip().lower(),
             model=str(data.get("model") or "").strip(),
-            api=str(data.get("api") or "").strip(),
-            base_url=str(data.get("base_url") or "").strip(),
             reasoning=data.get("reasoning"),
-            timeout=timeout,
-            extra_headers={
-                str(key): str(value)
-                for key, value in (extra_headers_raw.items() if isinstance(extra_headers_raw, dict) else [])
-                if str(key).strip()
-            },
-            extra_body=dict(extra_body_raw) if isinstance(extra_body_raw, dict) else {},
+            timeout=_optional_float(data.get("timeout")),
+            extra_headers=_string_dict(data.get("extra_headers")),
+            extra_body=dict(data.get("extra_body")) if isinstance(data.get("extra_body"), dict) else {},
         )
 
     def missing_required_fields(self) -> list[str]:
@@ -261,8 +281,6 @@ class ModelProfileConfig:
             missing.append("provider")
         if not self.model:
             missing.append("model")
-        if not self.api:
-            missing.append("api")
         return missing
 
 
@@ -281,7 +299,11 @@ def _load_model_profiles() -> dict[str, ModelProfileConfig]:
             "main": {
                 "provider": "deepseek",
                 "model": "deepseek-v4-pro",
-                "api": "",
+            },
+            "memory_search": {
+                "provider": "deepseek",
+                "model": "deepseek-v4-flash",
+                "reasoning": {"thinking": "disabled"},
             }
         }
     profiles: dict[str, ModelProfileConfig] = {}
@@ -290,8 +312,25 @@ def _load_model_profiles() -> dict[str, ModelProfileConfig]:
         if profile_key:
             profiles[profile_key] = ModelProfileConfig.from_raw(value)
     return profiles or {
-        "main": ModelProfileConfig(provider="deepseek", model="deepseek-v4-pro", api="")
+        "main": ModelProfileConfig(provider="deepseek", model="deepseek-v4-pro"),
+        "memory_search": ModelProfileConfig(
+            provider="deepseek",
+            model="deepseek-v4-flash",
+            reasoning={"thinking": "disabled"},
+        ),
     }
+
+
+def _load_model_providers() -> dict[str, ModelProviderConfig]:
+    raw = _user_dict("model.providers", (), {})
+    if not raw:
+        raw = {"deepseek": {"api": ""}}
+    providers: dict[str, ModelProviderConfig] = {}
+    for key, value in raw.items():
+        provider_key = str(key).strip().lower()
+        if provider_key:
+            providers[provider_key] = ModelProviderConfig.from_raw(value)
+    return providers or {"deepseek": ModelProviderConfig(api="")}
 
 
 def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
@@ -299,7 +338,7 @@ def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
     raw = _user_dict("model.long_term_memory", (), {})
     return ModelLongTermMemoryConfig(
         storage=str(raw.get("storage") or active).strip() or active,
-        search=str(raw.get("search") or active).strip() or active,
+        search=str(raw.get("search") or "memory_search").strip() or "memory_search",
     )
 
 
@@ -308,6 +347,7 @@ class ModelConfig:
     """推理模型配置入口。旧 api.* 配置已移除。"""
 
     active: str = field(default_factory=lambda: _user_str("model.active", (), "main").strip() or "main")
+    providers: dict[str, ModelProviderConfig] = field(default_factory=_load_model_providers)
     profiles: dict[str, ModelProfileConfig] = field(default_factory=_load_model_profiles)
     long_term_memory: ModelLongTermMemoryConfig = field(default_factory=_load_model_ltm_config)
 
@@ -318,8 +358,24 @@ class ModelConfig:
     def profile(self, key: str) -> ModelProfileConfig | None:
         return self.profiles.get(key)
 
+    def provider(self, key: str) -> ModelProviderConfig | None:
+        return self.providers.get(key.strip().lower())
+
     def validation_errors(self, *, require_long_term_memory: bool = True) -> list[str]:
         errors: list[str] = []
+        checked_providers: set[str] = set()
+
+        def check_provider_api(provider: str) -> None:
+            provider_key = provider.strip().lower()
+            if not provider_key or provider_key in checked_providers:
+                return
+            checked_providers.add(provider_key)
+            provider_config = self.provider(provider_key)
+            if provider_config is None:
+                errors.append(f"model.providers 缺少厂商配置：{provider_key}")
+            elif not provider_config.api:
+                errors.append(f"model.providers.{provider_key}.api 缺少必要字段：api")
+
         active_profile = self.active_profile
         if active_profile is None:
             errors.append(f"model.active 指向不存在的 profile：{self.active}")
@@ -327,13 +383,17 @@ class ModelConfig:
             missing = active_profile.missing_required_fields()
             if missing:
                 errors.append(f"model.profiles.{self.active} 缺少必要字段：{', '.join(missing)}")
+            check_provider_api(active_profile.provider)
         if require_long_term_memory:
             for label, key in (
                 ("storage", self.long_term_memory.storage),
                 ("search", self.long_term_memory.search),
             ):
-                if key and key not in self.profiles:
+                profile = self.profile(key) if key else None
+                if key and profile is None:
                     errors.append(f"model.long_term_memory.{label} 指向不存在的 profile：{key}")
+                elif profile is not None:
+                    check_provider_api(profile.provider)
         return errors
 
 

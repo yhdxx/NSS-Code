@@ -28,8 +28,8 @@ myAgent
 # 编辑配置文件
 nano ~/.mycodingagent/config.json
 
-# 至少需要填入主模型 profile 的 API Key
-# 找到 "model" -> "profiles" -> "main" -> "api"，填入你的密钥
+# 至少需要填入所用厂商的 API Key
+# 找到 "model" -> "providers" -> "deepseek" -> "api"，填入你的密钥
 myAgent
 ```
 
@@ -41,7 +41,7 @@ myAgent
 
 | Key | 说明 |
 |-----|------|
-| `model` | 推理模型 profile 配置（厂商、模型、API Key、长期记忆模型选择） |
+| `model` | 推理模型配置（厂商级 API、模型 profile、长期记忆模型选择） |
 | `client` | LLM 客户端行为（重试、调试、展示） |
 | `multi_agent` | 多智能体并发与轮次限制 |
 | `long_term_memory` | 长期记忆存储、检索和候选推荐行为配置 |
@@ -62,32 +62,48 @@ myAgent
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `model.active` | - | `"main"` | 当前主推理模型 profile key |
+| `model.providers.<provider>.api` | - | `""` | **该厂商统一 API Key（必填）** |
+| `model.providers.<provider>.base_url` | - | `""` | 可选自定义 API 地址；为空时使用厂商默认值 |
+| `model.providers.<provider>.timeout` | - | `null` | 可选请求超时 |
 | `model.profiles.<key>.provider` | - | `"deepseek"` | **厂商（必填）** |
 | `model.profiles.<key>.model` | - | `"deepseek-v4-pro"` | **模型名称（必填）** |
-| `model.profiles.<key>.api` | - | `""` | **API Key（必填）** |
-| `model.profiles.<key>.base_url` | - | `""` | 可选自定义 API 地址；为空时使用厂商默认值 |
-| `model.profiles.<key>.reasoning` | - | `null` | 可选思考强度/模式 |
+| `model.profiles.<key>.reasoning` | - | `null` | 可选思考强度/模式，支持厂商专属字段 |
 | `model.long_term_memory.storage` | - | `"main"` | 长期记忆存储/抽取模型 profile |
-| `model.long_term_memory.search` | - | `"main"` | 长期记忆检索模型 profile |
+| `model.long_term_memory.search` | - | `"memory_search"` | 长期记忆检索模型 profile |
 
 ```json
 {
   "model": {
     "active": "main",
+    "providers": {
+      "deepseek": {
+        "api": "sk-..."
+      }
+    },
     "profiles": {
       "main": {
         "provider": "deepseek",
-        "model": "deepseek-v4-pro",
-        "api": "sk-..."
+        "model": "deepseek-v4-pro"
+      },
+      "memory_search": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "reasoning": {
+          "thinking": "disabled"
+        }
       }
     },
     "long_term_memory": {
       "storage": "main",
-      "search": "main"
+      "search": "memory_search"
     }
   }
 }
 ```
+
+`model.profiles.<key>.reasoning` 可以写字符串快捷值，也可以写厂商专属对象。例如 DeepSeek 可写
+`{"thinking": "disabled"}`，运行时会转换为 DeepSeek 兼容接口需要的 `thinking` 请求字段；OpenAI/Grok
+可写 `{"effort": "high"}` 或 `{"reasoning_effort": "high"}`。
 
 ### 4.2 `client` — LLM 客户端
 
@@ -259,12 +275,8 @@ myAgent
 {
   "model": {
     "active": "main",
-    "profiles": {
-      "main": {
-        "provider": "deepseek",
-        "model": "deepseek-v4-pro",
-        "api": "sk-..."
-      }
+    "providers": {
+      "deepseek": {"api": "sk-..."}
     }
   }
 }
@@ -277,8 +289,11 @@ myAgent
 {
   "model": {
     "active": "main",
+    "providers": {
+      "deepseek": {"api": "sk-..."}
+    },
     "profiles": {
-      "main": {"provider": "deepseek", "model": "deepseek-v4-pro", "api": "sk-..."}
+      "main": {"provider": "deepseek", "model": "deepseek-v4-pro"}
     }
   },
   "embedding": {
@@ -297,8 +312,11 @@ myAgent
 {
   "model": {
     "active": "main",
+    "providers": {
+      "openai": {"api": "sk-..."}
+    },
     "profiles": {
-      "main": {"provider": "openai", "model": "gpt-5", "api": "sk-..."}
+      "main": {"provider": "openai", "model": "gpt-5"}
     }
   },
   "embedding": {
@@ -326,9 +344,16 @@ docker compose -f Milvus/docker-compose.yml up -d
 {
   "model": {
     "active": "main",
+    "providers": {
+      "deepseek": {"api": "sk-..."}
+    },
     "profiles": {
-      "main": {"provider": "deepseek", "model": "deepseek-v4-pro", "api": "sk-..."},
-      "memory_search": {"provider": "deepseek", "model": "deepseek-v4-flash", "api": "sk-..."}
+      "main": {"provider": "deepseek", "model": "deepseek-v4-pro"},
+      "memory_search": {
+        "provider": "deepseek",
+        "model": "deepseek-v4-flash",
+        "reasoning": {"thinking": "disabled"}
+      }
     },
     "long_term_memory": {
       "storage": "main",
@@ -339,6 +364,7 @@ docker compose -f Milvus/docker-compose.yml up -d
 ```
 
 - `model.active`：Agent 对话主模型 profile
+- `model.providers.<provider>.api`：同一厂商下所有 profile 共用的 API Key
 - `model.long_term_memory.storage`：长期记忆存储模型 profile
 - `model.long_term_memory.search`：长期记忆检索模型 profile
 - `embedding.model`：向量嵌入模型（独立于对话模型）
@@ -367,7 +393,7 @@ LSP 进程运行在宿主机上，需在 `PATH` 中可找到对应可执行程�
 
 **Q: 启动时提示"未检测到必要推理模型配置"？**
 
-A: 编辑 `~/.mycodingagent/config.json`，确认 `model.active` 指向存在的 profile，并在该 profile 的 `provider`、`model`、`api` 中填入有效值。
+A: 编辑 `~/.mycodingagent/config.json`，确认 `model.active` 指向存在的 profile，并在该 profile 的 `provider`、`model` 以及对应 `model.providers.<provider>.api` 中填入有效值。
 
 **Q: 配置文件格式错误怎么办？**
 

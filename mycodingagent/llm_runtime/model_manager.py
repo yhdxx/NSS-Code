@@ -9,6 +9,7 @@ from mycodingagent.configuration.settings import (
     CONFIG,
     ModelConfig,
     ModelLongTermMemoryConfig,
+    ModelProviderConfig,
     ModelProfileConfig,
 )
 from mycodingagent.llm_runtime.providers import (
@@ -46,7 +47,8 @@ class ModelManager:
         config = self.model_config.profiles.get(key)
         if config is None:
             raise ModelConfigError(f"未找到推理模型 profile：{key}")
-        return _runtime_profile(key, config)
+        provider_config = self.model_config.provider(config.provider) or ModelProviderConfig()
+        return _runtime_profile(key, config, provider_config)
 
     def provider(self, key: str) -> InferenceProvider:
         profile = self.profile(key)
@@ -80,7 +82,14 @@ class ModelManager:
         return errors
 
     def configured_profiles(self) -> dict[str, ModelProfile]:
-        return {key: _runtime_profile(key, value) for key, value in self.model_config.profiles.items()}
+        return {
+            key: _runtime_profile(
+                key,
+                value,
+                self.model_config.provider(value.provider) or ModelProviderConfig(),
+            )
+            for key, value in self.model_config.profiles.items()
+        }
 
     def configured_profiles_with_api(self) -> dict[str, ModelProfile]:
         return {
@@ -148,6 +157,14 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
     raw = _read_config_json(config_path)
     model = raw.get("model") if isinstance(raw.get("model"), dict) else {}
     active = str(model.get("active") or "main").strip() or "main"
+    providers_raw = model.get("providers") if isinstance(model.get("providers"), dict) else {}
+    providers: dict[str, ModelProviderConfig] = {}
+    for key, value in providers_raw.items():
+        provider_key = str(key).strip().lower()
+        if provider_key:
+            providers[provider_key] = ModelProviderConfig.from_raw(value)
+    if not providers:
+        providers = dict(CONFIG.model.providers)
     profiles_raw = model.get("profiles") if isinstance(model.get("profiles"), dict) else {}
     profiles: dict[str, ModelProfileConfig] = {}
     for key, value in profiles_raw.items():
@@ -159,25 +176,31 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
     ltm_raw = model.get("long_term_memory") if isinstance(model.get("long_term_memory"), dict) else {}
     return ModelConfig(
         active=active,
+        providers=providers,
         profiles=profiles,
         long_term_memory=ModelLongTermMemoryConfig(
             storage=str(ltm_raw.get("storage") or active).strip() or active,
-            search=str(ltm_raw.get("search") or active).strip() or active,
+            search=str(ltm_raw.get("search") or "memory_search").strip() or "memory_search",
         ),
     )
 
 
-def _runtime_profile(key: str, config: ModelProfileConfig) -> ModelProfile:
+def _runtime_profile(
+    key: str,
+    config: ModelProfileConfig,
+    provider_config: ModelProviderConfig,
+) -> ModelProfile:
+    timeout = config.timeout if config.timeout is not None else provider_config.timeout
     return ModelProfile(
         key=key,
         provider=config.provider,
         model=config.model,
-        api=config.api,
-        base_url=config.base_url,
+        api=provider_config.api,
+        base_url=provider_config.base_url,
         reasoning=config.reasoning,
-        timeout=config.timeout,
-        extra_headers=dict(config.extra_headers),
-        extra_body=dict(config.extra_body),
+        timeout=timeout,
+        extra_headers={**provider_config.extra_headers, **config.extra_headers},
+        extra_body={**provider_config.extra_body, **config.extra_body},
     )
 
 
