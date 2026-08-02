@@ -307,9 +307,10 @@ WriteFile/EditFile
 
 ```text
 Bash(command)
-  -> analyze_command() 解析命令、管道、重定向和嵌套语法
-  -> read：直接执行
-  -> write/network/process/dangerous/unknown：请求用户确认
+  -> BashPolicyEvaluator 按命令名和 AST 事件查询三表策略
+  -> low：直接执行
+  -> approval/unknown：请求用户确认
+  -> high：拒绝执行
 ```
 
 判定标准是“难以撤销”或“影响范围超出工作区”，例如 `rm -rf`、`git push --force`、
@@ -317,6 +318,7 @@ Bash(command)
 动态命令目标、解析失败和无法静态判断副作用的进程一律 fail-closed。
 
 审批钩子由 `app/main.py` 仅在交互式终端注入；非交互环境（脚本、测试、CI）不拦截，保持既有行为。
+核心文件工具 `WriteFile` / `EditFile` 不再弹交互式写入审批，仍保留沙箱路径、先读后改、checkpoint 和文件状态缓存等执行保护。
 
 ### 6.3 MCP 权限控制
 
@@ -325,8 +327,8 @@ MCP 工具执行分为 discovery 和 execution：
 1. `list_mcp_tools` / `search_mcp_tools` 将本次分页中实际返回给模型的工具名称、描述和参数 schema 记录为已查看。
 2. `call_mcp_tool` 首先执行 discovery gate；只知道 Server/工具名称、查看了其他分页或 metadata 已变化都不能通过。
 3. 门禁通过后，`call_mcp_tool` 才结合显式配置、实时 annotation 和工具名进行风险分类。
-4. 只读工具自动放行；写入、危险、未知工具触发 approval hook。
-5. 门禁失败返回 `required_discovery`，用户拒绝返回明确拒绝结果；两者都不会连接或执行目标工具。
+4. CLI 默认只在 MCP Server 启动/连接时请求用户确认；MCP 工具调用按策略记录风险并使用默认 approval hook 自动处理。
+5. 门禁失败返回 `required_discovery`，不会连接或执行目标工具。
 
 已查看状态在当前 `MCPClientManager` 生命周期内保留；MCP 配置重载、Server discovery 刷新或工具 metadata
 指纹变化后失效，模型必须重新查看。`read_mcp_resource` 和 `get_mcp_prompt` 保持各自的只读 discovery/execution 路径。

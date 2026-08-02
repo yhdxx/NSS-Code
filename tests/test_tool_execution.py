@@ -111,6 +111,25 @@ def test_mutation_gate_is_not_reset_by_read_only_success():
     assert "修改操作门禁" in blocked.output
 
 
+def test_write_failure_gate_does_not_block_bash_when_not_marked_as_write():
+    tracker = RepeatedFailureTracker()
+    for index in range(3):
+        tracker.annotate(
+            "WriteFile",
+            json.dumps({"file_path": f"{index}.txt"}),
+            ToolExecution("failed", is_error=True),
+            is_mutation=True,
+        )
+
+    blocked = tracker.preflight(
+        "Bash",
+        '{"command":"python3 -m pytest -q"}',
+        is_mutation=False,
+    )
+
+    assert blocked is None
+
+
 def test_code_query_ledger_blocks_identical_success_but_allows_changed_scope():
     ledger = CodeQueryLedger()
     first = '{"operation":"impact","query":"Bash","intent":"first"}'

@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 from dataclasses import dataclass
+from collections.abc import Callable
 from typing import Any
 
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
@@ -16,6 +17,7 @@ from mycodingagent.terminal_ui.output import (
 )
 
 RETRYABLE_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504})
+BashDisplayClassifier = Callable[[str], tuple[BashDisplayLevel, str]]
 
 
 @dataclass
@@ -114,6 +116,7 @@ async def stream_one_round(
     display: bool = True,
     output_label: str = "模型",
     cancel_event: asyncio.Event | None = None,
+    bash_classifier: BashDisplayClassifier | None = None,
 ) -> StreamRoundResult:
     request: dict[str, Any] = {"model": model, "messages": messages, "stream": True}
     if tools:
@@ -189,7 +192,7 @@ async def stream_one_round(
         if calls:
             if text:
                 render_assistant_text(text, label=output_label)
-            render_tool_calls(calls, bash_classifier=_runtime_bash_display_level)
+            render_tool_calls(calls, bash_classifier=bash_classifier or _runtime_bash_display_level)
         else:
             render_assistant_markdown(text, label=output_label)
     return StreamRoundResult("".join(content_parts), calls, last_usage)

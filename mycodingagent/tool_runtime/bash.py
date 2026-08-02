@@ -80,6 +80,21 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         # retain the legacy gate unless they explicitly opt into policy storage.
         self._policy_evaluator = policy_evaluator
 
+    def display_policy_level(self, command: str) -> tuple[str, str]:
+        """Return the same policy level used by execution for terminal previews."""
+        if self._policy_evaluator is not None:
+            decision = self._policy_evaluator.evaluate(command)
+            if decision.level == "high":
+                return "high", decision.reason
+            if decision.level == "low":
+                return "low", decision.reason
+            return "approval", decision.reason
+        risk, reason = analyze_command(command)
+        if risk == "dangerous":
+            return "high", reason
+        if risk == "read":
+            return "low", reason
+        return "approval", reason
 
     async def execute(self, params: Params) -> ToolResult:  # 执行一次 Bash 工具调用，并把 stdout/stderr 封装成 ToolResult 返回给模型。
         if shutil.which("docker") is None:  # 先检查宿主环境是否能找到 Docker，避免进入子进程后才得到不清晰的失败信息。

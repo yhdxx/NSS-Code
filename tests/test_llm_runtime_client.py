@@ -12,6 +12,7 @@ from mycodingagent.llm_runtime import client
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
+from mycodingagent.tool_runtime.bash import Bash
 
 
 class _Delta:
@@ -76,6 +77,16 @@ class _FakeStream:
 
 def _request() -> httpx.Request:
     return httpx.Request("POST", "https://api.deepseek.com/chat/completions")
+
+
+def test_bash_display_classifier_from_registry_uses_registered_bash(tmp_path):
+    registry = ToolRegistry()
+    registry.register(Bash(sandbox_root=tmp_path))
+
+    classifier = client.bash_display_classifier_from_registry(registry)
+
+    assert classifier is not None
+    assert classifier("ls -la")[0] == "low"
 
 
 def _status_error(status_code: int) -> APIStatusError:

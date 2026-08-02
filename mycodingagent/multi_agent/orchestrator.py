@@ -412,6 +412,9 @@ class MultiAgentOrchestrator:
                 task_id=task_id,
             )
             stream_kwargs = {"cancel_event": self.cancel_event} if self.cancel_event is not None else {}
+            bash_classifier = llm_client.bash_display_classifier_from_registry(self.registry)
+            if bash_classifier is not None:
+                stream_kwargs["bash_classifier"] = bash_classifier
             stream_result = normalize_stream_result(
                 await stream_one_round(
                     self.api_client,
@@ -457,7 +460,7 @@ class MultiAgentOrchestrator:
             for index, tool_call in enumerate(tool_calls):
                 call_id = tool_call.tool_id or f"{role.value}_tool_call_{index}"
                 selected_tool = self.registry.get(tool_call.tool_name)
-                is_mutation = selected_tool is not None and not selected_tool.is_read_only
+                is_mutation = selected_tool is not None and selected_tool.category == "write"
                 blocked = failure_tracker.preflight(
                     tool_call.tool_name,
                     tool_call.arguments,

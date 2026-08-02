@@ -264,6 +264,14 @@ def print_token_block(*lines: str) -> None:
     print("=================", flush=True)
 
 
+def bash_display_classifier_from_registry(registry: Any):
+    """Use the registered Bash tool's execution policy for terminal previews."""
+    registry_get = getattr(registry, "get", None)
+    bash_tool = registry_get("Bash") if callable(registry_get) else None
+    classifier = getattr(bash_tool, "display_policy_level", None)
+    return classifier if callable(classifier) else None
+
+
 def context_budget_state_from_snapshot(snapshot: Any) -> ContextBudgetState:
     return ContextBudgetState(
         usage_ratio=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0),
@@ -804,6 +812,9 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
         )
         print_prompt_debug_with_previous(prompt_debug_snapshot)
         stream_kwargs = {"cancel_event": cancel_event} if cancel_event is not None else {}
+        bash_classifier = bash_display_classifier_from_registry(registry)
+        if bash_classifier is not None:
+            stream_kwargs["bash_classifier"] = bash_classifier
         stream_result = normalize_stream_result(
             await stream_one_round(client, MODEL, model_messages, current_tools, **stream_kwargs)
         )
@@ -921,7 +932,7 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
             tool_call_id = tool_call.tool_id or f"tool_call_{index}"  # 计算工具调用 ID，必须和上面的 assistant tool_calls 对象一致。
             registry_get = getattr(registry, "get", None)
             selected_tool = registry_get(tool_call.tool_name) if callable(registry_get) else None
-            is_mutation = selected_tool is not None and not selected_tool.is_read_only
+            is_mutation = selected_tool is not None and selected_tool.category == "write"
             blocked = failure_tracker.preflight(
                 tool_call.tool_name,
                 tool_call.arguments,

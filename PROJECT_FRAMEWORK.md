@@ -345,9 +345,10 @@ Bash(command)
 命令在进入容器前先经过 Bash AST 风险分析（`tool_runtime/command_policy.py`）：
 
 ```text
-analyze_command(command)
-  -> read：直接执行
-  -> write/network/process/dangerous/unknown：CommandApprovalHook 请求确认
+BashPolicyEvaluator(command)
+  -> low：直接执行
+  -> approval/unknown：CommandApprovalHook 请求确认
+  -> high：拒绝执行
      -> 允许：正常执行
      -> 拒绝：返回"用户拒绝执行该命令"（is_error=True）
 ```
@@ -355,7 +356,7 @@ analyze_command(command)
 判定范围限定为难以撤销或越界的操作（`rm -rf`、`git push --force`、`git reset --hard`、
 `sudo`、`chmod -R`、管道执行下载脚本、裸设备写入、工作区外绝对路径操作）。
 审批钩子仅在交互式终端由 `app/main.py` 注入；`approval_hook=None` 时不拦截，
-保证非交互场景和既有测试行为不变。
+保证非交互场景和既有测试行为不变。核心文件工具 `WriteFile` / `EditFile` 默认不注入交互式审批钩子。
 
 ### 7.3 MCP 工具
 
@@ -363,9 +364,8 @@ analyze_command(command)
 call_mcp_tool(server, tool)
   -> 实时刷新 schema/annotation
   -> 按显式配置、annotation 和工具名分类风险
-  -> read 自动放行
-  -> write/dangerous/unknown 请求用户审批
-  -> 用户拒绝则返回拒绝结果
+  -> discovery gate 通过后调用工具
+  -> CLI 默认只对 MCP Server 启动/连接审批，不对单次 MCP 工具调用弹审批
 ```
 
 ---

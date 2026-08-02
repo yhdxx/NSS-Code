@@ -138,7 +138,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             file_state_cache=file_state_cache,  # 保存配置值或中间计算结果。
             workspace_tracker=workspace_tracker,
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
-            approval_hook=write_approval_hook,
+            approval_hook=None,
             checkpoint_hook=memory_runtime,
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。
@@ -149,7 +149,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             file_state_cache=file_state_cache,  # 保存配置值或中间计算结果。
             workspace_tracker=workspace_tracker,
             sandbox_root=sandbox_root,  # 保存配置值或中间计算结果。
-            approval_hook=write_approval_hook,
+            approval_hook=None,
             checkpoint_hook=memory_runtime,
         )  # 结束上方的多行结构。
     )  # 结束上方的多行结构。

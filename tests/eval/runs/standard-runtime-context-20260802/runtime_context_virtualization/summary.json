@@ -1,0 +1,159 @@
+{
+  "by_strategy": {
+    "forced_virtualized": {
+      "api_completed_count": 90,
+      "cache_hit_rate_token_weighted": 0.813144,
+      "duration_mean_seconds": 6.2923,
+      "duration_p95_seconds": 6.9963,
+      "false_recovery_rate": null,
+      "final_virtualized_rate": 1.0,
+      "invalid_tool_calls_mean": 0.011111,
+      "prompt_tokens_mean": 16736.566667,
+      "prompt_tokens_p50": 15671.5,
+      "prompt_tokens_p95": 15871.3,
+      "recovery_call_rate": 1.0,
+      "recovery_success_rate": 0.988889,
+      "request_count_mean": 2.1,
+      "run_count": 90,
+      "success_rate": 0.988889,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 0.966667,
+        "mean": 0.988889
+      },
+      "tool_calls_mean": 6.122222,
+      "total_tokens_mean": 17015.966667,
+      "uncached_prompt_tokens_mean": 3127.322222,
+      "uncached_prompt_tokens_p50": 3054.0,
+      "uncached_prompt_tokens_p95": 3293.75
+    },
+    "natural": {
+      "api_completed_count": 90,
+      "cache_hit_rate_token_weighted": 0.806857,
+      "duration_mean_seconds": 5.876522,
+      "duration_p95_seconds": 6.9924,
+      "false_recovery_rate": null,
+      "final_virtualized_rate": 1.0,
+      "invalid_tool_calls_mean": 0.011111,
+      "prompt_tokens_mean": 16116.077778,
+      "prompt_tokens_p50": 15674.5,
+      "prompt_tokens_p95": 15869.0,
+      "recovery_call_rate": 1.0,
+      "recovery_success_rate": 0.977778,
+      "request_count_mean": 2.055556,
+      "run_count": 90,
+      "success_rate": 0.977778,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 0.944444,
+        "mean": 0.977778
+      },
+      "tool_calls_mean": 6.066667,
+      "total_tokens_mean": 16390.477778,
+      "uncached_prompt_tokens_mean": 3112.7,
+      "uncached_prompt_tokens_p50": 3121.0,
+      "uncached_prompt_tokens_p95": 3204.0
+    },
+    "raw": {
+      "api_completed_count": 90,
+      "cache_hit_rate_token_weighted": 0.825494,
+      "duration_mean_seconds": 4.107267,
+      "duration_p95_seconds": 5.12795,
+      "false_recovery_rate": 0.0,
+      "final_virtualized_rate": 0.0,
+      "invalid_tool_calls_mean": 0.0,
+      "prompt_tokens_mean": 10481.966667,
+      "prompt_tokens_p50": 10477.0,
+      "prompt_tokens_p95": 10576.0,
+      "recovery_call_rate": 0.0,
+      "recovery_success_rate": null,
+      "request_count_mean": 1.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 5.0,
+      "total_tokens_mean": 10671.377778,
+      "uncached_prompt_tokens_mean": 1829.166667,
+      "uncached_prompt_tokens_p50": 80.0,
+      "uncached_prompt_tokens_p95": 5423.0
+    }
+  },
+  "case_count": 30,
+  "completed_run_count": 270,
+  "efficiency_claim_gate_passed": false,
+  "module": "runtime_context_virtualization",
+  "paired_reduction_vs_raw": {
+    "forced_virtualized": {
+      "duration_seconds": {
+        "high": -0.349079,
+        "low": -0.869498,
+        "mean": -0.531992
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": -0.494997,
+        "low": -0.799439,
+        "mean": -0.596701
+      },
+      "tool_calls": {
+        "high": -0.2,
+        "low": -0.273333,
+        "mean": -0.224444
+      },
+      "total_tokens": {
+        "high": -0.49129,
+        "low": -0.800226,
+        "mean": -0.594543
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.341891,
+        "low": -1.355511,
+        "mean": -0.709698
+      }
+    },
+    "natural": {
+      "duration_seconds": {
+        "high": -0.324064,
+        "low": -0.614909,
+        "mean": -0.430762
+      },
+      "paired_run_count": 90,
+      "prompt_tokens": {
+        "high": -0.495139,
+        "low": -0.614354,
+        "mean": -0.537505
+      },
+      "tool_calls": {
+        "high": -0.2,
+        "low": -0.237834,
+        "mean": -0.213333
+      },
+      "total_tokens": {
+        "high": -0.492595,
+        "low": -0.615192,
+        "mean": -0.535929
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.32494,
+        "low": -1.320009,
+        "mean": -0.701704
+      }
+    }
+  },
+  "quality_gate_passed": true,
+  "reason": "",
+  "repeats": 3,
+  "resume_conclusion": "真实 Runtime 虚拟化评测已覆盖 30 条长会话轨迹、三策略、每策略 3 次；是否可用于简历取决于 quality_gate_passed 与 uncached_reduction_gate_passed 同时为 true。",
+  "run_count": 270,
+  "status": "passed",
+  "strategies": [
+    "raw",
+    "forced_virtualized",
+    "natural"
+  ],
+  "uncached_reduction_gate_passed": false
+}

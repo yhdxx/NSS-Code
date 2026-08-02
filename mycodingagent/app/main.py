@@ -32,7 +32,6 @@ from mycodingagent.tool_runtime import create_default_registry  # 导入当前�
 from mycodingagent.tool_runtime.bash import ensure_docker_image, get_docker_image  # 启动时确保 Bash 工具使用的 Docker 镜像已在本地可用。
 from mycodingagent.tool_runtime.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
 from mycodingagent.tool_runtime.command_policy import CLICommandApprovalHook  # 高危 Bash 命令执行前征求用户同意。
-from mycodingagent.tool_runtime.write_policy import CLIWriteApprovalHook
 from mycodingagent.tool_runtime.command_policy import (
     BashPolicyEvaluator,
     BashPolicyEvidence,
@@ -48,7 +47,7 @@ from mycodingagent.tool_runtime.workspace_change_tracker import WorkspaceChangeT
 from mycodingagent.workspace.lease import WorkspaceLease, WorkspaceLeaseError
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.cache import MCPMetadataCache
-from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprovalHook
+from mycodingagent.mcp_integration.hooks import CLILaunchApprovalHook, MCPToolApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from mycodingagent.multi_agent import MultiAgentStore
@@ -175,13 +174,12 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     messages: list[dict] = []  # 保存配置值或中间计算结果。
     terminal_input = TerminalInputCoordinator()
     command_approval_hook = CLICommandApprovalHook(terminal_input) if sys.stdin.isatty() else None
-    write_approval_hook = CLIWriteApprovalHook(terminal_input) if sys.stdin.isatty() else None
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
         command_approval_hook=command_approval_hook,
-        write_approval_hook=write_approval_hook,
+        write_approval_hook=None,
         terminal_input_coordinator=terminal_input,
         project_graph_service=project_graph,
         bash_policy_evaluator=BashPolicyEvaluator(
@@ -230,7 +228,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             registry,
             manager=mcp_manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=CLIApprovalHook(terminal_input),
+            approval_hook=MCPToolApprovalHook(),
         )
         print(f"已配置 MCP Server：{mcp_manager.server_count()} 个", flush=True)
     else:
