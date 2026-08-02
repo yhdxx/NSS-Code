@@ -40,7 +40,7 @@ from mycodingagent.tool_runtime.execution import (
     parse_tool_arguments_object,
 )
 
-DEEPSEEK_API_KEY = CONFIG.api.deepseek_api_key  # DeepSeek API Key；优先从 DEEPSEEK_API_KEY 环境变量读取。
+DEEPSEEK_API_KEY = CONFIG.api.deepseek_api_key  # DeepSeek API Key；从 ~/.mycodingagent/config.json 或 DEEPSEEK_API_KEY 环境变量读取。
 BASE_URL = CONFIG.api.base_url  # API 基础地址；未配置时使用 DeepSeek 官方兼容地址。
 MODEL = CONFIG.api.model  # 模型名称；允许通过环境变量切换模型而不用改代码。
 MAX_TOOL_ROUNDS = CONFIG.client.max_tool_rounds  # 单次用户请求最多允许模型连续调用工具的轮数，用于防止无限循环。

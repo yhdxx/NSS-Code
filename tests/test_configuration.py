@@ -20,14 +20,21 @@ ROOT = Path(__file__).resolve().parents[1]
 
 
 def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None) -> dict:
+    home = config_path.parent / "home"
+    user_config = home / ".mycodingagent" / "config.json"
+    user_config.parent.mkdir(parents=True)
+    user_config.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
     env = {
         **os.environ,
+        "HOME": str(home),
         "PYTHONPATH": str(ROOT),
-        "MYCODINGAGENT_CONFIG": str(config_path),
     }
+    env.pop("MYCODINGAGENT_CONFIG", None)
     env.pop("MYCODINGAGENT_MILVUS_PORT", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
     env.pop("MYCODINGAGENT_BGE_MODEL", None)
+    env.pop("MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD", None)
+    env.pop("MYCODINGAGENT_USER_SKILL_CACHE_MAX_ENTRIES", None)
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     if extra_env:
         env.update(extra_env)
@@ -44,6 +51,8 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_MILVUS_PORT", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
     env.pop("MYCODINGAGENT_BGE_MODEL", None)
+    env.pop("MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD", None)
+    env.pop("MYCODINGAGENT_USER_SKILL_CACHE_MAX_ENTRIES", None)
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     if extra_env:
         env.update(extra_env)
@@ -62,6 +71,8 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'dimension': CONFIG.embedding.dimension,\n"
         "  'milvus_uri': CONFIG.milvus.uri,\n"
         "  'milvus_collection': CONFIG.milvus.collection,\n"
+        "  'session_activation_reward': CONFIG.skills.session_activation_reward,\n"
+        "  'user_skill_cache_max_entries': CONFIG.skills.user_skill_cache_max_entries,\n"
         "}, ensure_ascii=False, sort_keys=True))\n"
     )
     result = subprocess.run(
@@ -77,19 +88,23 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
 
 
 def test_config_file_controls_embedding_and_milvus(tmp_path):
-    config_path = tmp_path / "config.yaml"
+    config_path = tmp_path / "config.json"
     config_path.write_text(
-        """
-embedding:
-  provider: openai_compatible
-  model: text-embedding-v4
-  endpoint: https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings
-  dimension: 1536
-milvus:
-  host: 127.0.0.1
-  port: "19531"
-  collection: custom_skills
-""",
+        json.dumps(
+            {
+                "embedding": {
+                    "provider": "openai_compatible",
+                    "model": "text-embedding-v4",
+                    "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
+                    "dimension": 1536,
+                },
+                "milvus": {
+                    "host": "127.0.0.1",
+                    "port": "19531",
+                    "collection": "custom_skills",
+                },
+            }
+        ),
         encoding="utf-8",
     )
 
@@ -103,22 +118,42 @@ milvus:
     assert data["milvus_collection"] == "custom_skills"
 
 
-def test_environment_variable_overrides_config_file(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("milvus:\n  port: '19531'\n", encoding="utf-8")
+def test_config_file_overrides_environment_variable(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"milvus": {"port": "19531"}}), encoding="utf-8")
 
     data = _config_probe(config_path, extra_env={"MYCODINGAGENT_MILVUS_PORT": "19532"})
 
-    assert data["milvus_uri"] == "http://127.0.0.1:19532"
+    assert data["milvus_uri"] == "http://127.0.0.1:19531"
 
 
-def test_legacy_bge_environment_variable_overrides_config_file(tmp_path):
-    config_path = tmp_path / "config.yaml"
-    config_path.write_text("embedding:\n  model: configured-model\n", encoding="utf-8")
+def test_config_file_overrides_legacy_bge_environment_variable(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"embedding": {"model": "configured-model"}}), encoding="utf-8")
 
     data = _config_probe(config_path, extra_env={"MYCODINGAGENT_BGE_MODEL": "legacy-env-model"})
 
-    assert data["model"] == "legacy-env-model"
+    assert data["model"] == "configured-model"
+
+
+def test_skill_lrfu_settings_are_loaded_from_config_file(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "skills": {
+                    "session_activation_reward": 0.7,
+                    "user_skill_cache_max_entries": 321,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    data = _config_probe(config_path)
+
+    assert data["session_activation_reward"] == 0.7
+    assert data["user_skill_cache_max_entries"] == 321
 
 
 def test_workspace_config_is_not_loaded_by_default(tmp_path):
@@ -126,8 +161,8 @@ def test_workspace_config_is_not_loaded_by_default(tmp_path):
     home = tmp_path / "home"
     (workspace / ".mycodingagent").mkdir(parents=True)
     home.mkdir()
-    (workspace / ".mycodingagent" / "config.yaml").write_text(
-        "embedding:\n  model: workspace-only-model\n",
+    (workspace / ".mycodingagent" / "config.json").write_text(
+        json.dumps({"embedding": {"model": "workspace-only-model"}}),
         encoding="utf-8",
     )
 
@@ -136,13 +171,13 @@ def test_workspace_config_is_not_loaded_by_default(tmp_path):
     assert data["model"] != "workspace-only-model"
 
 
-def test_workspace_config_can_be_enabled_explicitly(tmp_path):
+def test_legacy_workspace_config_flag_is_ignored(tmp_path):
     workspace = tmp_path / "workspace"
     home = tmp_path / "home"
     (workspace / ".mycodingagent").mkdir(parents=True)
     home.mkdir()
-    (workspace / ".mycodingagent" / "config.yaml").write_text(
-        "embedding:\n  model: workspace-enabled-model\n",
+    (workspace / ".mycodingagent" / "config.json").write_text(
+        json.dumps({"embedding": {"model": "workspace-enabled-model"}}),
         encoding="utf-8",
     )
 
@@ -152,7 +187,7 @@ def test_workspace_config_can_be_enabled_explicitly(tmp_path):
         extra_env={"MYCODINGAGENT_LOAD_WORKSPACE_CONFIG": "1"},
     )
 
-    assert data["model"] == "workspace-enabled-model"
+    assert data["model"] != "workspace-enabled-model"
 
 
 def test_dashscope_embedding_response_shape_is_supported():

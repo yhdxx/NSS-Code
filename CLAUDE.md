@@ -113,7 +113,10 @@ These are enforced by `tests/test_architecture_boundaries.py` or by design, and 
   writes, absolute paths outside the workspace). Ordinary commands never prompt — false positives train users to
   blind-approve. The hook is injected by `app/main.py` only when `sys.stdin.isatty()`; `approval_hook=None` disables
   the gate entirely, which is what keeps tests and non-interactive runs working.
-- **`DEEPSEEK_API_KEY` has no default.** Startup exits early with setup instructions when it's unset.
+- **All runtime config is read from `~/.mycodingagent/config.json` + env vars.** Repo YAML is example-only.
+  Startup auto-creates `~/.mycodingagent/config.json` with full default template + copies `docs/configuration.md` to
+  `~/.mycodingagent/README.md` when the file is missing. Diagnostic flow validates JSON, recreates on parse
+  errors, and guides the user to fill in `api.deepseek_api_key` (via JSON or `DEEPSEEK_API_KEY` env var).
 - **Two SQLite databases.** Sessions/context/long-term memory live in `CONFIG.memory.db_path`
   (`~/.local/state/myCodingAgent/sessions.sqlite3` by default, overridable via `MYCODINGAGENT_STATE_DIR` /
   `XDG_STATE_HOME`); multi-agent runs live in `multi_agent.sqlite3` beside it. Skill metadata and LRFU state live in

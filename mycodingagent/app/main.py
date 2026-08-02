@@ -13,7 +13,10 @@ for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_P
 
 import asyncio  # 导入当前模块需要的依赖。
 import json
+import shutil
 import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
+from pathlib import Path
+
 import pyfiglet  # 导入当前模块需要的依赖。
 
 from openai import AsyncOpenAI  # 导入当前模块需要的依赖。
@@ -24,7 +27,7 @@ from mycodingagent.terminal_ui.input import read_user_prompt
 from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
-from mycodingagent.configuration import CONFIG  # 统一读取项目运行配置。
+from mycodingagent.configuration.settings import CONFIG, _USER_CONFIG_PATH
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.memory import MemoryRuntime
 from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的 SKILL，并按需动态暴露给模型。
@@ -59,19 +62,289 @@ except ImportError:  # 捕获并处理指定异常。
     pass  # Windows 可能没有 readline，但不影响基本功能
 
 
+
+
+_cached_config_import = False  # 模块级标记，避免重复导入
+
+
+def _create_config_template() -> None:
+    """创建 ~/.mycodingagent/config.json 全量配置模板。"""
+    template = {
+        "_说明": "myCodingAgent 全量配置文件。修改任意字段后保存，下次启动即生效。详细说明见 ~/.mycodingagent/README.md。",
+        "api": {
+            "deepseek_api_key": "",
+            "base_url": "https://api.deepseek.com",
+            "model": "deepseek-v4-pro"
+        },
+        "client": {
+            "max_tool_rounds": 50,
+            "max_display_string_chars": 12000,
+            "max_tool_output_chars": 20000,
+            "api_max_retries": 3,
+            "api_retry_base_delay": 1.0,
+            "debug": False,
+            "step_token": True,
+            "round_token": True,
+            "conversation_token": True,
+            "legacy_system_prompt": False
+        },
+        "multi_agent": {
+            "max_agent_rounds": 50,
+            "max_parallel_tasks": 5
+        },
+        "long_term_memory": {
+            "enabled": True,
+            "storage_model": "",
+            "query_model": "",
+            "query_recent_turns": 10,
+            "max_memories": 50,
+            "max_workflow_candidates": 5,
+            "max_skill_candidates": 3,
+            "skill_candidate_success_threshold": 3,
+            "skill_candidate_prompt_cooldown_days": 7,
+            "extraction_claim_timeout_seconds": 600,
+            "graceful_exit_extract_timeout_seconds": 30,
+            "startup_backfill_enabled": True
+        },
+        "memory": {
+            "enabled": True,
+            "output_context_compression": True,
+            "default_context_window": 128000,
+            "session_ttl_days": 90,
+            "default_work_mode": "general",
+            "workspace_snapshot_ttl_days": 30,
+            "tool_preview_chars": 2000,
+            "context_preview_threshold_tokens": 12000,
+            "context_preview_tokens": 2000,
+            "raw_tool_output_preview_chars": 1000,
+            "raw_to_virtualized_ratio": 0.60,
+            "budget_soft_ratio": 0.60,
+            "budget_working_ratio": 0.80,
+            "budget_emergency_ratio": 0.90,
+            "hot_context_warning_ratio": 0.30,
+            "hot_context_force_ratio": 0.40,
+            "hot_context_retained_turns": 3,
+            "hot_context_topic_drift_turns": 3,
+            "hot_context_topic_similarity_threshold": 0.12,
+            "archive_cold_context_ratio": 0.50,
+            "current_turn_summary_max_per_message": 2,
+            "current_turn_summary_max_per_turn": 5,
+            "checkpoint_enabled": True,
+            "checkpoint_soft_ratio": 0.65,
+            "checkpoint_hard_ratio": 0.85,
+            "snapshot_version": "1.0",
+            "checkpoint_min_turns_between_rollovers": 3,
+            "checkpoint_recent_delta_turns": 20,
+            "reserved_reasoning_tokens": 8000,
+            "reserved_output_tokens": 4000,
+            "reserved_tool_tokens": 12000,
+            "context_store_backend": "sqlite",
+            "recent_rounds_for_average": 20,
+            "recent_messages_after_summary": 12,
+            "model_context_windows": {"deepseek-v4-flash": 1000000}
+        },
+        "sandbox": {
+            "max_output_chars": 10000,
+            "workspace_lease_enabled": True
+        },
+        "docker": {
+            "image": "mycodingagent-sandbox:py312",
+            "network": "bridge",
+            "build_network": "host",
+            "cpus": "2",
+            "memory": "1g",
+            "pids_limit": "256",
+            "default_timeout": 120,
+            "max_timeout": 600,
+            "check_timeout": 30,
+            "pull_timeout": 300
+        },
+        "skills": {
+            "small_count": 8,
+            "default_tool_names": ["coding-standards"],
+            "prefetch_top_k": 3,
+            "search_top_k": 8,
+            "min_score": 0.18,
+            "watcher_poll_interval": 2.0,
+            "router_top_n": 10,
+            "router_retrieval_top_k": 40,
+            "router_cache_top_k": 40,
+            "router_retrieval_min_ratio": 0.4,
+            "router_user_weight": 0.15,
+            "router_session_weight": 0.45,
+            "router_retrieval_weight": 0.40,
+            "router_pinned_bonus": 1.0,
+            "lrfu_decay": 0.95,
+            "skill_call_reward": 10.0,
+            "session_activation_reward": 0.3,
+            "user_skill_cache_max_entries": 1000,
+            "session_skill_cache_max_entries": 200,
+            "output_recall_skill": True,
+            "vector_sync_batch_size": 2,
+            "vector_sync_max_retries": 3
+        },
+        "embedding": {
+            "provider": "bge_http",
+            "model": "bge-m3",
+            "endpoint": "http://127.0.0.1:11434/api/embed",
+            "api_format": "ollama",
+            "api_key": "",
+            "timeout": 30.0,
+            "query_instruction": "为这个句子生成表示以用于检索相关文章：",
+            "normalize": True,
+            "device": "",
+            "batch_size": 16,
+            "dimension": 1024,
+            "fallback_to_hash": False,
+            "hash_dimension": 256,
+            "request_extra": {},
+            "headers": {}
+        },
+        "milvus": {
+            "enabled": True,
+            "host": "127.0.0.1",
+            "port": "19530",
+            "collection": "mycodingagent_skills",
+            "token": "",
+            "recreate_incompatible": True,
+            "consistency_level": "Strong",
+            "index_type": "HNSW",
+            "metric_type": "COSINE",
+            "sparse_metric_type": "BM25",
+            "sparse_inverted_index_algo": "DAAT_MAXSCORE",
+            "rrf_k": 60,
+            "text_max_bytes": 65535,
+            "analyzer_params": {"type": "chinese"}
+        },
+        "mcp": {
+            "enabled": True,
+            "reconnect_server_step": 10
+        }
+    }
+    _USER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _USER_CONFIG_PATH.write_text(
+        json.dumps(template, ensure_ascii=False, indent=2) + "\n",
+        encoding="utf-8",
+    )
+
+
+def _sync_config_readme() -> None:
+    """将仓库内的配置教程文档复制到 ~/.mycodingagent/README.md。"""
+    readme_dest = _USER_CONFIG_PATH.parent / "README.md"
+    source = Path(__file__).resolve().parents[2] / "docs" / "configuration.md"
+    if source.exists():
+        try:
+            shutil.copy2(source, readme_dest)
+        except OSError:
+            pass
+
+
+def _diagnose_and_ensure_config() -> None:
+    """诊断 ~/.mycodingagent/config.json 并确保其可用。"""
+    _USER_CONFIG_PATH.parent.mkdir(parents=True, exist_ok=True)
+    _sync_config_readme()
+
+    deepseek_key = CONFIG.api.deepseek_api_key.strip()
+
+    if deepseek_key:
+        return
+
+    # ── 密钥不可用，进入诊断 ──
+    print("未检测到 API 密钥（deepseek_api_key）。", flush=True)
+
+    config_exists = _USER_CONFIG_PATH.exists()
+
+    if not config_exists:
+        _create_config_template()
+        print(
+            f"\n已创建配置文件：{_USER_CONFIG_PATH}",
+            flush=True,
+        )
+        print(
+            f"已同步配置教程：{_USER_CONFIG_PATH.parent / 'README.md'}\n"
+            "\n请编辑配置文件填入 deepseek_api_key 后重新启动：\n"
+            f"    {_USER_CONFIG_PATH}\n"
+            "\n或通过环境变量配置：\n"
+            "    export DEEPSEEK_API_KEY=<你的密钥>\n"
+            "\n详细配置说明请阅读 ~/.mycodingagent/README.md",
+            flush=True,
+        )
+        return
+
+    # 文件存在 → 校验
+    try:
+        raw = _USER_CONFIG_PATH.read_text(encoding="utf-8")
+    except (PermissionError, OSError) as exc:
+        print(f"无法读取配置文件：{exc}", flush=True)
+        print(
+            "请检查文件权限，或通过环境变量配置：\n"
+            "    export DEEPSEEK_API_KEY=<你的密钥>",
+            flush=True,
+        )
+        return
+
+    if not raw.strip():
+        print(
+            "配置文件存在但内容为空。\n"
+            f"请编辑 {_USER_CONFIG_PATH} 填入配置后重新启动。\n"
+            "\n或通过环境变量配置：\n"
+            "    export DEEPSEEK_API_KEY=<你的密钥>",
+            flush=True,
+        )
+        return
+
+    try:
+        parsed = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        print(f"配置文件不是合法 JSON（{exc}），将删除并重建。", flush=True)
+        try:
+            _USER_CONFIG_PATH.unlink()
+        except OSError:
+            pass
+        _create_config_template()
+        print(
+            "已重建配置模板，请编辑后重新启动。\n"
+            f"    {_USER_CONFIG_PATH}\n"
+            "或通过环境变量：export DEEPSEEK_API_KEY=<你的密钥>",
+            flush=True,
+        )
+        return
+
+    if not isinstance(parsed, dict):
+        print("配置文件不是 JSON 对象，将删除并重建。", flush=True)
+        try:
+            _USER_CONFIG_PATH.unlink()
+        except OSError:
+            pass
+        _create_config_template()
+        print(
+            "已重建配置模板，请编辑后重新启动。\n"
+            f"    {_USER_CONFIG_PATH}\n"
+            "或通过环境变量：export DEEPSEEK_API_KEY=<你的密钥>",
+            flush=True,
+        )
+        return
+
+    # JSON 格式正确，但缺少密钥
+    print(
+        "配置文件格式正确，但未找到 deepseek_api_key。\n"
+        f"请编辑 {_USER_CONFIG_PATH}，在 api.deepseek_api_key 中填入密钥后重新启动。\n"
+        "\n或通过环境变量配置：\n"
+        "    export DEEPSEEK_API_KEY=<你的密钥>\n"
+        "\n详细配置说明请阅读 ~/.mycodingagent/README.md",
+        flush=True,
+    )
+
+
 async def main() -> None:  # 定义异步函数，供事件循环调用。
+
+    # ── 配置诊断（在打印 ASCII art 之前完成）──
+    _diagnose_and_ensure_config()
+    if not CONFIG.api.deepseek_api_key.strip():
+        return  # 诊断已打印指引，直接退出
 
     ascii_art = pyfiglet.figlet_format("MyCodingAgent")  # 保存配置值或中间计算结果。
     print(ascii_art)  # 执行当前步骤的业务逻辑。
-
-    if not CONFIG.api.deepseek_api_key.strip():  # 缺少密钥时后续每次模型调用都会失败，提前给出可执行的指引。
-        print(
-            "未检测到 API 密钥。请设置环境变量后重新启动：\n"
-            "    export DEEPSEEK_API_KEY=<你的密钥>\n"
-            "如需切换服务地址或模型，可同时设置 DEEPSEEK_BASE_URL 和 DEEPSEEK_MODEL。",
-            flush=True,
-        )
-        return  # 密钥缺失属于配置问题，直接退出比进入对话后反复报错更清晰。
 
     docker_image = get_docker_image()  # 读取 Bash 工具后续执行命令时会使用的统一 Docker 镜像。
     print(f"检查 Bash Docker 镜像：{docker_image}", flush=True)  # 启动阶段明确告诉用户正在准备命令执行环境。

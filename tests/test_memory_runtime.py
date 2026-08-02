@@ -599,7 +599,7 @@ def test_expired_sessions_are_deleted_by_last_access_time(tmp_path):
     with sqlite3.connect(tmp_path / "memory.sqlite3") as conn:
         conn.execute(
             "UPDATE sessions SET last_accessed_at = ? WHERE session_id = ?",
-            (time() - (31 * 24 * 60 * 60), expired_session_id),
+            (time() - ((CONFIG.memory.session_ttl_days + 1) * 24 * 60 * 60), expired_session_id),
         )
 
     assert runtime.cleanup_expired_sessions() == 1
@@ -612,7 +612,7 @@ def test_load_session_refreshes_expiry_clock(tmp_path):
     runtime = MemoryRuntime(store=store)
     session_id = runtime.start_session("test")
     runtime.save_messages(session_id, [{"role": "user", "content": "keep"}])
-    old_access_time = time() - (31 * 24 * 60 * 60)
+    old_access_time = time() - ((CONFIG.memory.session_ttl_days + 1) * 24 * 60 * 60)
     with sqlite3.connect(tmp_path / "memory.sqlite3") as conn:
         conn.execute("UPDATE sessions SET last_accessed_at = ? WHERE session_id = ?", (old_access_time, session_id))
 

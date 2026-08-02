@@ -1,574 +1,328 @@
-# 配置指南
+# myCodingAgent 配置指南
 
-本文集中说明 myCodingAgent 的配置文件、环境变量、Embedding、Milvus 向量库和 MCP Server 配置。所有密钥都建议放在环境变量或用户级配置中，不要提交到仓库。
+> 本文件会在首次启动时自动复制到 `~/.mycodingagent/README.md`，方便离线查阅。
 
-## 配置加载顺序
+---
 
-运行时先读取代码内置默认值，再依次合并配置文件，最后用环境变量覆盖。后加载的同名字段覆盖前者。
+## 1. 配置方式
 
-1. `~/.config/myCodingAgent/config.yaml`
-2. Agent 安装目录 `.mycodingagent/config.yaml`
-3. 设置 `MYCODINGAGENT_LOAD_WORKSPACE_CONFIG=1` 时，当前工作区 `.mycodingagent/config.yaml`
-4. `MYCODINGAGENT_CONFIG` 指定的一个或多个 YAML/JSON 文件，多个路径用系统路径分隔符连接
-5. 环境变量
+myCodingAgent 所有运行配置通过以下**两个来源**读取（优先级从高到低）：
 
-推荐做法：
+| 优先级 | 来源 | 说明 |
+|--------|------|------|
+| **1（最高）** | `~/.mycodingagent/config.json` | 用户级 JSON 配置文件 |
+| **2** | 环境变量 | 临时覆盖，与旧版本兼容 |
 
-```bash
-mkdir -p ~/.config/myCodingAgent
-cp .mycodingagent/config.example.yaml ~/.config/myCodingAgent/config.yaml
-cp .mycodingagent/mcp.example.json ~/.config/myCodingAgent/mcp.json
-```
+仓库内 `.mycodingagent/config.example.yaml` 和 `.mycodingagent/config.example.json` **仅供字段参考**，不参与运行时配置读取。
 
-## 最小可用配置
+---
 
-必须先配置主模型 API 密钥。当前客户端使用 OpenAI-compatible SDK，请用下面三个变量控制主模型：
-
-| 用途 | 环境变量 | 配置文件字段 | 默认值 |
-| --- | --- | --- | --- |
-| 主模型密钥 | `DEEPSEEK_API_KEY` | `api.deepseek_api_key` | 空 |
-| 主模型地址 | `DEEPSEEK_BASE_URL` | `api.base_url` | `https://api.deepseek.com` |
-| 主模型名称 | `DEEPSEEK_MODEL` | `api.model` | `deepseek-v4-pro` |
-
-示例：
+## 2. 快速开始
 
 ```bash
+# 首次启动会自动创建 ~/.mycodingagent/config.json 全量模板
+myAgent
+
+# 编辑配置文件
+nano ~/.mycodingagent/config.json
+
+# 至少需要填入 API 密钥
+# 找到 "api" -> "deepseek_api_key"，填入你的密钥
+
+# 或者通过环境变量配置（JSON 优先）
 export DEEPSEEK_API_KEY="sk-..."
-export DEEPSEEK_BASE_URL="https://api.deepseek.com"
-export DEEPSEEK_MODEL="deepseek-v4-pro"
+myAgent
 ```
 
-也可以写入 `~/.config/myCodingAgent/config.yaml`：
+---
 
-```yaml
-api:
-  deepseek_api_key: "sk-..."
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
+## 3. 配置结构总览
+
+`~/.mycodingagent/config.json` 包含以下 12 个顶层模块：
+
+| Key | 说明 |
+|-----|------|
+| `api` | 主模型 API 配置（密钥、地址、模型名称） |
+| `client` | LLM 客户端行为（重试、调试、展示） |
+| `multi_agent` | 多智能体并发与轮次限制 |
+| `long_term_memory` | 长期记忆存储与查询模型配置 |
+| `memory` | 会话持久化、上下文虚拟化、检查点 |
+| `sandbox` | Docker 沙箱工作区设置 |
+| `docker` | Docker 容器资源限制 |
+| `skills` | Skill 发现、索引、路由、LRFU |
+| `embedding` | 嵌入模型配置（provider/model/api_key 等） |
+| `milvus` | Milvus 向量数据库连接 |
+| `mcp` | MCP Server 连接与权限 |
+
+---
+
+## 4. 各模块配置说明
+
+### 4.1 `api` — 主模型配置
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `api.deepseek_api_key` | `DEEPSEEK_API_KEY` | `""` | **API 密钥（必填）** |
+| `api.base_url` | `DEEPSEEK_BASE_URL` | `https://api.deepseek.com` | API 服务地址 |
+| `api.model` | `DEEPSEEK_MODEL` | `deepseek-v4-pro` | 对话模型名称 |
+
+```json
+{
+  "api": {
+    "deepseek_api_key": "sk-...",
+    "base_url": "https://api.deepseek.com",
+    "model": "deepseek-v4-pro"
+  }
+}
 ```
 
-## 按场景直接配置
+### 4.2 `client` — LLM 客户端
 
-下面这些场景可以直接复制。没有特别说明时，YAML 放到 `~/.config/myCodingAgent/config.yaml`，JSON 放到 `~/.config/myCodingAgent/mcp.json`。
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `client.max_tool_rounds` | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `50` | 单次请求最多工具调用轮数 |
+| `client.api_max_retries` | `MYCODINGAGENT_API_MAX_RETRIES` | `3` | API 调用失败重试次数 |
+| `client.api_retry_base_delay` | `MYCODINGAGENT_API_RETRY_BASE_DELAY` | `1.0` | 重试退避基础延迟（秒） |
+| `client.debug` | `DEBUG` / `MYCODINGAGENT_DEBUG` | `false` | 调试模式 |
+| `client.legacy_system_prompt` | `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT` | `false` | 使用旧版系统提示词 |
+| `client.step_token` | `STEP_TOKEN` | `true` | 显示步骤 token 计数 |
+| `client.round_token` | `ROUND_TOKEN` | `true` | 显示轮次 token 计数 |
+| `client.conversation_token` | `CONVERSATION_TOKEN` | `true` | 显示会话 token 计数 |
 
-### 场景一：本地开发，使用 Ollama Embedding 和本机 Milvus
+### 4.3 `multi_agent` — 多智能体
 
-适合日常开发机：主模型走 DeepSeek API，Embedding 走本地 Ollama，Skill 向量索引写入本机 Milvus。
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `multi_agent.max_agent_rounds` | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `50` | 多智能体最大轮次 |
+| `multi_agent.max_parallel_tasks` | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `5` | 最大并发任务数 |
 
-先启动依赖：
+### 4.4 `long_term_memory` — 长期记忆
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `long_term_memory.enabled` | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `true` | 是否启用长期记忆 |
+| `long_term_memory.storage_model` | `MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL` | `""` | 记忆存储模型（空则跟随 `api.model`） |
+| `long_term_memory.query_model` | `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL` | `""` | 记忆检索模型（空则用 `deepseek-v4-flash`） |
+| `long_term_memory.query_recent_turns` | `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_RECENT_TURNS` | `10` | 查询时携带的最近对话轮数 |
+| `long_term_memory.max_memories` | `MYCODINGAGENT_LONG_TERM_MEMORY_MAX_MEMORIES` | `50` | 上下文注入最多记忆条数 |
+| `long_term_memory.max_workflow_candidates` | `MYCODINGAGENT_LONG_TERM_MEMORY_MAX_WORKFLOW_CANDIDATES` | `5` | 工作流候选最多条数 |
+| `long_term_memory.max_skill_candidates` | `MYCODINGAGENT_LONG_TERM_MEMORY_MAX_SKILL_CANDIDATES` | `3` | Skill 候选最多条数 |
+| `long_term_memory.startup_backfill_enabled` | `MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED` | `true` | 启动时异步回填未完成抽取 |
+
+### 4.5 `memory` — 会话与上下文管理
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `memory.enabled` | `MYCODINGAGENT_MEMORY_ENABLED` | `true` | 启用会话持久化 |
+| `memory.default_work_mode` | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `"general"` | 默认工作模式（`general` / `code`） |
+| `memory.default_context_window` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `128000` | 默认上下文窗口大小 |
+| `memory.session_ttl_days` | `MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS` | `90` | 会话保留天数 |
+| `memory.workspace_snapshot_ttl_days` | `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS` | `30` | 工作区快照保留天数 |
+| `memory.budget_soft_ratio` | `MYCODINGAGENT_BUDGET_SOFT_RATIO` | `0.60` | 上下文软预算比例 |
+| `memory.budget_working_ratio` | `MYCODINGAGENT_BUDGET_WORKING_RATIO` | `0.80` | 工作区预算比例 |
+| `memory.budget_emergency_ratio` | `MYCODINGAGENT_BUDGET_EMERGENCY_RATIO` | `0.90` | 紧急压缩比例 |
+| `memory.hot_context_force_ratio` | `MYCODINGAGENT_HOT_CONTEXT_FORCE_RATIO` | `0.40` | 热上下文强制提交比例 |
+| `memory.checkpoint_enabled` | `MYCODINGAGENT_CHECKPOINT_ENABLED` | `true` | 启用工作区检查点 |
+| `memory.reserved_reasoning_tokens` | `MYCODINGAGENT_RESERVED_REASONING_TOKENS` | `8000` | 为推理保留的 token 数 |
+| `memory.reserved_output_tokens` | `MYCODINGAGENT_RESERVED_OUTPUT_TOKENS` | `4000` | 为输出保留的 token 数 |
+| `memory.reserved_tool_tokens` | `MYCODINGAGENT_RESERVED_TOOL_TOKENS` | `12000` | 为工具调用保留的 token 数 |
+| `memory.model_context_windows` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOWS` | `{"deepseek-v4-flash": 1000000}` | 各模型上下文窗口映射（JSON 字典） |
+
+### 4.6 `sandbox` — 沙箱配置
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `sandbox.root` | `MYCODINGAGENT_SANDBOX_ROOT` | 当前工作目录 | 沙箱根目录 |
+| `sandbox.max_output_chars` | `MYCODINGAGENT_MAX_OUTPUT_CHARS` | `10000` | 单次命令输出最大字符数 |
+| `sandbox.workspace_lease_enabled` | `MYCODINGAGENT_WORKSPACE_LEASE_ENABLED` | `true` | 启用工作区租约锁 |
+
+### 4.7 `docker` — Docker 容器配置
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `docker.image` | `MYCODINGAGENT_DOCKER_IMAGE` | `"mycodingagent-sandbox:py312"` | 沙箱镜像名称 |
+| `docker.network` | `MYCODINGAGENT_DOCKER_NETWORK` | `"bridge"` | Docker 网络模式 |
+| `docker.cpus` | `MYCODINGAGENT_DOCKER_CPUS` | `"2"` | CPU 限制 |
+| `docker.memory` | `MYCODINGAGENT_DOCKER_MEMORY` | `"1g"` | 内存限制 |
+| `docker.pids_limit` | `MYCODINGAGENT_DOCKER_PIDS_LIMIT` | `"256"` | 进程数限制 |
+| `docker.default_timeout` | `MYCODINGAGENT_DOCKER_DEFAULT_TIMEOUT` | `120` | 默认命令超时（秒） |
+| `docker.max_timeout` | `MYCODINGAGENT_DOCKER_MAX_TIMEOUT` | `600` | 最大命令超时（秒） |
+| `docker.pull_timeout` | `MYCODINGAGENT_DOCKER_PULL_TIMEOUT` | `300` | Docker pull 超时（秒） |
+
+### 4.8 `skills` — Skill 路由与检索
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `skills.default_tool_names` | `MYCODINGAGENT_DEFAULT_SKILLS` | `["coding-standards"]` | 默认启用的 Skill |
+| `skills.router_top_n` | `MYCODINGAGENT_SKILL_ROUTER_TOP_N` | `10` | Skill Router 推荐 Top-N |
+| `skills.router_retrieval_top_k` | `MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_TOP_K` | `40` | 向量检索 Top-K |
+| `skills.router_user_weight` | `MYCODINGAGENT_SKILL_ROUTER_USER_WEIGHT` | `0.15` | 用户习惯权重 |
+| `skills.router_session_weight` | `MYCODINGAGENT_SKILL_ROUTER_SESSION_WEIGHT` | `0.45` | 会话内权重 |
+| `skills.router_retrieval_weight` | `MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_WEIGHT` | `0.40` | 语义检索权重 |
+| `skills.lrfu_decay` | `MYCODINGAGENT_SKILL_LRFU_DECAY` | `0.95` | LRFU 衰减系数 |
+| `skills.skill_call_reward` | `MYCODINGAGENT_SKILL_CALL_REWARD` | `10.0` | Skill 调用后的 LRFU 奖励 |
+| `skills.session_activation_reward` | `MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD` | `0.3` | 会话内查看/激活 Skill 的 LRFU 奖励 |
+| `skills.user_skill_cache_max_entries` | `MYCODINGAGENT_USER_SKILL_CACHE_MAX_ENTRIES` | `1000` | 用户级 Skill LRFU 缓存容量 |
+| `skills.session_skill_cache_max_entries` | `MYCODINGAGENT_SESSION_SKILL_CACHE_MAX_ENTRIES` | `200` | 会话级 Skill LRFU 缓存容量 |
+| `skills.vector_sync_batch_size` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE` | `2` | 向量同步批大小 |
+| `skills.vector_sync_max_retries` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_MAX_RETRIES` | `3` | 向量同步最大重试 |
+
+### 4.9 `embedding` — 嵌入模型
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `embedding.provider` | `MYCODINGAGENT_EMBEDDING_PROVIDER` | `"bge_http"` | 嵌入服务类型（`bge_http` / `openai` / `dashscope`） |
+| `embedding.model` | `MYCODINGAGENT_EMBEDDING_MODEL` | `"bge-m3"` | 嵌入模型名称 |
+| `embedding.endpoint` | `MYCODINGAGENT_EMBEDDING_ENDPOINT` | `"http://127.0.0.1:11434/api/embed"` | 嵌入服务端点 |
+| `embedding.api_format` | `MYCODINGAGENT_EMBEDDING_API_FORMAT` | `"ollama"` | API 格式（自动根据 provider 推断） |
+| **`embedding.api_key`** | **`MYCODINGAGENT_EMBEDDING_API_KEY`** | `""` | **嵌入服务 API 密钥（隐私字段）** |
+| `embedding.dimension` | `MYCODINGAGENT_EMBEDDING_DIMENSION` | `1024` | 向量维度 |
+| `embedding.batch_size` | `MYCODINGAGENT_EMBEDDING_BATCH_SIZE` | `16` | 嵌入批大小 |
+| `embedding.fallback_to_hash` | `MYCODINGAGENT_BGE_FALLBACK_TO_HASH` | `false` | 嵌入不可用时回退到哈希 |
+
+### 4.10 `milvus` — Milvus 向量库
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `milvus.enabled` | `MYCODINGAGENT_MILVUS_ENABLED` | `true` | 是否启用 Milvus |
+| `milvus.host` | `MYCODINGAGENT_MILVUS_HOST` | `"127.0.0.1"` | Milvus 主机地址 |
+| `milvus.port` | `MYCODINGAGENT_MILVUS_PORT` | `"19530"` | Milvus 端口 |
+| **`milvus.token`** | **`MYCODINGAGENT_MILVUS_TOKEN`** | `""` | **Milvus 认证令牌（隐私字段）** |
+| `milvus.collection` | `MYCODINGAGENT_MILVUS_COLLECTION` | `"mycodingagent_skills"` | 集合名称 |
+| `milvus.rrf_k` | `MYCODINGAGENT_MILVUS_RRF_K` | `60` | RRF 融合 K 值 |
+
+### 4.11 `mcp` — MCP Server
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `mcp.enabled` | `MYCODINGAGENT_MCP_ENABLED` | `true` | 是否启用 MCP |
+| `mcp.project_config_path` | `MYCODINGAGENT_MCP_PROJECT_CONFIG` | `.mycodingagent/mcp.json` | 项目级 MCP 配置路径 |
+| `mcp.user_config_path` | `MYCODINGAGENT_MCP_USER_CONFIG` | `~/.config/myCodingAgent/mcp.json` | 用户级 MCP 配置路径 |
+| `mcp.reconnect_server_step` | `MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP` | `10` | 后台重连间隔（秒） |
+
+---
+
+## 5. 完整配置示例
+
+完整 JSON 模板见仓库中 `.mycodingagent/config.example.json`，首次启动时也会自动创建。
+
+---
+
+## 6. 环境变量速查表
+
+以下列出所有环境变量及其对应 JSON 路径（环境变量在 JSON 文件未设置时生效）：
+
+| 环境变量 | JSON 路径 | 类型 |
+|----------|-----------|------|
+| `DEEPSEEK_API_KEY` | `api.deepseek_api_key` | string |
+| `DEEPSEEK_BASE_URL` | `api.base_url` | string |
+| `DEEPSEEK_MODEL` | `api.model` | string |
+| `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `client.max_tool_rounds` | int |
+| `MYCODINGAGENT_API_MAX_RETRIES` | `client.api_max_retries` | int |
+| `DEBUG` | `client.debug` | bool |
+| `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT` | `client.legacy_system_prompt` | bool |
+| `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | int |
+| `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | int |
+| `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `long_term_memory.enabled` | bool |
+| `MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL` | `long_term_memory.storage_model` | string |
+| `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL` | `long_term_memory.query_model` | string |
+| `MYCODINGAGENT_MEMORY_ENABLED` | `memory.enabled` | bool |
+| `MYCODINGAGENT_DEFAULT_WORK_MODE` | `memory.default_work_mode` | string |
+| `MYCODINGAGENT_CHECKPOINT_ENABLED` | `memory.checkpoint_enabled` | bool |
+| `MYCODINGAGENT_SANDBOX_ROOT` | `sandbox.root` | path |
+| `MYCODINGAGENT_DOCKER_IMAGE` | `docker.image` | string |
+| `MYCODINGAGENT_DOCKER_CPUS` | `docker.cpus` | string |
+| `MYCODINGAGENT_DOCKER_MEMORY` | `docker.memory` | string |
+| `MYCODINGAGENT_EMBEDDING_PROVIDER` | `embedding.provider` | string |
+| `MYCODINGAGENT_EMBEDDING_MODEL` | `embedding.model` | string |
+| `MYCODINGAGENT_EMBEDDING_API_KEY` | `embedding.api_key` | string |
+| `MYCODINGAGENT_MILVUS_ENABLED` | `milvus.enabled` | bool |
+| `MYCODINGAGENT_MILVUS_HOST` | `milvus.host` | string |
+| `MYCODINGAGENT_MILVUS_TOKEN` | `milvus.token` | string |
+| `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
+
+---
+
+## 7. 典型场景配置
+
+### 7.1 仅需改 API 密钥（最小改动）
+
+编辑 `~/.mycodingagent/config.json`：
+```json
+{
+  "api": {
+    "deepseek_api_key": "sk-..."
+  }
+}
+```
+其他字段全部使用默认值。
+
+### 7.2 使用本地 Ollama Embedding
+
+```json
+{
+  "api": {
+    "deepseek_api_key": "sk-..."
+  },
+  "embedding": {
+    "provider": "bge_http",
+    "model": "bge-m3",
+    "endpoint": "http://127.0.0.1:11434/api/embed",
+    "api_format": "ollama",
+    "dimension": 1024
+  }
+}
+```
+
+### 7.3 使用 OpenAI 兼容 Embedding 服务
+
+```json
+{
+  "api": {
+    "deepseek_api_key": "sk-..."
+  },
+  "embedding": {
+    "provider": "openai",
+    "model": "text-embedding-3-small",
+    "endpoint": "https://api.openai.com/v1/embeddings",
+    "api_format": "openai",
+    "api_key": "sk-...",
+    "dimension": 1536
+  }
+}
+```
+
+### 7.4 自建 Milvus 向量库
 
 ```bash
-export DEEPSEEK_API_KEY="sk-..."
-ollama pull bge-m3
 docker compose -f Milvus/docker-compose.yml up -d
 ```
 
-配置文件：
+根目录的 `Milvus/docker-compose.yml` 启动一个单机 Milvus，`config.json` 的默认 `milvus` 配置已指向 `127.0.0.1:19530`，无需额外配置。
 
-```yaml
-api:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
-
-embedding:
-  provider: "bge_http"
-  api_format: "ollama"
-  endpoint: "http://127.0.0.1:11434/api/embed"
-  model: "bge-m3"
-  dimension: 1024
-  batch_size: 16
-
-milvus:
-  enabled: true
-  uri: "http://127.0.0.1:19530"
-  collection: "mycodingagent_skills"
-  analyzer_params:
-    type: "chinese"
-```
-
-### 场景二：快速冒烟或 CI，使用 hash Embedding 和本机 Milvus
-
-适合不想启动额外 Embedding 服务、只验证 Agent 能启动和 Skill 索引能写入的情况。hash Embedding 可用但语义检索效果不如真实模型。
-
-先启动依赖：
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-docker compose -f Milvus/docker-compose.yml up -d
-```
-
-配置文件：
-
-```yaml
-api:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
-
-embedding:
-  provider: "hash"
-  hash_dimension: 256
-
-milvus:
-  enabled: true
-  uri: "http://127.0.0.1:19530"
-  collection: "mycodingagent_skills_ci"
-```
-
-### 场景三：云端 Embedding，使用 DashScope OpenAI 兼容接口
-
-适合不想在本地跑 Embedding 服务，但希望 Skill 检索质量稳定的情况。
-
-先设置密钥：
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-export MYCODINGAGENT_EMBEDDING_API_KEY="sk-..."
-docker compose -f Milvus/docker-compose.yml up -d
-```
-
-配置文件：
-
-```yaml
-api:
-  base_url: "https://api.deepseek.com"
-  model: "deepseek-v4-pro"
-
-embedding:
-  provider: "openai_compatible"
-  api_format: "openai"
-  endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-  model: "text-embedding-v4"
-  dimension: 1536
-  timeout: 30
-
-milvus:
-  enabled: true
-  uri: "http://127.0.0.1:19530"
-  collection: "mycodingagent_skills_dashscope"
-```
-
-### 场景四：本地 sentence-transformers 模型
-
-适合已经下载好本地 BGE 或其他 sentence-transformers 模型，并希望完全本地生成向量的情况。
-
-先启动依赖：
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-docker compose -f Milvus/docker-compose.yml up -d
-```
-
-配置文件：
-
-```yaml
-embedding:
-  provider: "local"
-  model: "/absolute/path/to/local/bge-m3"
-  device: "cpu"
-  batch_size: 16
-  fallback_to_hash: false
-
-milvus:
-  enabled: true
-  uri: "http://127.0.0.1:19530"
-  collection: "mycodingagent_skills_local"
-```
-
-如果本地模型偶尔不可用，但希望开发环境继续启动，可以临时设置：
-
-```yaml
-embedding:
-  provider: "local"
-  model: "/absolute/path/to/local/bge-m3"
-  fallback_to_hash: true
-```
-
-### 场景五：连接远程 Milvus 或 Zilliz
-
-适合团队共用向量库，或本地机器不运行 Milvus 的情况。`uri` 和 `token` 按服务商控制台提供的值填写。
-
-```bash
-export DEEPSEEK_API_KEY="sk-..."
-export MYCODINGAGENT_EMBEDDING_API_KEY="sk-..."
-export MYCODINGAGENT_MILVUS_TOKEN="user:password-or-token"
-```
-
-配置文件：
-
-```yaml
-embedding:
-  provider: "openai_compatible"
-  api_format: "openai"
-  endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-  model: "text-embedding-v4"
-  dimension: 1536
-
-milvus:
-  enabled: true
-  uri: "https://your-milvus-endpoint.example.com"
-  collection: "mycodingagent_skills_team"
-  recreate_incompatible: false
-```
-
-### 场景六：用户级配置和项目级配置分开管理
-
-适合多人项目：个人密钥放用户级配置，项目只提交非敏感默认值。默认不会加载工作区 `.mycodingagent/config.yaml`，需要显式开启。
-
-用户级 `~/.config/myCodingAgent/config.yaml`：
-
-```yaml
-api:
-  deepseek_api_key: "sk-..."
-
-embedding:
-  api_key: "sk-..."
-```
-
-项目级 `.mycodingagent/config.yaml`：
-
-```yaml
-embedding:
-  provider: "openai_compatible"
-  api_format: "openai"
-  endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-  model: "text-embedding-v4"
-  dimension: 1536
-
-milvus:
-  uri: "http://127.0.0.1:19530"
-  collection: "mycodingagent_project_skills"
-```
-
-启动前启用项目级配置：
-
-```bash
-export MYCODINGAGENT_LOAD_WORKSPACE_CONFIG=1
-```
-
-### 场景七：启用 GitHub MCP，只把 token 放在 shell 环境
-
-适合本地个人使用：JSON 不保存 GitHub token，启动 Agent 前由 shell 注入。
-
-```bash
-export GITHUB_PERSONAL_ACCESS_TOKEN="ghp_xxx"
-```
-
-MCP 配置：
+### 7.5 自由组合模型
 
 ```json
 {
-  "servers": {
-    "github": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "description": "GitHub 仓库、Issue、PR 和代码搜索操作",
-      "tags": ["github", "git", "repo"],
-      "aliases": ["gh"],
-      "keywords": ["GitHub", "代码仓库", "PR", "issue"],
-      "permissions": {
-        "read_tools": ["search_repositories", "get_file_contents"],
-        "write_tools": ["create_issue", "create_pull_request"],
-        "dangerous_tools": ["delete_file", "merge_pull_request"],
-        "readonly_by_default": false
-      }
-    }
+  "api": {
+    "deepseek_api_key": "sk-...",
+    "model": "deepseek-v4-pro"
+  },
+  "long_term_memory": {
+    "storage_model": "deepseek-v4-pro",
+    "query_model": "deepseek-v4-flash"
   }
 }
 ```
 
-### 场景八：启用 GitHub MCP，把 token 写在用户级 MCP 配置
+- `api.model`：Agent 对话主模型
+- `long_term_memory.storage_model`：长期记忆存储模型（空则跟随 `api.model`）
+- `long_term_memory.query_model`：长期记忆检索模型（空则用 `deepseek-v4-flash`）
+- `embedding.model`：向量嵌入模型（独立于对话模型）
 
-适合没有统一 shell profile 的机器。不要把这个文件提交到仓库。
+---
 
-`~/.config/myCodingAgent/mcp.json`：
-
-```json
-{
-  "servers": {
-    "github": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx"
-      },
-      "description": "GitHub 仓库、Issue、PR 和代码搜索操作",
-      "tags": ["github", "git", "repo"],
-      "aliases": ["gh"],
-      "keywords": ["GitHub", "代码仓库", "PR", "issue"]
-    }
-  }
-}
-```
-
-### 场景九：只读文件系统 MCP，放在 Docker 沙箱运行
-
-适合让 MCP Server 读取当前工作区，但不允许写文件和联网。
-
-MCP 配置：
-
-```json
-{
-  "servers": {
-    "filesystem": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-filesystem", "/workspace"],
-      "sandbox": true,
-      "workspace_access": "read",
-      "network": false,
-      "description": "只读访问当前工作区文件",
-      "tags": ["filesystem", "workspace", "file"],
-      "permissions": {
-        "readonly_by_default": true
-      }
-    }
-  }
-}
-```
-
-### 场景十：连接远程 Streamable HTTP MCP
-
-适合连接公司内部或云端 MCP 服务。HTTP 认证头写在 `headers` 中。
-
-MCP 配置：
-
-```json
-{
-  "servers": {
-    "company-tools": {
-      "transport": "streamable_http",
-      "url": "https://mcp.example.com/mcp",
-      "headers": {
-        "Authorization": "Bearer mcp_xxx"
-      },
-      "description": "公司内部工具 MCP Server",
-      "tags": ["company", "internal", "mcp"],
-      "startup_timeout": 20,
-      "call_timeout": 60,
-      "permissions": {
-        "readonly_by_default": false
-      }
-    }
-  }
-}
-```
-
-## Embedding 配置
-
-Embedding 用于 Skill 检索和能力路由。支持本地 sentence-transformers、Ollama HTTP、OpenAI 兼容接口、DashScope 原生接口和 hash fallback。
-
-| 用途 | 环境变量 | 配置文件字段 | 说明 |
-| --- | --- | --- | --- |
-| Provider | `MYCODINGAGENT_EMBEDDING_PROVIDER` | `embedding.provider` | 支持 `bge_http`、`http`、`ollama`、`openai_compatible`、`dashscope`、`local`、`bge`、`hash` |
-| 模型名 | `MYCODINGAGENT_EMBEDDING_MODEL` | `embedding.model` | 旧变量：`MYCODINGAGENT_BGE_MODEL` |
-| 接口地址 | `MYCODINGAGENT_EMBEDDING_ENDPOINT` | `embedding.endpoint` | 旧变量：`MYCODINGAGENT_BGE_ENDPOINT` |
-| API 格式 | `MYCODINGAGENT_EMBEDDING_API_FORMAT` | `embedding.api_format` | 支持 `ollama`、`openai`、`dashscope` |
-| API 密钥 | `MYCODINGAGENT_EMBEDDING_API_KEY` | `embedding.api_key` | 旧变量：`MYCODINGAGENT_BGE_API_KEY` |
-| 向量维度 | `MYCODINGAGENT_EMBEDDING_DIM` | `embedding.dimension` | 必须与实际模型输出一致 |
-| 请求超时 | `MYCODINGAGENT_EMBEDDING_TIMEOUT` | `embedding.timeout` | 单位：秒 |
-| 查询前缀 | `MYCODINGAGENT_EMBEDDING_QUERY_INSTRUCTION` | `embedding.query_instruction` | 用于 query embedding |
-| 本地设备 | `MYCODINGAGENT_EMBEDDING_DEVICE` | `embedding.device` | 如 `cpu`、`cuda` |
-| 批大小 | `MYCODINGAGENT_EMBEDDING_BATCH_SIZE` | `embedding.batch_size` | 本地或 HTTP 批量嵌入大小 |
-| 额外请求体 | `MYCODINGAGENT_EMBEDDING_REQUEST_EXTRA` | `embedding.request_extra` | 环境变量必须是 JSON 对象 |
-| 额外请求头 | `MYCODINGAGENT_EMBEDDING_HEADERS` | `embedding.headers` | 环境变量必须是 JSON 对象 |
-| hash 兜底 | `MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH` | `embedding.fallback_to_hash` | 本地模型加载失败时是否降级 |
-| hash 维度 | `MYCODINGAGENT_HASH_EMBEDDING_DIM` | `embedding.hash_dimension` | provider 为 `hash` 时使用 |
-
-Ollama 示例：
-
-```yaml
-embedding:
-  provider: "bge_http"
-  api_format: "ollama"
-  endpoint: "http://127.0.0.1:11434/api/embed"
-  model: "bge-m3"
-  dimension: 1024
-```
-
-DashScope OpenAI 兼容接口示例：
-
-```yaml
-embedding:
-  provider: "openai_compatible"
-  api_format: "openai"
-  endpoint: "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings"
-  model: "text-embedding-v4"
-  dimension: 1536
-```
-
-```bash
-export MYCODINGAGENT_EMBEDDING_API_KEY="sk-..."
-```
-
-本地模型示例：
-
-```yaml
-embedding:
-  provider: "local"
-  model: "/absolute/path/to/bge-m3"
-  device: "cpu"
-  batch_size: 16
-```
-
-## Milvus 向量库配置
-
-Milvus 用于保存 Skill 向量索引。默认连接本机 `127.0.0.1:19530`，仓库提供 `Milvus/docker-compose.yml` 作为本地启动参考。
-
-| 用途 | 环境变量 | 配置文件字段 | 默认值 |
-| --- | --- | --- | --- |
-| 是否启用 | `MYCODINGAGENT_MILVUS_ENABLED` | `milvus.enabled` | `true` |
-| Host | `MYCODINGAGENT_MILVUS_HOST` | `milvus.host` | `127.0.0.1` |
-| Port | `MYCODINGAGENT_MILVUS_PORT` | `milvus.port` | `19530` |
-| URI | `MYCODINGAGENT_MILVUS_URI` | `milvus.uri` | `http://{host}:{port}` |
-| Collection | `MYCODINGAGENT_MILVUS_COLLECTION` | `milvus.collection` | `mycodingagent_skills` |
-| Token | `MYCODINGAGENT_MILVUS_TOKEN` | `milvus.token` | 空 |
-| 不兼容时重建 | `MYCODINGAGENT_MILVUS_RECREATE_INCOMPATIBLE` | `milvus.recreate_incompatible` | `true` |
-| Dense index | `MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE` | `milvus.dense_index_type` | `HNSW` |
-| Dense metric | `MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE` | `milvus.dense_metric_type` | `COSINE` |
-| HNSW M | `MYCODINGAGENT_MILVUS_HNSW_M` | `milvus.hnsw_m` | `16` |
-| HNSW EF 构建 | `MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION` | `milvus.hnsw_ef_construction` | `256` |
-| HNSW EF 查询 | `MYCODINGAGENT_MILVUS_HNSW_EF` | `milvus.hnsw_ef` | `64` |
-| Sparse index | `MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE` | `milvus.sparse_index_type` | `SPARSE_INVERTED_INDEX` |
-| Sparse metric | `MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE` | `milvus.sparse_metric_type` | `BM25` |
-| Sparse 算法 | `MYCODINGAGENT_MILVUS_SPARSE_ALGO` | `milvus.sparse_inverted_index_algo` | `DAAT_MAXSCORE` |
-| RRF K | `MYCODINGAGENT_MILVUS_RRF_K` | `milvus.rrf_k` | `60` |
-| 文本最大字节 | `MYCODINGAGENT_MILVUS_TEXT_MAX_BYTES` | `milvus.text_max_bytes` | `65535` |
-| Analyzer 参数 | `MYCODINGAGENT_MILVUS_ANALYZER_PARAMS` | `milvus.analyzer_params` | `{"type":"chinese"}` |
-
-## MCP Server 配置
-
-MCP 配置文件加载顺序如下，后加载的同名 server 覆盖前者：
-
-1. `~/.config/myCodingAgent/mcp.json`
-2. 当前项目 `.mycodingagent/mcp.json`
-3. `MYCODINGAGENT_MCP_CONFIG` 指定的额外 JSON 文件
-
-MCP 总开关和路径变量：
-
-| 用途 | 环境变量 | 配置文件字段 | 默认值 |
-| --- | --- | --- | --- |
-| MCP 总开关 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | `true` |
-| 项目 MCP 配置路径 | `MYCODINGAGENT_MCP_PROJECT_CONFIG` | `mcp.project_config_path` | `.mycodingagent/mcp.json` |
-| 用户 MCP 配置路径 | `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | `~/.config/myCodingAgent/mcp.json` |
-| 额外 MCP 配置路径 | `MYCODINGAGENT_MCP_CONFIG` | 无 | 空 |
-| 不可用 server 重连步长 | `MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP` | `mcp.reconnect_server_step` | `10` |
-
-每个 server 支持字段：
-
-| 字段 | 说明 |
-| --- | --- |
-| `disabled` | `true` 时跳过该 server |
-| `transport` | `stdio` 或 `streamable_http` |
-| `command` | `stdio` server 的启动命令 |
-| `args` | `stdio` server 的启动参数 |
-| `env` | 追加给 `stdio` server 进程的环境变量；会覆盖当前进程同名变量 |
-| `url` | `streamable_http` server 的地址 |
-| `headers` | `streamable_http` 请求头 |
-| `startup_timeout` | 启动和初始化超时，单位秒 |
-| `call_timeout` | 单次 tool/resource/prompt 调用超时，单位秒 |
-| `sandbox` | `stdio` server 是否放入 Docker 沙箱运行 |
-| `image` | server 使用的 Docker 镜像；为空时使用全局 Docker 镜像 |
-| `workspace_access` | 沙箱内工作区挂载权限：`none`、`read`、`write` |
-| `network` | 沙箱内是否开启网络 |
-| `description`、`tags`、`aliases`、`keywords` | 能力路由检索用的描述信息 |
-| `permissions.read_tools` | 明确标为只读的工具名 |
-| `permissions.write_tools` | 明确标为写入的工具名 |
-| `permissions.dangerous_tools` | 明确标为危险的工具名 |
-| `permissions.readonly_by_default` | 未匹配工具是否默认按只读处理 |
-
-GitHub MCP 示例：
-
-```json
-{
-  "servers": {
-    "github": {
-      "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "ghp_xxx"
-      },
-      "description": "GitHub 仓库、Issue、PR 和代码搜索操作",
-      "tags": ["github", "git", "repo"],
-      "aliases": ["gh"],
-      "keywords": ["GitHub", "代码仓库", "PR", "issue"]
-    }
-  }
-}
-```
-
-如果不想把 GitHub token 写入 JSON，也可以在启动前设置：
-
-```bash
-export GITHUB_PERSONAL_ACCESS_TOKEN="ghp_xxx"
-```
-
-## Docker 和沙箱配置
-
-| 用途 | 环境变量 | 配置文件字段 | 默认值 |
-| --- | --- | --- | --- |
-| 工作区根目录 | `MYCODINGAGENT_SANDBOX_ROOT` | `sandbox.root` | 当前目录 |
-| 工具输出上限 | `MYCODINGAGENT_MAX_OUTPUT_CHARS` | `sandbox.max_output_chars` | `10000` |
-| 工作区租约 | `MYCODINGAGENT_WORKSPACE_LEASE_ENABLED` | `sandbox.workspace_lease_enabled` | `true` |
-| Docker 镜像 | `MYCODINGAGENT_DOCKER_IMAGE` | `docker.image` | `mycodingagent-sandbox:py312` |
-| Docker 网络 | `MYCODINGAGENT_DOCKER_NETWORK` | `docker.network` | `none` |
-| 构建网络 | `MYCODINGAGENT_DOCKER_BUILD_NETWORK` | `docker.build_network` | `host` |
-| CPU 限制 | `MYCODINGAGENT_DOCKER_CPUS` | `docker.cpus` | `2` |
-| 内存限制 | `MYCODINGAGENT_DOCKER_MEMORY` | `docker.memory` | `1g` |
-| 进程数限制 | `MYCODINGAGENT_DOCKER_PIDS_LIMIT` | `docker.pids_limit` | `256` |
-| 默认超时 | `MYCODINGAGENT_DOCKER_DEFAULT_TIMEOUT` | `docker.default_timeout` | `120` |
-| 最大超时 | `MYCODINGAGENT_DOCKER_MAX_TIMEOUT` | `docker.max_timeout` | `600` |
-| 镜像检查超时 | `MYCODINGAGENT_DOCKER_CHECK_TIMEOUT` | `docker.check_timeout` | `10` |
-| 镜像拉取超时 | `MYCODINGAGENT_DOCKER_PULL_TIMEOUT` | `docker.pull_timeout` | `1800` |
-
-## Skill 和记忆配置
-
-常用 Skill 变量：
-
-| 用途 | 环境变量 | 配置文件字段 |
-| --- | --- | --- |
-| 内置 Skill 根目录 | `MYCODINGAGENT_BUILTIN_SKILLS_ROOT` | `skills.builtin_root` |
-| 工作区 Skill 根目录 | `MYCODINGAGENT_WORKSPACE_SKILLS_ROOT` 或 `MYCODINGAGENT_SKILLS_ROOT` | `skills.workspace_root` |
-| 额外 Skill 根目录 | `MYCODINGAGENT_EXTRA_SKILLS_ROOTS` | `skills.extra_roots` |
-| 默认启用 Skill | `MYCODINGAGENT_DEFAULT_SKILLS` | `skills.default_tool_names` |
-| Skill 索引目录 | `MYCODINGAGENT_SKILL_INDEX_DIR` | `skills.index_dir` |
-| Skill 搜索 Top K | `MYCODINGAGENT_SKILL_SEARCH_TOP_K` | `skills.search_top_k` |
-| Skill 最低分 | `MYCODINGAGENT_SKILL_MIN_SCORE` | `skills.min_score` |
-| Skill 向量同步批大小 | `MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE` | `skills.vector_sync_batch_size` |
-| Skill 向量同步重试次数 | `MYCODINGAGENT_SKILL_VECTOR_SYNC_MAX_RETRIES` | `skills.vector_sync_max_retries` |
-
-常用记忆变量：
-
-| 用途 | 环境变量 | 配置文件字段 | 默认值 |
-| --- | --- | --- | --- |
-| 短期记忆总开关 | `MYCODINGAGENT_MEMORY_ENABLED` | `memory.enabled` | `true` |
-| 状态目录 | `MYCODINGAGENT_STATE_DIR` | `memory.state_dir` | 空 |
-| 会话数据库路径 | `MYCODINGAGENT_MEMORY_DB_PATH` | `memory.db_path` | XDG state 或 `~/.local/state/myCodingAgent/sessions.sqlite3` |
-| 上下文窗口 | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `memory.default_context_window` | `1000000` |
-| 会话保留天数 | `MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS` | `memory.session_ttl_days` | `30` |
-| 工作区快照保留天数 | `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS` | `memory.workspace_snapshot_ttl_days` | `30` |
-| 长期记忆总开关 | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `long_term_memory.enabled` | `true` |
-| 长期记忆存储模型 | `MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_MODEL` | `long_term_memory.storage_model` | 主模型 |
-| 长期记忆查询模型 | `MYCODINGAGENT_LONG_TERM_MEMORY_QUERY_MODEL` | `long_term_memory.query_model` | 主模型 |
-
-## 运行时调试变量
-
-| 用途 | 环境变量 | 配置文件字段 | 默认值 |
-| --- | --- | --- | --- |
-| Debug 开关 | `DEBUG` 或 `MYCODINGAGENT_DEBUG` | `client.debug` | `false` |
-| 单步 token 统计 | `STEP_TOKEN` | `client.step_token` | `true` |
-| 单轮 token 统计 | `ROUND_TOKEN` | `client.round_token` | `true` |
-| 会话 token 统计 | `CONVERSATION_TOKEN` | `client.conversation_token` | `true` |
-| 最大工具轮次 | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `client.max_tool_rounds` | `50` |
-| API 最大重试 | `MYCODINGAGENT_API_MAX_RETRIES` | `client.api_max_retries` | `3` |
-| API 重试基础延迟 | `MYCODINGAGENT_API_RETRY_BASE_DELAY` | `client.api_retry_base_delay` | `1.0` |
-| 使用旧系统提示词 | `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT` | `client.legacy_system_prompt` | `false` |
-| 多智能体最大轮次 | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | `50` |
-| 多智能体最大并发 | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | `5` |
-
-## LSP 配置
+## 8. LSP 配置
 
 语言服务器命令通过环境变量覆盖，格式为：
 
@@ -581,3 +335,25 @@ export MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND="启动命令"
 ```bash
 export MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"
 ```
+
+LSP 进程运行在宿主机上，需在 `PATH` 中可找到对应可执行程序。
+
+---
+
+## 9. 常见问题
+
+**Q: 启动时提示"未检测到 API 密钥"？**
+
+A: 编辑 `~/.mycodingagent/config.json`，在 `api.deepseek_api_key` 填入密钥，或设置环境变量 `export DEEPSEEK_API_KEY="sk-..."`。
+
+**Q: 配置文件格式错误怎么办？**
+
+A: 启动时会自动检测 JSON 格式，如果格式错误会删除并重建模板。你也可以手动删除 `~/.mycodingagent/config.json`，下次启动会自动重建。
+
+**Q: 如何查看当前生效的配置？**
+
+A: 所有配置项、默认值和环境变量名详见本文档。你编辑 `~/.mycodingagent/config.json` 的内容即为生效配置（环境变量会覆盖对应字段）。
+
+**Q: 旧版本的 YAML 配置还能用吗？**
+
+A: 不能。v2 起统一使用 `~/.mycodingagent/config.json`。如果你有旧的 YAML 配置，请对照本文档手动迁移到 JSON 格式。
