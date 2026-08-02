@@ -37,6 +37,98 @@ _USER_JSON_CONFIG = _load_user_json_config()
 
 # ── 统一配置查找函数 ──
 
+_MODEL_PROVIDER_ENV_ALIASES: dict[str, dict[str, tuple[str, ...]]] = {
+    "anthropic": {"api": ("ANTHROPIC_API_KEY",), "base_url": ("ANTHROPIC_BASE_URL",)},
+    "deepseek": {"api": ("DEEPSEEK_API_KEY",), "base_url": ("DEEPSEEK_BASE_URL",)},
+    "doubao": {"api": ("DOUBAO_API_KEY", "ARK_API_KEY", "VOLCENGINE_API_KEY"), "base_url": ("DOUBAO_BASE_URL", "ARK_BASE_URL")},
+    "gemini": {"api": ("GEMINI_API_KEY", "GOOGLE_API_KEY"), "base_url": ("GEMINI_BASE_URL",)},
+    "grok": {"api": ("GROK_API_KEY", "XAI_API_KEY", "X_AI_API_KEY"), "base_url": ("GROK_BASE_URL", "XAI_BASE_URL")},
+    "kimi": {"api": ("KIMI_API_KEY", "MOONSHOT_API_KEY"), "base_url": ("KIMI_BASE_URL", "MOONSHOT_BASE_URL")},
+    "meta": {"api": ("META_API_KEY", "LLAMA_API_KEY"), "base_url": ("META_BASE_URL", "LLAMA_BASE_URL")},
+    "minimax": {"api": ("MINIMAX_API_KEY",), "base_url": ("MINIMAX_BASE_URL",)},
+    "openai": {"api": ("OPENAI_API_KEY",), "base_url": ("OPENAI_BASE_URL",)},
+    "qwen": {"api": ("QWEN_API_KEY", "DASHSCOPE_API_KEY"), "base_url": ("QWEN_BASE_URL", "DASHSCOPE_BASE_URL")},
+    "zhipu": {"api": ("ZHIPU_API_KEY", "ZHIPUAI_API_KEY"), "base_url": ("ZHIPU_BASE_URL", "ZHIPUAI_BASE_URL")},
+}
+
+
+def _env_key_part(value: str) -> str:
+    text = "".join(char.upper() if char.isalnum() else "_" for char in value.strip())
+    while "__" in text:
+        text = text.replace("__", "_")
+    return text.strip("_")
+
+
+def _env_first(names: tuple[str, ...]) -> object:
+    for name in names:
+        value = os.getenv(name)
+        if value is None:
+            continue
+        if isinstance(value, str) and not value.strip():
+            continue
+        return value
+    return _MISSING
+
+
+def _model_provider_env_names(provider: str, field_name: str) -> tuple[str, ...]:
+    provider_key = provider.strip().lower()
+    provider_part = _env_key_part(provider_key)
+    field_part = _env_key_part(field_name)
+    aliases = _MODEL_PROVIDER_ENV_ALIASES.get(provider_key, {}).get(field_name, ())
+    return (f"MYCODINGAGENT_MODEL_PROVIDER_{provider_part}_{field_part}", *aliases)
+
+
+def _model_profile_env_names(profile_key: str, field_name: str) -> tuple[str, ...]:
+    return (f"MYCODINGAGENT_MODEL_PROFILE_{_env_key_part(profile_key)}_{_env_key_part(field_name)}",)
+
+
+def _raw_or_env(raw: dict, field_name: str, env_names: tuple[str, ...], default: object = _MISSING) -> object:
+    if field_name in raw:
+        value = raw[field_name]
+        if value is not None and not (isinstance(value, str) and not value.strip()):
+            return value
+    env_value = _env_first(env_names)
+    if env_value is not _MISSING:
+        return env_value
+    return default
+
+
+def _raw_env_str(raw: dict, field_name: str, env_names: tuple[str, ...], default: str = "") -> str:
+    value = _raw_or_env(raw, field_name, env_names, default)
+    if value is _MISSING or value is None:
+        return default
+    return str(value).strip()
+
+
+def _raw_env_float(raw: dict, field_name: str, env_names: tuple[str, ...]) -> float | None:
+    return _optional_float(_raw_or_env(raw, field_name, env_names, None))
+
+
+def _raw_env_dict(raw: dict, field_name: str, env_names: tuple[str, ...]) -> dict:
+    value = _raw_or_env(raw, field_name, env_names, {})
+    if isinstance(value, dict):
+        return value
+    if value is _MISSING or value is None or value == "":
+        return {}
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return {}
+    return parsed if isinstance(parsed, dict) else {}
+
+
+def _raw_env_reasoning(raw: dict, field_name: str, env_names: tuple[str, ...]) -> str | dict[str, Any] | None:
+    value = _raw_or_env(raw, field_name, env_names, None)
+    if value is _MISSING or value is None or value == "":
+        return None
+    if isinstance(value, dict):
+        return value
+    try:
+        parsed = json.loads(str(value))
+    except (TypeError, json.JSONDecodeError):
+        return str(value).strip()
+    return parsed if isinstance(parsed, dict) else str(value).strip()
+
 def _user_raw(json_path: str, env_names: tuple[str, ...]) -> object:
     """统一配置查找：JSON 路径 > 环境变量列表（逐项尝试）。
 
@@ -241,14 +333,17 @@ class ModelProviderConfig:
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: object) -> "ModelProviderConfig":
+    def from_raw(cls, raw: object, *, provider_key: str = "") -> "ModelProviderConfig":
         data = raw if isinstance(raw, dict) else {}
+        env_provider = provider_key or str(data.get("provider") or "").strip().lower()
         return cls(
-            api=str(data.get("api") or "").strip(),
-            base_url=str(data.get("base_url") or "").strip(),
-            timeout=_optional_float(data.get("timeout")),
-            extra_headers=_string_dict(data.get("extra_headers")),
-            extra_body=dict(data.get("extra_body")) if isinstance(data.get("extra_body"), dict) else {},
+            api=_raw_env_str(data, "api", _model_provider_env_names(env_provider, "api")),
+            base_url=_raw_env_str(data, "base_url", _model_provider_env_names(env_provider, "base_url")),
+            timeout=_raw_env_float(data, "timeout", _model_provider_env_names(env_provider, "timeout")),
+            extra_headers=_string_dict(
+                _raw_env_dict(data, "extra_headers", _model_provider_env_names(env_provider, "extra_headers"))
+            ),
+            extra_body=_raw_env_dict(data, "extra_body", _model_provider_env_names(env_provider, "extra_body")),
         )
 
 
@@ -264,15 +359,17 @@ class ModelProfileConfig:
     extra_body: dict[str, Any] = field(default_factory=dict)
 
     @classmethod
-    def from_raw(cls, raw: object) -> "ModelProfileConfig":
+    def from_raw(cls, raw: object, *, profile_key: str = "") -> "ModelProfileConfig":
         data = raw if isinstance(raw, dict) else {}
         return cls(
-            provider=str(data.get("provider") or "").strip().lower(),
-            model=str(data.get("model") or "").strip(),
-            reasoning=data.get("reasoning"),
-            timeout=_optional_float(data.get("timeout")),
-            extra_headers=_string_dict(data.get("extra_headers")),
-            extra_body=dict(data.get("extra_body")) if isinstance(data.get("extra_body"), dict) else {},
+            provider=_raw_env_str(data, "provider", _model_profile_env_names(profile_key, "provider")).lower(),
+            model=_raw_env_str(data, "model", _model_profile_env_names(profile_key, "model")),
+            reasoning=_raw_env_reasoning(data, "reasoning", _model_profile_env_names(profile_key, "reasoning")),
+            timeout=_raw_env_float(data, "timeout", _model_profile_env_names(profile_key, "timeout")),
+            extra_headers=_string_dict(
+                _raw_env_dict(data, "extra_headers", _model_profile_env_names(profile_key, "extra_headers"))
+            ),
+            extra_body=_raw_env_dict(data, "extra_body", _model_profile_env_names(profile_key, "extra_body")),
         )
 
     def missing_required_fields(self) -> list[str]:
@@ -310,7 +407,7 @@ def _load_model_profiles() -> dict[str, ModelProfileConfig]:
     for key, value in raw.items():
         profile_key = str(key).strip()
         if profile_key:
-            profiles[profile_key] = ModelProfileConfig.from_raw(value)
+            profiles[profile_key] = ModelProfileConfig.from_raw(value, profile_key=profile_key)
     return profiles or {
         "main": ModelProfileConfig(provider="deepseek", model="deepseek-v4-pro"),
         "memory_search": ModelProfileConfig(
@@ -329,16 +426,26 @@ def _load_model_providers() -> dict[str, ModelProviderConfig]:
     for key, value in raw.items():
         provider_key = str(key).strip().lower()
         if provider_key:
-            providers[provider_key] = ModelProviderConfig.from_raw(value)
+            providers[provider_key] = ModelProviderConfig.from_raw(value, provider_key=provider_key)
     return providers or {"deepseek": ModelProviderConfig(api="")}
 
 
 def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
-    active = _user_str("model.active", (), "main").strip() or "main"
+    active = _user_str("model.active", ("MYCODINGAGENT_MODEL_ACTIVE",), "main").strip() or "main"
     raw = _user_dict("model.long_term_memory", (), {})
     return ModelLongTermMemoryConfig(
-        storage=str(raw.get("storage") or active).strip() or active,
-        search=str(raw.get("search") or "memory_search").strip() or "memory_search",
+        storage=_raw_env_str(
+            raw,
+            "storage",
+            ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE", "MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_PROFILE"),
+            active,
+        ) or active,
+        search=_raw_env_str(
+            raw,
+            "search",
+            ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH", "MYCODINGAGENT_LONG_TERM_MEMORY_SEARCH_PROFILE"),
+            "memory_search",
+        ) or "memory_search",
     )
 
 
@@ -346,7 +453,7 @@ def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
 class ModelConfig:
     """推理模型配置入口。旧 api.* 配置已移除。"""
 
-    active: str = field(default_factory=lambda: _user_str("model.active", (), "main").strip() or "main")
+    active: str = field(default_factory=lambda: _user_str("model.active", ("MYCODINGAGENT_MODEL_ACTIVE",), "main").strip() or "main")
     providers: dict[str, ModelProviderConfig] = field(default_factory=_load_model_providers)
     profiles: dict[str, ModelProfileConfig] = field(default_factory=_load_model_profiles)
     long_term_memory: ModelLongTermMemoryConfig = field(default_factory=_load_model_ltm_config)
@@ -359,7 +466,10 @@ class ModelConfig:
         return self.profiles.get(key)
 
     def provider(self, key: str) -> ModelProviderConfig | None:
-        return self.providers.get(key.strip().lower())
+        provider_key = key.strip().lower()
+        if not provider_key:
+            return None
+        return self.providers.get(provider_key) or ModelProviderConfig.from_raw({}, provider_key=provider_key)
 
     def validation_errors(self, *, require_long_term_memory: bool = True) -> list[str]:
         errors: list[str] = []

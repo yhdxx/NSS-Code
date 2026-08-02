@@ -11,7 +11,7 @@ myCodingAgent 所有运行配置通过以下**两个来源**读取（优先级�
 | 优先级 | 来源 | 说明 |
 |--------|------|------|
 | **1（最高）** | `~/.mycodingagent/config.json` | 用户级 JSON 配置文件 |
-| **2** | 环境变量 | JSON 字段缺失或为空字符串时生效；推理模型 profile 不提供环境变量兜底 |
+| **2** | 环境变量 | JSON 字段缺失或为空字符串时生效，包括推理模型厂商 API 和 profile 字段 |
 
 仓库内 `.mycodingagent/config.example.json` 是首次启动时复制到用户目录的全量模板；
 `.mycodingagent/config.example.yaml` 仅作字段参考。两者都不参与运行时配置读取。
@@ -61,15 +61,15 @@ myAgent
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `model.active` | - | `"main"` | 当前主推理模型 profile key |
-| `model.providers.<provider>.api` | - | `""` | **该厂商统一 API Key（必填）** |
-| `model.providers.<provider>.base_url` | - | `""` | 可选自定义 API 地址；为空时使用厂商默认值 |
-| `model.providers.<provider>.timeout` | - | `null` | 可选请求超时 |
-| `model.profiles.<key>.provider` | - | `"deepseek"` | **厂商（必填）** |
-| `model.profiles.<key>.model` | - | `"deepseek-v4-pro"` | **模型名称（必填）** |
-| `model.profiles.<key>.reasoning` | - | `null` | 可选思考强度/模式，支持厂商专属字段 |
-| `model.long_term_memory.storage` | - | `"main"` | 长期记忆存储/抽取模型 profile |
-| `model.long_term_memory.search` | - | `"memory_search"` | 长期记忆检索模型 profile |
+| `model.active` | `MYCODINGAGENT_MODEL_ACTIVE` | `"main"` | 当前主推理模型 profile key |
+| `model.providers.<provider>.api` | `MYCODINGAGENT_MODEL_PROVIDER_<PROVIDER>_API` | `""` | **该厂商统一 API Key（必填）**；DeepSeek 也支持 `DEEPSEEK_API_KEY` |
+| `model.providers.<provider>.base_url` | `MYCODINGAGENT_MODEL_PROVIDER_<PROVIDER>_BASE_URL` | `""` | 可选自定义 API 地址；DeepSeek 也支持 `DEEPSEEK_BASE_URL` |
+| `model.providers.<provider>.timeout` | `MYCODINGAGENT_MODEL_PROVIDER_<PROVIDER>_TIMEOUT` | `null` | 可选请求超时 |
+| `model.profiles.<key>.provider` | `MYCODINGAGENT_MODEL_PROFILE_<KEY>_PROVIDER` | `"deepseek"` | **厂商（必填）** |
+| `model.profiles.<key>.model` | `MYCODINGAGENT_MODEL_PROFILE_<KEY>_MODEL` | `"deepseek-v4-pro"` | **模型名称（必填）** |
+| `model.profiles.<key>.reasoning` | `MYCODINGAGENT_MODEL_PROFILE_<KEY>_REASONING` | `null` | 可选思考强度/模式，支持厂商专属字段 |
+| `model.long_term_memory.storage` | `MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE` | `"main"` | 长期记忆存储/抽取模型 profile |
+| `model.long_term_memory.search` | `MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH` | `"memory_search"` | 长期记忆检索模型 profile |
 
 ```json
 {
@@ -104,6 +104,11 @@ myAgent
 `model.profiles.<key>.reasoning` 可以写字符串快捷值，也可以写厂商专属对象。例如 DeepSeek 可写
 `{"thinking": "disabled"}`，运行时会转换为 DeepSeek 兼容接口需要的 `thinking` 请求字段；OpenAI/Grok
 可写 `{"effort": "high"}` 或 `{"reasoning_effort": "high"}`。
+
+动态字段环境变量统一使用大写 key：`model.providers.qwen.api` 对应
+`MYCODINGAGENT_MODEL_PROVIDER_QWEN_API`，`model.profiles.memory_search.reasoning` 对应
+`MYCODINGAGENT_MODEL_PROFILE_MEMORY_SEARCH_REASONING`。常见厂商 API 也支持通用别名，例如
+`OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`QWEN_API_KEY`、`DASHSCOPE_API_KEY`、`GEMINI_API_KEY`。
 
 ### 4.2 `client` — LLM 客户端
 
@@ -244,6 +249,9 @@ myAgent
 |----------|-----------|------|
 | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `client.max_tool_rounds` | int |
 | `MYCODINGAGENT_API_MAX_RETRIES` | `client.api_max_retries` | int |
+| `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_API` / `DEEPSEEK_API_KEY` | `model.providers.deepseek.api` | string |
+| `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_BASE_URL` / `DEEPSEEK_BASE_URL` | `model.providers.deepseek.base_url` | string |
+| `MYCODINGAGENT_MODEL_ACTIVE` | `model.active` | string |
 | `DEBUG` | `client.debug` | bool |
 | `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT` | `client.legacy_system_prompt` | bool |
 | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | int |

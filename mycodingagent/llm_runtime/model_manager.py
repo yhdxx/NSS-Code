@@ -11,6 +11,7 @@ from mycodingagent.configuration.settings import (
     ModelLongTermMemoryConfig,
     ModelProviderConfig,
     ModelProfileConfig,
+    _raw_env_str,
 )
 from mycodingagent.llm_runtime.providers import (
     InferenceProvider,
@@ -156,13 +157,13 @@ class ModelManager:
 def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
     raw = _read_config_json(config_path)
     model = raw.get("model") if isinstance(raw.get("model"), dict) else {}
-    active = str(model.get("active") or "main").strip() or "main"
+    active = _raw_env_str(model, "active", ("MYCODINGAGENT_MODEL_ACTIVE",), "main") or "main"
     providers_raw = model.get("providers") if isinstance(model.get("providers"), dict) else {}
     providers: dict[str, ModelProviderConfig] = {}
     for key, value in providers_raw.items():
         provider_key = str(key).strip().lower()
         if provider_key:
-            providers[provider_key] = ModelProviderConfig.from_raw(value)
+            providers[provider_key] = ModelProviderConfig.from_raw(value, provider_key=provider_key)
     if not providers:
         providers = dict(CONFIG.model.providers)
     profiles_raw = model.get("profiles") if isinstance(model.get("profiles"), dict) else {}
@@ -170,7 +171,7 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
     for key, value in profiles_raw.items():
         profile_key = str(key).strip()
         if profile_key:
-            profiles[profile_key] = ModelProfileConfig.from_raw(value)
+            profiles[profile_key] = ModelProfileConfig.from_raw(value, profile_key=profile_key)
     if not profiles:
         profiles = dict(CONFIG.model.profiles)
     ltm_raw = model.get("long_term_memory") if isinstance(model.get("long_term_memory"), dict) else {}
@@ -179,8 +180,18 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
         providers=providers,
         profiles=profiles,
         long_term_memory=ModelLongTermMemoryConfig(
-            storage=str(ltm_raw.get("storage") or active).strip() or active,
-            search=str(ltm_raw.get("search") or "memory_search").strip() or "memory_search",
+            storage=_raw_env_str(
+                ltm_raw,
+                "storage",
+                ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE", "MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_PROFILE"),
+                active,
+            ) or active,
+            search=_raw_env_str(
+                ltm_raw,
+                "search",
+                ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH", "MYCODINGAGENT_LONG_TERM_MEMORY_SEARCH_PROFILE"),
+                "memory_search",
+            ) or "memory_search",
         ),
     )
 

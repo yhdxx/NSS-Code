@@ -12,6 +12,17 @@ from mycodingagent.configuration.bootstrap import bootstrap_user_config
 ROOT = Path(__file__).resolve().parents[1]
 
 
+MODEL_API_ENV_NAMES = (
+    "MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_API",
+    "MYCODINGAGENT_MODEL_PROVIDER_OPENAI_API",
+    "MYCODINGAGENT_MODEL_PROVIDER_QWEN_API",
+    "DEEPSEEK_API_KEY",
+    "OPENAI_API_KEY",
+    "QWEN_API_KEY",
+    "DASHSCOPE_API_KEY",
+)
+
+
 def _fake_repo(tmp_path: Path) -> Path:
     repo = tmp_path / "repo"
     (repo / ".mycodingagent").mkdir(parents=True)
@@ -158,6 +169,8 @@ def test_main_bootstrap_creates_config_before_runtime_config_import(tmp_path):
         "HOME": str(tmp_path / "home"),
         "PYTHONPATH": str(ROOT),
     }
+    for name in MODEL_API_ENV_NAMES:
+        env.pop(name, None)
     result = subprocess.run(
         [sys.executable, str(ROOT / "__main__.py")],
         cwd=ROOT,

@@ -15,6 +15,28 @@ from mycodingagent.llm_runtime.providers import registered_provider_names
 from mycodingagent.llm_runtime.providers.vendors import DeepSeekProvider, OpenAIProvider
 
 
+def _clear_provider_env(monkeypatch, provider: str) -> None:
+    provider_part = provider.upper()
+    for name in (
+        f"MYCODINGAGENT_MODEL_PROVIDER_{provider_part}_API",
+        f"MYCODINGAGENT_MODEL_PROVIDER_{provider_part}_BASE_URL",
+        f"{provider_part}_API_KEY",
+        f"{provider_part}_BASE_URL",
+    ):
+        monkeypatch.delenv(name, raising=False)
+    for name in {
+        "DEEPSEEK_API_KEY",
+        "DEEPSEEK_BASE_URL",
+        "OPENAI_API_KEY",
+        "OPENAI_BASE_URL",
+        "QWEN_API_KEY",
+        "QWEN_BASE_URL",
+        "DASHSCOPE_API_KEY",
+        "DASHSCOPE_BASE_URL",
+    }:
+        monkeypatch.delenv(name, raising=False)
+
+
 def _write_model_config(path: Path) -> None:
     path.write_text(
         json.dumps(
@@ -68,7 +90,8 @@ def test_provider_registry_includes_required_vendors():
     }
 
 
-def test_model_manager_groups_only_configured_profiles_with_api(tmp_path):
+def test_model_manager_groups_only_configured_profiles_with_api(tmp_path, monkeypatch):
+    _clear_provider_env(monkeypatch, "openai")
     config_path = tmp_path / "config.json"
     _write_model_config(config_path)
     manager = ModelManager(config_path=config_path, model_config=load_model_config(config_path))
@@ -80,6 +103,65 @@ def test_model_manager_groups_only_configured_profiles_with_api(tmp_path):
     assert grouped["deepseek"][0].base_url == "https://api.deepseek.com"
     assert [profile.key for profile in grouped["qwen"]] == ["qwen_main"]
     assert "openai" not in grouped
+
+
+def test_model_provider_api_falls_back_to_environment(tmp_path, monkeypatch):
+    _clear_provider_env(monkeypatch, "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
+    monkeypatch.setenv("DEEPSEEK_BASE_URL", "https://env.deepseek.example")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "active": "main",
+                    "providers": {"deepseek": {"api": "", "base_url": ""}},
+                    "profiles": {"main": {"provider": "deepseek", "model": "deepseek-v4-pro"}},
+                    "long_term_memory": {"storage": "main", "search": "main"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = ModelManager(config_path=config_path, model_config=load_model_config(config_path))
+
+    profile = manager.active_profile
+
+    assert manager.validation_errors() == []
+    assert profile.api == "sk-from-env"
+    assert profile.base_url == "https://env.deepseek.example"
+
+
+def test_model_provider_config_overrides_environment(tmp_path, monkeypatch):
+    _clear_provider_env(monkeypatch, "deepseek")
+    monkeypatch.setenv("DEEPSEEK_API_KEY", "sk-from-env")
+    config_path = tmp_path / "config.json"
+    _write_model_config(config_path)
+    manager = ModelManager(config_path=config_path, model_config=load_model_config(config_path))
+
+    assert manager.active_profile.api == "sk-deepseek"
+
+
+def test_missing_provider_entry_can_be_supplied_by_environment(tmp_path, monkeypatch):
+    _clear_provider_env(monkeypatch, "qwen")
+    monkeypatch.setenv("QWEN_API_KEY", "sk-qwen-env")
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "model": {
+                    "active": "qwen_main",
+                    "profiles": {"qwen_main": {"provider": "qwen", "model": "qwen-plus"}},
+                    "long_term_memory": {"storage": "qwen_main", "search": "qwen_main"},
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = ModelManager(config_path=config_path, model_config=load_model_config(config_path))
+
+    assert manager.validation_errors() == []
+    assert manager.active_profile.api == "sk-qwen-env"
 
 
 def test_model_manager_switches_active_profile_and_persists_reasoning(tmp_path):
@@ -109,7 +191,8 @@ def test_model_manager_switches_long_term_memory_target(tmp_path):
     assert manager.model_config.long_term_memory.search == "qwen_main"
 
 
-def test_model_manager_reports_only_critical_model_config_errors():
+def test_model_manager_reports_only_critical_model_config_errors(monkeypatch):
+    _clear_provider_env(monkeypatch, "deepseek")
     manager = ModelManager(
         model_config=ModelConfig(
             active="main",
