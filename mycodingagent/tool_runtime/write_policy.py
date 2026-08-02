@@ -4,6 +4,7 @@ from dataclasses import dataclass, field
 from difflib import unified_diff
 
 from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
+from mycodingagent.terminal_ui.output import render_write_approval_request
 
 USER_DENIED_WRITE_MESSAGE = "用户拒绝执行该文件写入"
 
@@ -38,17 +39,13 @@ class CLIWriteApprovalHook(WriteApprovalHook):
     async def approve(self, request: WriteApprovalRequest) -> WriteApprovalDecision:
         if request.path in self._always_allowed:
             return WriteApprovalDecision(allowed=True, remember_file=True, reason="本会话已批准该文件")
-        print("[需要批准文件写入]", flush=True)
-        print(f"工具：{request.tool_name}", flush=True)
-        print(f"路径：{request.path}", flush=True)
-        if request.intent:
-            print(f"目的：{request.intent}", flush=True)
-        preview = request.preview
-        if len(preview) > self.max_preview_chars:
-            preview = preview[: self.max_preview_chars] + "\n... <预览已截断>"
-        if preview:
-            print("预览：", flush=True)
-            print(preview, flush=True)
+        render_write_approval_request(
+            tool_name=request.tool_name,
+            path=request.path,
+            intent=request.intent,
+            preview=request.preview,
+            max_preview_chars=self.max_preview_chars,
+        )
         try:
             answer = await self.coordinator.read_choice(
                 "允许本次写入吗？[y/N/a]：", allowed={"y", "yes", "a", "always"}

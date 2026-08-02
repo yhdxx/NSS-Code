@@ -242,8 +242,10 @@ Capability Router 的推荐只作为文本进入 Runtime Context，不参与 too
 ```text
 stream_one_round()
   -> 发送 messages + tools
-  -> 流式打印 assistant 文本
-  -> 聚合 tool_call delta
+  -> 终端显示 H-Agent:分析中. / .. / ... 状态动画
+  -> 收集 assistant 文本和 tool_call delta
+  -> 有工具调用时交给 terminal_ui/output.py 分组和彩色展示
+  -> 无工具调用时将最终回答交给 terminal_ui/output.py 按 Markdown 渲染
   -> 失败且可重试：清空本次累积分片，指数退避后重发
   -> 返回 assistant_text, tool_calls, usage
 ```

@@ -201,6 +201,20 @@ def test_stream_retries_connection_error_then_succeeds(monkeypatch, capsys):
     assert delays, "expected a backoff sleep between attempts"
 
 
+def test_stream_renders_final_answer_as_markdown(capsys):
+    fake = _FakeClient([_FakeStream([_text_chunk("**Done**\n\n- `app.py` updated")])])
+
+    text, tool_calls, _ = _run_stream(fake)
+    output = capsys.readouterr().out
+
+    assert text == "**Done**\n\n- `app.py` updated"
+    assert tool_calls == []
+    assert "模型：" in output
+    assert "Done" in output
+    assert "app.py updated" in output
+    assert "**Done**" not in output
+
+
 def test_stream_retry_does_not_duplicate_partial_output(monkeypatch):
     """A stream that dies mid-iteration must not leave its partial text in the retried result."""
     _no_sleep(monkeypatch)

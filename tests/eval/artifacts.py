@@ -39,6 +39,17 @@ METRIC_SPECS: dict[str, dict[str, Any]] = {
         ],
         "gate": "至少 30 个长会话任务、每种策略 3 次，并报告 p50/p95 与 95% 置信区间。",
     },
+    "runtime_context_virtualization": {
+        "title": "真实 Runtime 上下文虚拟化评测",
+        "definition": "通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。",
+        "formulas": [
+            "任务成功率 = 正确回答隐藏历史证据锚点的运行数 / 总运行数",
+            "未缓存输入降幅 = (Raw 未缓存输入 token - 候选未缓存输入 token) / Raw 未缓存输入 token",
+            "缓存命中率 = prompt_cache_hit_tokens / (prompt_cache_hit_tokens + prompt_cache_miss_tokens)",
+            "恢复成功率 = 需要恢复且恢复后答对的运行数 / 需要恢复的运行数",
+        ],
+        "gate": "至少 30 条长会话轨迹、raw/forced_virtualized/natural 三策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点，且未缓存输入 token 必须下降。",
+    },
     "prefix_cache": {
         "title": "前缀缓存命中率评测",
         "definition": "在 system prompt 与工具 schema 稳定的连续请求中，测量服务商返回的缓存命中 token 占比；预热请求不计入。该评测不依赖或假设项目图谱消息常驻。",

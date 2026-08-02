@@ -2,18 +2,63 @@ from __future__ import annotations
 
 import json
 
+from mycodingagent.terminal_ui.output import (
+    render_assistant_markdown,
+    render_assistant_text,
+    render_tool_calls,
+    render_tool_result_preview,
+)
+
 
 def render_conversation_history(messages: list[dict], *, max_chars_per_message: int = 2000) -> None:
-    visible_messages = [
-        format_history_message(message, max_chars_per_message=max_chars_per_message)
-        for message in messages
-    ]
-    visible_messages = [message for message in visible_messages if message]
     print("========== 已恢复历史对话 ==========", flush=True)
-    if not visible_messages:
+    rendered_any = False
+    call_id_to_tool_name: dict[str, str] = {}
+    for message in messages:
+        role = message.get("role", "")
+        if role == "system":
+            continue
+        rendered_any = True
+        if role == "user":
+            render_assistant_text(
+                truncate_history_text(message_content_to_text(message.get("content", "")), max_chars_per_message),
+                label="User",
+            )
+            continue
+        if role == "assistant":
+            content = message_content_to_text(message.get("content", ""))
+            if content:
+                render_assistant_markdown(
+                    truncate_history_text(content, max_chars_per_message),
+                    label="Assistant",
+                )
+            tool_calls = list(message.get("tool_calls", []) or [])
+            if tool_calls:
+                for call in tool_calls:
+                    call_id = str(call.get("id") or "")
+                    tool_name = str(call.get("function", {}).get("name") or "")
+                    if call_id and tool_name:
+                        call_id_to_tool_name[call_id] = tool_name
+                render_tool_calls(tool_calls)
+            continue
+        if role == "tool":
+            tool_name = str(message.get("metadata", {}).get("tool_name") or "")
+            tool_name = tool_name or call_id_to_tool_name.get(str(message.get("tool_call_id") or ""), "tool")
+            render_tool_result_preview(
+                tool_name=tool_name,
+                content=truncate_history_text(
+                    message_content_to_text(message.get("content", "")),
+                    max_chars_per_message,
+                ),
+                is_error=bool(message.get("metadata", {}).get("is_error")),
+            )
+            continue
+        render_assistant_text(
+            truncate_history_text(message_content_to_text(message.get("content", "")), max_chars_per_message),
+            label=role or "Message",
+        )
+    if not rendered_any:
         print("(暂无可展示历史消息)", flush=True)
-    else:
-        print("\n\n".join(visible_messages), flush=True)
     print("==================================", flush=True)
 
 
@@ -37,7 +82,8 @@ def format_history_message(message: dict, *, max_chars_per_message: int = 2000) 
         return ""
     if role == "tool":
         tool_name = message.get("metadata", {}).get("tool_name", "tool")
-        return f"Tool: [{tool_name}] 输出已恢复到上下文"
+        content = truncate_history_text(message_content_to_text(message.get("content", "")), max_chars_per_message)
+        return f"Tool: [{tool_name}] " + (content or "（无输出）")
     return f"{role or 'Message'}: " + truncate_history_text(message_content_to_text(message.get("content", "")), max_chars_per_message)
 
 

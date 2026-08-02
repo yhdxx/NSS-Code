@@ -1,13 +1,19 @@
 from __future__ import annotations
 
 import asyncio
-import json
 from dataclasses import dataclass
 from typing import Any
 
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
 
 from mycodingagent.configuration import CONFIG
+from mycodingagent.terminal_ui.output import (
+    BashDisplayLevel,
+    processing_status,
+    render_assistant_markdown,
+    render_assistant_text,
+    render_tool_calls,
+)
 
 RETRYABLE_STATUS_CODES = frozenset({408, 409, 429, 500, 502, 503, 504})
 
@@ -65,6 +71,21 @@ def _api_error_message(exc: Exception) -> str:
     return f"Error: API request failed: {exc}"
 
 
+def _runtime_bash_display_level(command: str) -> tuple[BashDisplayLevel, str]:
+    """Classify Bash display risk outside the UI layer."""
+    try:
+        from mycodingagent.tool_runtime.command_policy import analyze_command
+
+        risk, reason = analyze_command(command)
+    except Exception as exc:  # pragma: no cover - defensive display fallback
+        return "approval", f"无法分类：{exc}"
+    if risk == "dangerous":
+        return "high", reason
+    if risk == "read":
+        return "low", reason
+    return "approval", reason
+
+
 async def _wait_or_cancel(awaitable: Any, cancel_event: asyncio.Event | None) -> tuple[Any, bool]:
     task = asyncio.ensure_future(awaitable)
     if cancel_event is None:
@@ -101,69 +122,59 @@ async def stream_one_round(
     content_parts: list[str] = []
     pending_tool_calls: dict[int, PendingToolCall] = {}
     last_usage = None
-    printed_any_text = False
     stream = None
 
     for attempt in range(CONFIG.client.api_max_retries + 1):
         content_parts = []
         pending_tool_calls = {}
         last_usage = None
-        printed_any_text = False
         try:
-            stream, interrupted = await _wait_or_cancel(
-                client.chat.completions.create(**request), cancel_event
-            )
-            if interrupted:
-                return StreamRoundResult("", [], interrupted=True)
-            if display:
-                print(f"{output_label}：", end="", flush=True)
-            iterator = stream.__aiter__()
-            while True:
-                try:
-                    chunk, interrupted = await _wait_or_cancel(iterator.__anext__(), cancel_event)
-                except StopAsyncIteration:
-                    break
+            async with processing_status("分析中", enabled=display):
+                stream, interrupted = await _wait_or_cancel(
+                    client.chat.completions.create(**request), cancel_event
+                )
                 if interrupted:
-                    await stream.close()
-                    if display and printed_any_text:
-                        print()
-                    # Tool call arguments received before finish_reason may be incomplete.
-                    return StreamRoundResult("".join(content_parts), [], last_usage, interrupted=True)
-                if not chunk.choices:
-                    continue
-                delta = chunk.choices[0].delta
-                text = getattr(delta, "content", None)
-                if text:
-                    if display:
-                        print(text, end="", flush=True)
-                        printed_any_text = True
-                    content_parts.append(text)
-                for tool_delta in getattr(delta, "tool_calls", None) or []:
-                    state = pending_tool_calls.setdefault(tool_delta.index, PendingToolCall())
-                    if tool_delta.id:
-                        state.tool_id = tool_delta.id
-                    function_delta = getattr(tool_delta, "function", None)
-                    if function_delta is None:
+                    return StreamRoundResult("", [], interrupted=True)
+                iterator = stream.__aiter__()
+                while True:
+                    try:
+                        chunk, interrupted = await _wait_or_cancel(iterator.__anext__(), cancel_event)
+                    except StopAsyncIteration:
+                        break
+                    if interrupted:
+                        await stream.close()
+                        if display and content_parts:
+                            render_assistant_text("".join(content_parts), label=output_label)
+                        # Tool call arguments received before finish_reason may be incomplete.
+                        return StreamRoundResult("".join(content_parts), [], last_usage, interrupted=True)
+                    if not chunk.choices:
                         continue
-                    if function_delta.name:
-                        state.tool_name = function_delta.name
-                    if function_delta.arguments:
-                        state.arguments += function_delta.arguments
-                if getattr(chunk, "usage", None):
-                    last_usage = chunk.usage
+                    delta = chunk.choices[0].delta
+                    text = getattr(delta, "content", None)
+                    if text:
+                        content_parts.append(text)
+                    for tool_delta in getattr(delta, "tool_calls", None) or []:
+                        state = pending_tool_calls.setdefault(tool_delta.index, PendingToolCall())
+                        if tool_delta.id:
+                            state.tool_id = tool_delta.id
+                        function_delta = getattr(tool_delta, "function", None)
+                        if function_delta is None:
+                            continue
+                        if function_delta.name:
+                            state.tool_name = function_delta.name
+                        if function_delta.arguments:
+                            state.arguments += function_delta.arguments
+                    if getattr(chunk, "usage", None):
+                        last_usage = chunk.usage
             break
         except (APIConnectionError, APITimeoutError, APIError) as exc:
             if not _retryable_api_error(exc) or attempt >= CONFIG.client.api_max_retries:
                 error = _api_error_message(exc)
                 if display:
-                    if printed_any_text:
-                        print()
-                    print(f"{output_label}：{error}", flush=True)
+                    render_assistant_text(error, label=output_label)
                 return StreamRoundResult(error, [])
             delay = CONFIG.client.api_retry_base_delay * (2**attempt)
             if display:
-                if printed_any_text:
-                    print()
                 print(
                     f"[连接中断，{delay:.1f}s 后重试 {attempt + 1}/{CONFIG.client.api_max_retries}] {exc}",
                     flush=True,
@@ -172,15 +183,13 @@ async def stream_one_round(
             if interrupted:
                 return StreamRoundResult("", [], interrupted=True)
 
-    if display and content_parts:
-        print()
     calls = [pending_tool_calls[index] for index in sorted(pending_tool_calls)]
-    if display and calls:
-        print("工具调用：", flush=True)
-        for call in calls:
-            try:
-                args = json.dumps(json.loads(call.arguments or "{}"), ensure_ascii=False, indent=2)
-            except json.JSONDecodeError:
-                args = call.arguments
-            print(f"- {call.tool_name} {args}", flush=True)
+    if display:
+        text = "".join(content_parts)
+        if calls:
+            if text:
+                render_assistant_text(text, label=output_label)
+            render_tool_calls(calls, bash_classifier=_runtime_bash_display_level)
+        else:
+            render_assistant_markdown(text, label=output_label)
     return StreamRoundResult("".join(content_parts), calls, last_usage)

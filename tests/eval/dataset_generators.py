@@ -20,6 +20,7 @@ def generate_all(output_dir: Path = DATASET_DIR) -> dict[str, int]:
     datasets = {
         "multi_agent_tasks.jsonl": generate_multi_agent_tasks(),
         "context_virtualization_cases.jsonl": generate_context_virtualization_cases(),
+        "runtime_context_virtualization_cases.jsonl": generate_runtime_context_virtualization_cases(),
         "long_term_workflow_cases.jsonl": generate_long_term_workflow_cases(),
         "skill_router_500_cases.jsonl": generate_skill_router_cases(),
         "capability_router_cases.jsonl": generate_capability_router_cases(),
@@ -32,6 +33,66 @@ def generate_all(output_dir: Path = DATASET_DIR) -> dict[str, int]:
         write_jsonl(output_dir / name, rows)
         counts[name] = len(rows)
     return counts
+
+
+def generate_runtime_context_virtualization_cases() -> list[dict[str, Any]]:
+    rows: list[dict[str, Any]] = []
+    categories = (
+        ["long_distance_fact"] * 10
+        + ["large_tool_output"] * 10
+        + ["topic_return"] * 5
+        + ["rollover_pressure"] * 5
+    )
+    for index, category in enumerate(categories, start=1):
+        record_code = f"VIRT_KEY_{index:03d}"
+        adapter = f"adapter_{index:03d}.py"
+        module = f"billing_{index:03d}"
+        critical_line = (
+            f"CRITICAL_RECORD case={index:03d} code={record_code} "
+            f"forbid_module={module} adapter={adapter} checksum=ctx-{index:03d}-stable"
+        )
+        rows.append({
+            "case_id": f"runtime_ctx_{index:03d}_{category}",
+            "category": category,
+            "initial_user": (
+                f"Please inspect the hidden evidence record for case {index:03d}. "
+                "Do not repeat its values unless I ask later."
+            ),
+            "tool_name": "ReadFile",
+            "tool_arguments": {
+                "path": f"/workspace/evidence/case_{index:03d}.txt",
+                "intent": "load hidden virtualization benchmark evidence",
+            },
+            "tool_output": _hidden_evidence_blob(index, critical_line),
+            "filler_turn_count": 32 + (index % 6),
+            "large_noise_turns": [8, 16, 24, 32],
+            "noise_unit": f"noise_stream_{index:03d}",
+            "final_query": (
+                "Earlier in this conversation there was a hidden evidence tool output. "
+                "Recover it if it is not fully visible. What are the exact record code, "
+                "forbidden module, and adapter path? Answer in one concise sentence."
+            ),
+            "expected_answer_contains": [record_code, module, adapter],
+            "requires_recoverable_tool_output": True,
+            "success_criteria": [
+                "answers_hidden_tool_output_anchors",
+                "uses_recovery_when_context_virtualized",
+                "does_not_recover_when_raw_context_is_sufficient",
+            ],
+        })
+    return rows
+
+
+def _hidden_evidence_blob(index: int, critical_line: str) -> str:
+    prefix = "\n".join(
+        f"preface_line_{index:03d}_{line:03d}: ordinary operational log with no benchmark answer."
+        for line in range(8)
+    )
+    suffix = "\n".join(
+        f"suffix_line_{index:03d}_{line:03d}: unrelated diagnostic detail."
+        for line in range(25)
+    )
+    return f"{critical_line}\n{prefix}\n{suffix}\n"
 
 
 def generate_multi_agent_tasks() -> list[dict[str, Any]]:

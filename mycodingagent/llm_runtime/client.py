@@ -30,6 +30,7 @@ from mycodingagent.llm_runtime.context import (
 )
 from mycodingagent.llm_runtime.streaming import PendingToolCall, normalize_stream_result, stream_one_round
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
+from mycodingagent.terminal_ui.output import processing_status, tool_status_message
 from mycodingagent.tool_runtime import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
 from mycodingagent.tool_runtime.execution import (
     CodeQueryLedger,
@@ -940,13 +941,18 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     execution_kwargs.update(
                         {"execution_recorder": memory_runtime, "session_id": session_id}
                     )
-                execution = await execute_local_tool(
-                    registry,
-                    tool_call.tool_name,
-                    tool_call.arguments,
-                    skill_runtime,
-                    **execution_kwargs,
-                )
+                status_enabled = selected_tool is not None and selected_tool.is_read_only
+                async with processing_status(
+                    tool_status_message(tool_call.tool_name),
+                    enabled=status_enabled,
+                ):
+                    execution = await execute_local_tool(
+                        registry,
+                        tool_call.tool_name,
+                        tool_call.arguments,
+                        skill_runtime,
+                        **execution_kwargs,
+                    )
             code_query_ledger.record(tool_call.tool_name, tool_call.arguments, execution)
             execution = failure_tracker.annotate(
                 tool_call.tool_name,
@@ -968,8 +974,8 @@ async def ask_deepseek(  # 执行一次用户请求的完整 agent 循环：问�
                     output=tool_output,
                     metadata=metadata,
                 )
-            if skill_related_tool:
-                tool_output = tool_output
+            if skill_related_tool or tool_call.tool_name == "BatchRecoverContext":
+                tool_output = truncate_tool_output(tool_output)
             elif memory_runtime is not None and output_id:
                 tool_output = memory_runtime.tool_output_prompt_content(
                     output_id=output_id,

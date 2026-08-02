@@ -171,7 +171,8 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
         session_id = memory_runtime.get_current_session_id()
         if session_id:
             memory_runtime.save_messages_now(session_id, updated_messages)
-        print("已恢复会话。", flush=True)
+        render_conversation_history(updated_messages)
+        print(f"已恢复会话（{len(updated_messages)} 条消息）。", flush=True)
     return CommandResult(messages=updated_messages)
 
 

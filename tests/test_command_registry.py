@@ -120,7 +120,7 @@ def test_history_message_formatting_skips_system_and_folds_tool_output():
     assert format_history_message({"role": "assistant", "content": "hi"}) == "Assistant: hi"
     assert (
         format_history_message({"role": "tool", "metadata": {"tool_name": "ReadFile"}, "content": "large output"})
-        == "Tool: [ReadFile] 输出已恢复到上下文"
+        == "Tool: [ReadFile] large output"
     )
 
 

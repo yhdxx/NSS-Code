@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner run-runtime-context-virtualization --dataset tests/eval/datasets/runtime_context_virtualization_cases.jsonl --repeats 1",
+  "metric": "runtime_context_virtualization"
+}

@@ -15,6 +15,7 @@ from tree_sitter_language_pack import get_parser
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
+from mycodingagent.terminal_ui.output import render_command_approval_request
 from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from pydantic import BaseModel
@@ -639,12 +640,12 @@ class CLICommandApprovalHook(CommandApprovalHook):
         command_text = request.command
         if len(command_text) > self.max_command_chars:
             command_text = command_text[: self.max_command_chars] + "\n... <命令已截断>"
-        print("[需要批准高风险命令]", flush=True)
-        print(f"风险：{request.reason}", flush=True)
-        if request.intent:
-            print(f"目的：{request.intent}", flush=True)
-        print("命令：", flush=True)
-        print(command_text, flush=True)
+        render_command_approval_request(
+            command=command_text,
+            reason=request.reason,
+            intent=request.intent,
+            dangerous=request.risk == "dangerous",
+        )
         try:
             answer = await self.coordinator.read_choice(
                 "允许执行该命令吗？[y/N]：", allowed={"y", "yes"}

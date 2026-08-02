@@ -1,0 +1,158 @@
+{
+  "by_strategy": {
+    "forced_virtualized": {
+      "api_completed_count": 1,
+      "cache_hit_rate_token_weighted": 0.921948,
+      "duration_mean_seconds": 87.433,
+      "duration_p95_seconds": 87.433,
+      "false_recovery_rate": null,
+      "final_virtualized_rate": 1.0,
+      "invalid_tool_calls_mean": 1.0,
+      "prompt_tokens_mean": 146889.0,
+      "prompt_tokens_p50": 146889.0,
+      "prompt_tokens_p95": 146889.0,
+      "recovery_call_rate": 1.0,
+      "recovery_success_rate": 0.0,
+      "request_count_mean": 13.0,
+      "run_count": 1,
+      "success_rate": 0.0,
+      "success_rate_ci95": {
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0
+      },
+      "tool_calls_mean": 17.0,
+      "total_tokens_mean": 152199.0,
+      "uncached_prompt_tokens_mean": 11465.0,
+      "uncached_prompt_tokens_p50": 11465.0,
+      "uncached_prompt_tokens_p95": 11465.0
+    },
+    "natural": {
+      "api_completed_count": 1,
+      "cache_hit_rate_token_weighted": 0.733614,
+      "duration_mean_seconds": 32.28,
+      "duration_p95_seconds": 32.28,
+      "false_recovery_rate": null,
+      "final_virtualized_rate": 1.0,
+      "invalid_tool_calls_mean": 0.0,
+      "prompt_tokens_mean": 73979.0,
+      "prompt_tokens_p50": 73979.0,
+      "prompt_tokens_p95": 73979.0,
+      "recovery_call_rate": 1.0,
+      "recovery_success_rate": 0.0,
+      "request_count_mean": 8.0,
+      "run_count": 1,
+      "success_rate": 0.0,
+      "success_rate_ci95": {
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0
+      },
+      "tool_calls_mean": 12.0,
+      "total_tokens_mean": 75786.0,
+      "uncached_prompt_tokens_mean": 19707.0,
+      "uncached_prompt_tokens_p50": 19707.0,
+      "uncached_prompt_tokens_p95": 19707.0
+    },
+    "raw": {
+      "api_completed_count": 1,
+      "cache_hit_rate_token_weighted": 0.112212,
+      "duration_mean_seconds": 3.672,
+      "duration_p95_seconds": 3.672,
+      "false_recovery_rate": 0.0,
+      "final_virtualized_rate": 0.0,
+      "invalid_tool_calls_mean": 0.0,
+      "prompt_tokens_mean": 11407.0,
+      "prompt_tokens_p50": 11407.0,
+      "prompt_tokens_p95": 11407.0,
+      "recovery_call_rate": 0.0,
+      "recovery_success_rate": null,
+      "request_count_mean": 1.0,
+      "run_count": 1,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      },
+      "tool_calls_mean": 5.0,
+      "total_tokens_mean": 11548.0,
+      "uncached_prompt_tokens_mean": 10127.0,
+      "uncached_prompt_tokens_p50": 10127.0,
+      "uncached_prompt_tokens_p95": 10127.0
+    }
+  },
+  "case_count": 1,
+  "completed_run_count": 3,
+  "efficiency_claim_gate_passed": false,
+  "module": "runtime_context_virtualization",
+  "paired_reduction_vs_raw": {
+    "forced_virtualized": {
+      "duration_seconds": {
+        "high": -22.81073,
+        "low": -22.81073,
+        "mean": -22.81073
+      },
+      "paired_run_count": 1,
+      "prompt_tokens": {
+        "high": -11.877093,
+        "low": -11.877093,
+        "mean": -11.877093
+      },
+      "tool_calls": {
+        "high": -2.4,
+        "low": -2.4,
+        "mean": -2.4
+      },
+      "total_tokens": {
+        "high": -12.179685,
+        "low": -12.179685,
+        "mean": -12.179685
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.132122,
+        "low": -0.132122,
+        "mean": -0.132122
+      }
+    },
+    "natural": {
+      "duration_seconds": {
+        "high": -7.79085,
+        "low": -7.79085,
+        "mean": -7.79085
+      },
+      "paired_run_count": 1,
+      "prompt_tokens": {
+        "high": -5.485404,
+        "low": -5.485404,
+        "mean": -5.485404
+      },
+      "tool_calls": {
+        "high": -1.4,
+        "low": -1.4,
+        "mean": -1.4
+      },
+      "total_tokens": {
+        "high": -5.562695,
+        "low": -5.562695,
+        "mean": -5.562695
+      },
+      "uncached_prompt_tokens": {
+        "high": -0.945986,
+        "low": -0.945986,
+        "mean": -0.945986
+      }
+    }
+  },
+  "quality_gate_passed": false,
+  "reason": "requires 30 cases, 3 repeats, 3 strategies, and no failed API calls",
+  "repeats": 1,
+  "run_count": 3,
+  "status": "insufficient_sample",
+  "strategies": [
+    "raw",
+    "forced_virtualized",
+    "natural"
+  ],
+  "uncached_reduction_gate_passed": false
+}

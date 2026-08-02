@@ -24,6 +24,9 @@ from tests.eval.metrics import (
 )
 from tests.eval.prefix_cache_benchmark import run_prefix_cache_benchmark
 from tests.eval.run_context import build_run_metadata
+from tests.eval.runtime_context_virtualization_benchmark import (
+    run_runtime_context_virtualization_benchmark,
+)
 
 DATASETS = Path("tests/eval/datasets")
 PROJECT_MANIFEST = Path("tests/eval/manifests/public_projects.json")
@@ -125,6 +128,44 @@ def run_context(*, dataset: Path, run_id: str | None, repeats: int, limit: int |
     complete_metric_run(
         metric="context_virtualization", run_dir=run_dir, summary=summary, metadata=metadata, details=details,
         command=f"python3 -m tests.eval.modern_runner run-context --dataset {dataset} --repeats {repeats}",
+    )
+    return summary, run_dir
+
+
+def run_runtime_context_virtualization(
+    *, dataset: Path, run_id: str | None, repeats: int, limit: int | None
+) -> tuple[dict[str, Any], Path]:
+    actual_id, run_dir, metadata = _start(
+        "runtime_context_virtualization",
+        run_id,
+        dataset,
+        repeats,
+        extra={
+            "runtime_path": "MemoryRuntime.prepare_messages_for_model -> ask_deepseek",
+            "strategies": ["raw", "forced_virtualized", "natural"],
+            "synthetic_prompt_only": False,
+        },
+    )
+    model, base_url, api_key = _config()
+    summary, details = run_runtime_context_virtualization_benchmark(
+        dataset,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        repeats=repeats,
+        limit=limit,
+        run_dir=run_dir,
+    )
+    complete_metric_run(
+        metric="runtime_context_virtualization",
+        run_dir=run_dir,
+        summary=summary,
+        metadata=metadata,
+        details=details,
+        command=(
+            "python3 -m tests.eval.modern_runner run-runtime-context-virtualization "
+            f"--dataset {dataset} --repeats {repeats}"
+        ),
     )
     return summary, run_dir
 
@@ -800,6 +841,7 @@ def main() -> int:
     for name, default, repeats in [
         ("run-prefix-cache", "prefix_cache_cases.jsonl", 3),
         ("run-context", "context_virtualization_cases.jsonl", 3),
+        ("run-runtime-context-virtualization", "runtime_context_virtualization_cases.jsonl", 3),
         ("run-long-term-memory", "long_term_workflow_cases.jsonl", 3),
         ("run-capability-routing", "capability_routing_1200_cases.jsonl", 1),
         ("run-multi-agent", "multi_agent_tasks.jsonl", 3),
@@ -834,6 +876,8 @@ def main() -> int:
         result, directory = run_prefix_cache(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-context":
         result, directory = run_context(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
+    elif args.command == "run-runtime-context-virtualization":
+        result, directory = run_runtime_context_virtualization(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-long-term-memory":
         result, directory = run_long_term_memory(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-capability-routing":
@@ -852,7 +896,7 @@ def main() -> int:
         return 2
     print(json.dumps({"result": result, "run_dir": str(directory)}, ensure_ascii=False, indent=2, sort_keys=True))
     write_index()
-    return 0 if result.get("status") in {"passed", "not_run", "blocked", "deferred_by_user", "unavailable"} else 2
+    return 0 if result.get("status") in {"passed", "not_run", "blocked", "deferred_by_user", "unavailable", "insufficient_sample"} else 2
 
 
 if __name__ == "__main__":

@@ -11,6 +11,7 @@ from tests.eval.artifacts import (
 from tests.eval.dataset_generators import (
     generate_capability_routing_1200_cases, generate_context_virtualization_cases,
     generate_long_term_workflow_cases, generate_prefix_cache_cases,
+    generate_runtime_context_virtualization_cases,
 )
 from tests.eval.metrics import (
     bootstrap_mean_ci, cache_hit_rate, percentile, reduction_rate, stable_json_hash,
@@ -39,6 +40,11 @@ def test_cache_usage_is_unavailable_when_provider_omits_fields() -> None:
 
 def test_standard_datasets_have_locked_scale_and_no_exact_capability_ids() -> None:
     assert len(generate_context_virtualization_cases()) == 30
+    runtime_context = generate_runtime_context_virtualization_cases()
+    assert len(runtime_context) == 30
+    assert {row["category"] for row in runtime_context} == {
+        "long_distance_fact", "large_tool_output", "topic_return", "rollover_pressure",
+    }
     memory = generate_long_term_workflow_cases()
     assert len(memory) == 30
     assert {row["memory_type"] for row in memory} == {"workflow", "preference", "project_fact"}
@@ -106,4 +112,3 @@ def test_complete_metric_run_writes_summary_details_and_both_reports(tmp_path: P
     assert (run_dir / "summary.json").exists()
     assert (run_dir / "details.jsonl").exists()
     assert (docs_dir / "prefix_cache.md").exists()
-
