@@ -7,7 +7,7 @@ import sys
 
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.capability_discovery.models import CapabilityRecommendation, CapabilityResult
-from mycodingagent.mcp_integration.hooks import MCPToolApprovalHook, USER_DENIED_MESSAGE
+from mycodingagent.mcp_integration.hooks import CLIApprovalHook, MCPToolApprovalHook, USER_DENIED_MESSAGE
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.models import MCPItemSummary
 from mycodingagent.mcp_integration.policy import MCPApprovalDecision, MCPToolPermissionPolicy
@@ -154,9 +154,58 @@ def test_mcp_annotation_overrides_name_heuristic_and_unknown_is_closed():
         server_config=None,
         tool_name="get_and_delete",
         tool_metadata={"annotations": {"destructiveHint": True}},
-    ) == "dangerous"
+    ) == "destructive"
+    assert policy.classify(
+        server_config=None,
+        tool_name="send_message",
+        tool_metadata={"annotations": {"openWorldHint": True}},
+    ) == "network"
+    assert policy.classify(server_config=None, tool_name="rotate_token") == "admin"
+    assert policy.classify(server_config=None, tool_name="delete_repository") == "destructive"
     assert policy.classify(server_config=None, tool_name="custom_action") == "unknown"
     assert policy.requires_approval("unknown") is True
+
+
+class _Coordinator:
+    def __init__(self, answers: list[str]) -> None:
+        self.answers = answers
+        self.prompts = 0
+        self.last_prompt = ""
+
+    async def read_choice(self, prompt: str, *, allowed: set[str]) -> str:
+        self.prompts += 1
+        self.last_prompt = prompt
+        answer = self.answers.pop(0)
+        return answer if answer in allowed else ""
+
+
+def test_mcp_cli_tool_approval_supports_session_always(capsys):
+    coordinator = _Coordinator(["a"])
+    hook = CLIApprovalHook(coordinator)
+    request = type(
+        "_Req",
+        (),
+        {
+            "server": "github",
+            "tool": "create_issue",
+            "risk": "write",
+            "intent": "创建 issue",
+            "arguments": {"title": "bug"},
+        },
+    )()
+
+    first = asyncio.run(hook.approve(request))
+    second = asyncio.run(hook.approve(request))
+
+    output = capsys.readouterr().out
+    assert first.allowed is True
+    assert first.reason == "本会话已批准该 MCP 工具"
+    assert second.allowed is True
+    assert second.reason == "本会话已批准该 MCP 工具"
+    assert coordinator.prompts == 1
+    assert coordinator.last_prompt == "允许本次 MCP 工具调用吗？[y/N/a]："
+    assert "风险：write" in output
+    assert hook._always_allowed == {("github", "create_issue", "write")}
 
 
 def test_capability_router_recommends_mcp_server_by_alias_and_keyword(tmp_path):

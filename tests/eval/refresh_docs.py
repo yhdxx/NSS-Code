@@ -16,6 +16,7 @@ CANONICAL_RUNS = {
     "project_graph": "graph-resumable-20260801",
     "code_general_ab": "standard-code-general-20260801",
     "context_virtualization": "standard-context-20260801",
+    "runtime_context_virtualization": "standard-runtime-context-20260802",
     "prefix_cache": "standard-prefix-20260801",
     "long_term_memory": "standard-ltm-v2-20260801",
     "capability_routing": "standard-routing-batched-20260801",
@@ -65,6 +66,22 @@ def _strengthen_summary(
             field: bootstrap_mean_ci([row[field] for row in details])
             for field in fields
         }
+    elif metric == "runtime_context_virtualization" and summary.get("status") == "passed":
+        strategies = set(summary.get("strategies") or [])
+        summary["quality_reference_strategy"] = "raw"
+        summary["cost_baseline_strategy"] = "claude_compression_baseline"
+        if "paired_reduction_vs_raw" in summary and "paired_delta_vs_raw_quality_reference" not in summary:
+            summary["paired_delta_vs_raw_quality_reference"] = summary.pop("paired_reduction_vs_raw")
+        if "claude_compression_baseline" not in strategies:
+            summary["claude_baseline_status"] = "missing_in_this_run"
+            summary["claude_baseline_quality_gate_passed"] = False
+            summary["uncached_reduction_gate_passed"] = False
+            summary["efficiency_claim_gate_passed"] = False
+            summary["resume_conclusion"] = (
+                "现有真实 Runtime 评测覆盖 raw、forced_virtualized、natural 三策略；Raw 只能作为无压缩质量参考，"
+                "不能作为降本基线。该结果支持‘端到端恢复链路基本保持答案质量’，但缺少 Claude-style 压缩基线，"
+                "不能判断或声明相对 Claude 压缩策略降本。"
+            )
 
 
 def refresh_completed_documents(

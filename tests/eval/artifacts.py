@@ -41,14 +41,15 @@ METRIC_SPECS: dict[str, dict[str, Any]] = {
     },
     "runtime_context_virtualization": {
         "title": "真实 Runtime 上下文虚拟化评测",
-        "definition": "通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。",
+        "definition": "通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw 质量参考、Claude-style 压缩基线、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。",
         "formulas": [
             "任务成功率 = 正确回答隐藏历史证据锚点的运行数 / 总运行数",
-            "未缓存输入降幅 = (Raw 未缓存输入 token - 候选未缓存输入 token) / Raw 未缓存输入 token",
+            "Raw 仅作为无压缩质量参考，不作为降本基线",
+            "相对 Claude 压缩基线的未缓存输入降幅 = (Claude-style baseline 未缓存输入 token - 候选未缓存输入 token) / Claude-style baseline 未缓存输入 token",
             "缓存命中率 = prompt_cache_hit_tokens / (prompt_cache_hit_tokens + prompt_cache_miss_tokens)",
             "恢复成功率 = 需要恢复且恢复后答对的运行数 / 需要恢复的运行数",
         ],
-        "gate": "至少 30 条长会话轨迹、raw/forced_virtualized/natural 三策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点，且未缓存输入 token 必须下降。",
+        "gate": "至少 30 条长会话轨迹、raw/claude_compression_baseline/forced_virtualized/natural 四策略、每策略 3 次；Virtualized 成功率不得比 Raw 低超过 5 个百分点；Claude-style baseline 也需通过质量门禁；降本结论只看相对 Claude-style baseline 的未缓存输入 token 是否下降。",
     },
     "prefix_cache": {
         "title": "前缀缓存命中率评测",

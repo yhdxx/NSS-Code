@@ -8,6 +8,6 @@
 
 颜色约定：最终模型回答亮白；工具参数和普通预览灰色；Markdown 标题亮白加粗；Search/Read 动词蓝色、路径参数灰色；Bash 低危绿色、需审批黄色、高危红色；EditFile/写入 diff 中旧内容黄色、新内容绿色；错误红色。
 
-历史恢复由 `history.py` 调用同一套渲染器，`/resume`、`/fork` 和 `/rewind conversation|both` 会重新展示恢复后的用户消息、Markdown 答案、工具调用和工具输出预览。
+历史恢复由 `history.py` 调用同一套渲染器，`/resume`、`/fork` 和 `/rewind conversation|both` 会先清空交互式终端再重新展示恢复后的用户消息、Markdown 答案、工具调用和工具输出预览；`/clear` 也会清空终端后显示新会话状态。
 
 依赖方向和函数级索引见根目录 `PROJECT_FRAMEWORK.md`。

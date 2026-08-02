@@ -47,7 +47,7 @@ from mycodingagent.tool_runtime.workspace_change_tracker import WorkspaceChangeT
 from mycodingagent.workspace.lease import WorkspaceLease, WorkspaceLeaseError
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.cache import MCPMetadataCache
-from mycodingagent.mcp_integration.hooks import CLILaunchApprovalHook, MCPToolApprovalHook
+from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprovalHook, MCPToolApprovalHook
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from mycodingagent.multi_agent import MultiAgentStore
@@ -228,7 +228,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             registry,
             manager=mcp_manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=MCPToolApprovalHook(),
+            approval_hook=CLIApprovalHook(terminal_input) if sys.stdin.isatty() else MCPToolApprovalHook(),
         )
         print(f"已配置 MCP Server：{mcp_manager.server_count()} 个", flush=True)
     else:

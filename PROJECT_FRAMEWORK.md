@@ -364,8 +364,9 @@ BashPolicyEvaluator(command)
 call_mcp_tool(server, tool)
   -> 实时刷新 schema/annotation
   -> 按显式配置、annotation 和工具名分类风险
-  -> discovery gate 通过后调用工具
-  -> CLI 默认只对 MCP Server 启动/连接审批，不对单次 MCP 工具调用弹审批
+  -> discovery gate 通过后，read 自动放行
+  -> write/destructive/network/admin/unknown 请求用户审批
+  -> CLI 对 MCP Server 启动/连接始终审批；工具审批支持本次允许和本会话记住
 ```
 
 ---

@@ -59,8 +59,12 @@ class CLILaunchApprovalHook(MCPServerLaunchHook):
 class CLIApprovalHook(MCPToolApprovalHook):
     coordinator: TerminalInputCoordinator = field(default_factory=TerminalInputCoordinator)
     max_argument_chars: int = 2000
+    _always_allowed: set[tuple[str, str, str]] = field(default_factory=set)
 
     async def approve(self, request: MCPApprovalRequest) -> MCPApprovalDecision:
+        approval_key = (request.server, request.tool, request.risk)
+        if approval_key in self._always_allowed:
+            return MCPApprovalDecision(allowed=True, reason="本会话已批准该 MCP 工具")
         print("[需要批准 MCP 调用]", flush=True)
         print(f"Server：{request.server}", flush=True)
         print(f"工具：{request.tool}", flush=True)
@@ -73,10 +77,13 @@ class CLIApprovalHook(MCPToolApprovalHook):
         print(args_text, flush=True)
         try:
             answer = await self.coordinator.read_choice(
-                "允许本次 MCP 工具调用吗？[y/N]：", allowed={"y", "yes"}
+                "允许本次 MCP 工具调用吗？[y/N/a]：", allowed={"y", "yes", "a", "always"}
             )
         except PromptCancelled:
             answer = ""
+        if answer in {"a", "always"}:
+            self._always_allowed.add(approval_key)
+            return MCPApprovalDecision(allowed=True, reason="本会话已批准该 MCP 工具")
         if answer in {"y", "yes"}:
             return MCPApprovalDecision(allowed=True, reason="用户批准")
         return MCPApprovalDecision(allowed=False, reason="用户拒绝")

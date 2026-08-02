@@ -147,7 +147,7 @@
   "quality_gate_passed": true,
   "reason": "",
   "repeats": 3,
-  "resume_conclusion": "真实 Runtime 虚拟化评测已覆盖 30 条长会话轨迹、三策略、每策略 3 次；是否可用于简历取决于 quality_gate_passed 与 uncached_reduction_gate_passed 同时为 true。",
+  "resume_conclusion": "真实 Runtime 虚拟化在 30 条长会话轨迹、三策略、每策略 3 次中基本保持答案质量，但未缓存输入和总 token 成本未下降；不可表述为端到端降本。",
   "run_count": 270,
   "status": "passed",
   "strategies": [

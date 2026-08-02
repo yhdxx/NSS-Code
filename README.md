@@ -327,8 +327,8 @@ MCP 工具执行分为 discovery 和 execution：
 1. `list_mcp_tools` / `search_mcp_tools` 将本次分页中实际返回给模型的工具名称、描述和参数 schema 记录为已查看。
 2. `call_mcp_tool` 首先执行 discovery gate；只知道 Server/工具名称、查看了其他分页或 metadata 已变化都不能通过。
 3. 门禁通过后，`call_mcp_tool` 才结合显式配置、实时 annotation 和工具名进行风险分类。
-4. CLI 默认只在 MCP Server 启动/连接时请求用户确认；MCP 工具调用按策略记录风险并使用默认 approval hook 自动处理。
-5. 门禁失败返回 `required_discovery`，不会连接或执行目标工具。
+4. CLI 始终保留 MCP Server 启动/连接审批；`read` 工具自动放行，`write`、`destructive`、`network`、`admin`、`unknown` 工具调用执行前请求用户确认。
+5. MCP 工具审批支持本次允许和本会话内记住该 Server+Tool+Risk；门禁失败返回 `required_discovery`，不会连接或执行目标工具。
 
 已查看状态在当前 `MCPClientManager` 生命周期内保留；MCP 配置重载、Server discovery 刷新或工具 metadata
 指纹变化后失效，模型必须重新查看。`read_mcp_resource` 和 `get_mcp_prompt` 保持各自的只读 discovery/execution 路径。

@@ -20,6 +20,7 @@ from mycodingagent.terminal_ui.checkpoint_selector import (
 )
 from mycodingagent.terminal_ui.history import render_conversation_history
 from mycodingagent.terminal_ui.interrupt import PromptCancelled, coordinated_input
+from mycodingagent.terminal_ui.output import clear_terminal
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.multi_agent.context import run_summary_for_main_context
@@ -171,6 +172,7 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
         session_id = memory_runtime.get_current_session_id()
         if session_id:
             memory_runtime.save_messages_now(session_id, updated_messages)
+        clear_terminal()
         render_conversation_history(updated_messages)
         print(f"已恢复会话（{len(updated_messages)} 条消息）。", flush=True)
     return CommandResult(messages=updated_messages)
@@ -314,6 +316,7 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         if remove_trailing_incomplete_tool_call(context.messages):
             memory_runtime.save_messages_now(resume_session_id, context.messages)
         memory_runtime.touch_session(resume_session_id)
+        clear_terminal()
         render_conversation_history(context.messages)
         print(f"已恢复会话：{resume_session_id}（{len(context.messages)} 条消息）", flush=True)
         return CommandResult(messages=context.messages)
@@ -333,6 +336,7 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         context.file_state_cache,
         context.workspace_tracker,
     )
+    clear_terminal()
     render_conversation_history(state.messages)
     print(f"已恢复会话：{resume_session_id}（{len(state.messages)} 条消息）", flush=True)
     return CommandResult(messages=state.messages)
@@ -399,6 +403,7 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         context.file_state_cache,
         context.workspace_tracker,
     )
+    clear_terminal()
     render_conversation_history(fork_messages)
     print(
         f"已分叉会话：{fork_session_id}（源会话：{source_session_id}，{len(fork_messages)} 条消息）",
@@ -419,6 +424,7 @@ async def handle_clear_command(context: CommandContext, arguments: str) -> Comma
 
     memory_runtime = context.memory_runtime
     if memory_runtime is None:
+        clear_terminal()
         print("记忆模块未启用，已清空当前对话。", flush=True)
         return CommandResult(messages=[])
 
@@ -436,8 +442,10 @@ async def handle_clear_command(context: CommandContext, arguments: str) -> Comma
     await memory_runtime.drain()
 
     if saved_session_id:
+        clear_terminal()
         print(f"已保存当前会话：{saved_session_id}", flush=True)
     else:
+        clear_terminal()
         print("当前会话为空，无需保存。", flush=True)
     print(f"已清空上下文并启动新会话：{new_session_id}", flush=True)
     return CommandResult(messages=[])

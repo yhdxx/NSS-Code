@@ -6,6 +6,7 @@ import json
 from mycodingagent.llm_runtime.streaming import PendingToolCall
 from mycodingagent.terminal_ui.output import (
     TERMINAL_THEME_STYLES,
+    clear_terminal,
     default_bash_display_level,
     render_assistant_markdown,
     render_tool_calls,
@@ -131,6 +132,35 @@ def test_final_answer_markdown_is_rendered_bright_white_by_default(capsys):
     assert "模型：" in output
     assert "普通文本" in output
     assert "标题" in output
+
+
+class _TTYBuffer:
+    def __init__(self, *, tty: bool) -> None:
+        self.tty = tty
+        self.content = ""
+        self.flushed = False
+
+    def isatty(self) -> bool:
+        return self.tty
+
+    def write(self, text: str) -> int:
+        self.content += text
+        return len(text)
+
+    def flush(self) -> None:
+        self.flushed = True
+
+
+def test_clear_terminal_only_emits_control_sequence_for_tty():
+    tty_buffer = _TTYBuffer(tty=True)
+    plain_buffer = _TTYBuffer(tty=False)
+
+    clear_terminal(file=tty_buffer)
+    clear_terminal(file=plain_buffer)
+
+    assert tty_buffer.content == "\033[2J\033[H"
+    assert tty_buffer.flushed is True
+    assert plain_buffer.content == ""
 
 
 def test_write_file_preview_uses_neutral_block_not_green_action_color(capsys):

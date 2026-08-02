@@ -124,6 +124,15 @@ def render_status_line(message: str, *, file: TextIO | None = None) -> None:
     _print_text(_console(output), f"H-Agent:{message}...", style="status")
 
 
+def clear_terminal(*, file: TextIO | None = None) -> None:
+    """Clear the interactive terminal before redrawing restored UI state."""
+    output = _resolve_file(file)
+    if not _isatty(output):
+        return
+    output.write("\033[2J\033[H")
+    output.flush()
+
+
 def processing_status(
     message: str,
     *,

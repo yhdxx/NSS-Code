@@ -18,8 +18,12 @@ from tests.eval.metrics import (
 )
 
 
-STRATEGIES = ("raw", "forced_virtualized", "natural")
+QUALITY_REFERENCE_STRATEGY = "raw"
+COST_BASELINE_STRATEGY = "claude_compression_baseline"
+VIRTUALIZED_STRATEGIES = ("forced_virtualized", "natural")
+STRATEGIES = (QUALITY_REFERENCE_STRATEGY, COST_BASELINE_STRATEGY, *VIRTUALIZED_STRATEGIES)
 RECOVERY_TOOLS = {"BatchRecoverContext", "SearchRecoverableContext", "SearchSessionHistory"}
+CLAUDE_BASELINE_RECENT_MESSAGE_COUNT = 20
 
 
 def run_runtime_context_virtualization_benchmark(
@@ -126,7 +130,10 @@ async def _run_one_case(
         )
         memory.set_work_mode("general")
         session_id = memory.start_session(model)
-        messages = _build_seed_messages(memory, session_id, case, benchmark_salt=benchmark_salt)
+        if strategy == COST_BASELINE_STRATEGY:
+            messages = _build_claude_compression_baseline_messages(case, benchmark_salt=benchmark_salt)
+        else:
+            messages = _build_seed_messages(memory, session_id, case, benchmark_salt=benchmark_salt)
         memory.save_messages_now(session_id, messages)
         await memory.drain()
         if strategy == "forced_virtualized":
@@ -342,6 +349,70 @@ def _build_seed_messages(
     return messages
 
 
+def _build_claude_compression_baseline_messages(
+    case: dict[str, Any],
+    *,
+    benchmark_salt: str,
+) -> list[dict[str, Any]]:
+    from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
+
+    recent_messages: list[dict[str, Any]] = []
+    for turn in range(1, int(case["filler_turn_count"]) + 1):
+        recent_messages.extend(
+            [
+                {
+                    "role": "user",
+                    "content": (
+                        f"Interleaved request {turn}: acknowledge topic "
+                        f"{case['category']} without using the hidden evidence."
+                    ),
+                },
+                {"role": "assistant", "content": f"Acknowledged interleaved request {turn}."},
+            ]
+        )
+    return [
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                PromptFeatures(
+                    skills_enabled=False,
+                    mcp_enabled=False,
+                    memory_enabled=True,
+                    project_graph_enabled=True,
+                )
+            ),
+        },
+        {
+            "role": "system",
+            "content": _claude_compression_summary(case, benchmark_salt=benchmark_salt),
+        },
+        *recent_messages[-CLAUDE_BASELINE_RECENT_MESSAGE_COUNT:],
+    ]
+
+
+def _claude_compression_summary(case: dict[str, Any], *, benchmark_salt: str) -> str:
+    critical_line = _first_nonempty_line(str(case.get("tool_output") or ""))
+    return "\n".join(
+        [
+            "Claude-style compressed conversation state baseline.",
+            "This baseline approximates a reverse-engineered Claude 4.6 compression strategy: "
+            "preserve a concise session summary plus a recent-message window, without recoverable cold-context tools.",
+            f"Benchmark run salt: {benchmark_salt}.",
+            f"Earlier user request: {case['initial_user']}",
+            f"Compressed hidden evidence summary: {critical_line}",
+            "If the final user asks about the earlier hidden evidence, answer from this compressed summary.",
+        ]
+    )
+
+
+def _first_nonempty_line(text: str) -> str:
+    for line in text.splitlines():
+        stripped = line.strip()
+        if stripped:
+            return stripped
+    return "暂未描述"
+
+
 def _noise_blob(unit: str, turn: int) -> str:
     return "\n".join(
         f"{unit}_{turn}_{line:03d}: unrelated log payload for context pressure."
@@ -350,7 +421,7 @@ def _noise_blob(unit: str, turn: int) -> str:
 
 
 def _context_window_for_strategy(strategy: str) -> int:
-    if strategy == "raw":
+    if strategy in {"raw", COST_BASELINE_STRATEGY}:
         return 1_000_000
     if strategy == "forced_virtualized":
         return 24_000
@@ -361,18 +432,24 @@ def _context_window_for_strategy(strategy: str) -> int:
 
 def _summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: int) -> dict[str, Any]:
     by_strategy = {strategy: _strategy_summary(rows, strategy) for strategy in STRATEGIES}
-    paired = {
+    raw_reference_delta = {
         strategy: _paired_reductions(rows, candidate=strategy)
-        for strategy in ("forced_virtualized", "natural")
+        for strategy in (COST_BASELINE_STRATEGY, *VIRTUALIZED_STRATEGIES)
+    }
+    cost_baseline_reduction = {
+        strategy: _paired_reductions(rows, baseline=COST_BASELINE_STRATEGY, candidate=strategy)
+        for strategy in VIRTUALIZED_STRATEGIES
     }
     sufficient = len(cases) >= 30 and repeats >= 3 and len(rows) == len(cases) * repeats * len(STRATEGIES)
     api_completed = all(row.get("status") == "passed" for row in rows)
     raw_success = float(by_strategy["raw"].get("success_rate") or 0.0)
+    claude_success = float(by_strategy[COST_BASELINE_STRATEGY].get("success_rate") or 0.0)
     forced_success = float(by_strategy["forced_virtualized"].get("success_rate") or 0.0)
     natural_success = float(by_strategy["natural"].get("success_rate") or 0.0)
-    forced_uncached_reduction = paired["forced_virtualized"]["uncached_prompt_tokens"].get("mean")
-    natural_uncached_reduction = paired["natural"]["uncached_prompt_tokens"].get("mean")
+    forced_uncached_reduction = cost_baseline_reduction["forced_virtualized"]["uncached_prompt_tokens"].get("mean")
+    natural_uncached_reduction = cost_baseline_reduction["natural"]["uncached_prompt_tokens"].get("mean")
     quality_gate = forced_success >= raw_success - 0.05 and natural_success >= raw_success - 0.05
+    claude_baseline_quality_gate = claude_success >= raw_success - 0.05
     cost_gate = (forced_uncached_reduction or 0) > 0 and (natural_uncached_reduction or 0) > 0
     status = "passed" if sufficient and api_completed else ("insufficient_sample" if rows else "not_run")
     summary = {
@@ -383,18 +460,39 @@ def _summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: i
         "completed_run_count": sum(row.get("status") == "passed" for row in rows),
         "repeats": repeats,
         "strategies": list(STRATEGIES),
+        "quality_reference_strategy": QUALITY_REFERENCE_STRATEGY,
+        "cost_baseline_strategy": COST_BASELINE_STRATEGY,
         "by_strategy": by_strategy,
-        "paired_reduction_vs_raw": paired,
+        "paired_delta_vs_raw_quality_reference": raw_reference_delta,
+        "paired_reduction_vs_claude_compression_baseline": cost_baseline_reduction,
         "quality_gate_passed": bool(sufficient and api_completed and quality_gate),
+        "claude_baseline_quality_gate_passed": bool(sufficient and api_completed and claude_baseline_quality_gate),
         "uncached_reduction_gate_passed": bool(sufficient and api_completed and cost_gate),
-        "efficiency_claim_gate_passed": bool(sufficient and api_completed and quality_gate and cost_gate),
-        "reason": "" if sufficient and api_completed else "requires 30 cases, 3 repeats, 3 strategies, and no failed API calls",
+        "efficiency_claim_gate_passed": bool(
+            sufficient and api_completed and quality_gate and claude_baseline_quality_gate and cost_gate
+        ),
+        "reason": "" if sufficient and api_completed else "requires 30 cases, 3 repeats, 4 strategies, and no failed API calls",
     }
     if sufficient and api_completed:
-        summary["resume_conclusion"] = (
-            "真实 Runtime 虚拟化评测已覆盖 30 条长会话轨迹、三策略、每策略 3 次；"
-            "是否可用于简历取决于 quality_gate_passed 与 uncached_reduction_gate_passed 同时为 true。"
-        )
+        if quality_gate and claude_baseline_quality_gate and cost_gate:
+            summary["resume_conclusion"] = (
+                "真实 Runtime 虚拟化在 30 条长会话轨迹、四策略、每策略 3 次中基本保持答案质量，"
+                "且相对 Claude-style 压缩基线降低了未缓存输入成本。"
+            )
+        elif quality_gate and claude_baseline_quality_gate:
+            summary["resume_conclusion"] = (
+                "真实 Runtime 虚拟化在 30 条长会话轨迹、四策略、每策略 3 次中基本保持答案质量，"
+                "但相对 Claude-style 压缩基线的未缓存输入成本未下降；不可表述为相对 Claude 压缩策略降本。"
+            )
+        elif quality_gate:
+            summary["resume_conclusion"] = (
+                "真实 Runtime 虚拟化基本保持答案质量，但 Claude-style 压缩基线未通过质量门禁，"
+                "本轮不能判断相对 Claude 压缩策略的成本收益。"
+            )
+        else:
+            summary["resume_conclusion"] = (
+                "真实 Runtime 虚拟化未通过质量门禁；不可作为效果提升或端到端降本证据。"
+            )
     return summary
 
 
@@ -434,16 +532,21 @@ def _strategy_summary(rows: list[dict[str, Any]], strategy: str) -> dict[str, An
     }
 
 
-def _paired_reductions(rows: list[dict[str, Any]], *, candidate: str) -> dict[str, Any]:
+def _paired_reductions(
+    rows: list[dict[str, Any]],
+    *,
+    candidate: str,
+    baseline: str = QUALITY_REFERENCE_STRATEGY,
+) -> dict[str, Any]:
     by_strategy = {
         strategy: {
             (row.get("case_id"), row.get("repeat")): row
             for row in rows
             if row.get("strategy") == strategy and row.get("status") == "passed"
         }
-        for strategy in ("raw", candidate)
+        for strategy in (baseline, candidate)
     }
-    keys = sorted(set(by_strategy["raw"]) & set(by_strategy[candidate]), key=str)
+    keys = sorted(set(by_strategy[baseline]) & set(by_strategy[candidate]), key=str)
     fields = {
         "prompt_tokens": "prompt_tokens",
         "uncached_prompt_tokens": "prompt_cache_miss_tokens",
@@ -453,7 +556,7 @@ def _paired_reductions(rows: list[dict[str, Any]], *, candidate: str) -> dict[st
     }
     return {
         name: bootstrap_reduction_ci(
-            [by_strategy["raw"][key].get(field, 0) for key in keys],
+            [by_strategy[baseline][key].get(field, 0) for key in keys],
             [by_strategy[candidate][key].get(field, 0) for key in keys],
         )
         for name, field in fields.items()
