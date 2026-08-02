@@ -8,6 +8,7 @@ from mycodingagent.terminal_ui.input import (
     InteractivePrompt,
     key_name_for_char,
     key_name_for_escape_sequence,
+    style_input_box_lines,
     visual_vertical_cursor_index,
 )
 from mycodingagent.terminal_ui.input_document import InputDocument, paste_marker
@@ -104,6 +105,29 @@ def test_keymap_can_be_overridden_from_json(tmp_path) -> None:
 def test_visual_vertical_cursor_index_moves_across_wrapped_rows() -> None:
     assert visual_vertical_cursor_index("abcdef", 1, 1, prompt_width=0, columns=3) == 4
     assert visual_vertical_cursor_index("abcdef", 4, -1, prompt_width=0, columns=3) == 1
+
+
+def test_shift_arrow_extends_application_selection(monkeypatch) -> None:
+    prompt = InteractivePrompt(prompt="  ", command_registry=None)
+    monkeypatch.setattr(prompt, "_render", lambda: None)
+    prompt.buffer = "abcdef"
+    prompt.cursor_index = 3
+
+    prompt._handle_action("select_right")
+    prompt._handle_action("select_right")
+
+    assert prompt._selection_range() == (3, 5)
+    prompt._handle_action("copy_or_interrupt")
+    assert paste_from_clipboard() == "de"
+
+
+def test_input_box_styles_entire_input_line_with_brown_background() -> None:
+    lines = style_input_box_lines(["  hello", "hint"], input_row_count=1, columns=12)
+
+    assert lines[0].startswith("\033[48;5;94m\033[97m")
+    assert lines[0].endswith("\033[0m")
+    assert "hello" in lines[0]
+    assert lines[1] == "hint"
 
 
 def test_session_selector_initial_render_leaves_list_visible(monkeypatch) -> None:

@@ -28,9 +28,12 @@ SAFE_COLUMN_MARGIN = 1
 BRACKETED_PASTE_START = "[200~"
 BRACKETED_PASTE_END = "\x1b[201~"
 ANSI_RESET = "\033[0m"
-INPUT_TEXT_STYLE = "\033[47;30m"
-INPUT_PASTE_STYLE = "\033[47;94m"
-INPUT_SELECTION_STYLE = "\033[100;97m"
+INPUT_BOX_STYLE = "\033[48;5;94m\033[97m"
+INPUT_TEXT_STYLE = "\033[97m"
+INPUT_PASTE_STYLE = "\033[94m"
+INPUT_SELECTION_STYLE = "\033[48;5;240m\033[97m"
+CURSOR_BRIGHT_WHITE = "\033]12;#FFFFFF\a"
+CURSOR_RESET = "\033]112\a"
 INDENT_TEXT = "    "
 
 
@@ -113,17 +116,28 @@ class InteractivePrompt:
         self.selected_suggestion_index = clamp_selection(self.selected_suggestion_index, len(suggestions))
         hint_lines = self._hint_lines(suggestions)
         render_columns = safe_render_columns()
+        styled_buffer = self._styled_display_buffer()
+        cursor_index = raw_index_for_visible_index(
+            styled_buffer,
+            self._document.display_index_for_text_index(self.cursor_index),
+        )
+        input_screen = render_prompt_buffer(
+            self.prompt,
+            self.prompt_width,
+            styled_buffer,
+            cursor_index,
+            [],
+            render_columns,
+        )
         screen = render_prompt_buffer(
             self.prompt,
             self.prompt_width,
-            self._styled_display_buffer(),
-            raw_index_for_visible_index(
-                self._styled_display_buffer(),
-                self._document.display_index_for_text_index(self.cursor_index),
-            ),
+            styled_buffer,
+            cursor_index,
             hint_lines,
             render_columns,
         )
+        screen.lines = style_input_box_lines(screen.lines, input_row_count=len(input_screen.lines), columns=render_columns)
         self._clear_render()
         sys.stdout.write("\r\n".join(screen.lines))
         sys.stdout.flush()
@@ -391,6 +405,18 @@ class InteractivePrompt:
             else:
                 self._move_cursor_vertical(1)
             return False
+        if action == "select_left":
+            self._move_cursor(-1, extend_selection=True)
+            return False
+        if action == "select_right":
+            self._move_cursor(1, extend_selection=True)
+            return False
+        if action == "select_up":
+            self._move_cursor_vertical(-1, extend_selection=True)
+            return False
+        if action == "select_down":
+            self._move_cursor_vertical(1, extend_selection=True)
+            return False
         return False
 
     def _styled_display_buffer(self) -> str:
@@ -398,7 +424,7 @@ class InteractivePrompt:
             text_style=INPUT_TEXT_STYLE,
             paste_style=INPUT_PASTE_STYLE,
             selection_style=INPUT_SELECTION_STYLE,
-            reset_style=ANSI_RESET,
+            reset_style=INPUT_BOX_STYLE,
             selection_range=self._selection_range(),
         )
 
@@ -504,12 +530,15 @@ class InteractivePrompt:
         self.selection_anchor = None
         self._render()
 
-    def _move_cursor(self, delta: int) -> None:
+    def _move_cursor(self, delta: int, *, extend_selection: bool = False) -> None:
         new_index = self._document.move_cursor(self.cursor_index, delta)
         if new_index == self.cursor_index:
             return
+        if extend_selection and self.selection_anchor is None:
+            self.selection_anchor = self.cursor_index
         self.cursor_index = new_index
-        self.selection_anchor = None
+        if not extend_selection:
+            self.selection_anchor = None
         self._render()
 
     def _move_cursor_to_line_start(self) -> None:
@@ -530,7 +559,7 @@ class InteractivePrompt:
         self.selection_anchor = None
         self._render()
 
-    def _move_cursor_vertical(self, delta: int) -> None:
+    def _move_cursor_vertical(self, delta: int, *, extend_selection: bool = False) -> None:
         display_text = self._document.display_text
         display_cursor = self._document.display_index_for_text_index(self.cursor_index)
         target_display_index = visual_vertical_cursor_index(
@@ -543,16 +572,21 @@ class InteractivePrompt:
         target_index = self._document.text_index_for_display_index(target_display_index)
         if target_index == self.cursor_index:
             return
+        if extend_selection and self.selection_anchor is None:
+            self.selection_anchor = self.cursor_index
         self.cursor_index = target_index
-        self.selection_anchor = None
+        if not extend_selection:
+            self.selection_anchor = None
         self._render()
 
     def _enable_bracketed_paste(self) -> None:
+        sys.stdout.write(CURSOR_BRIGHT_WHITE)
         sys.stdout.write("\033[?2004h")
         sys.stdout.flush()
 
     def _disable_bracketed_paste(self) -> None:
         sys.stdout.write("\033[?2004l")
+        sys.stdout.write(CURSOR_RESET)
         sys.stdout.flush()
 
 
@@ -706,6 +740,14 @@ def key_name_for_char(char: str) -> str:
 
 
 def key_name_for_escape_sequence(sequence: str) -> str:
+    if sequence in {"[1;2A", "[A;2"}:
+        return "shift+up"
+    if sequence in {"[1;2B", "[B;2"}:
+        return "shift+down"
+    if sequence in {"[1;2D", "[D;2"}:
+        return "shift+left"
+    if sequence in {"[1;2C", "[C;2"}:
+        return "shift+right"
     if sequence in {"[A", "OA"}:
         return "up"
     if sequence in {"[B", "OB"}:
@@ -789,6 +831,17 @@ def render_prompt_buffer(
         screen_lines.extend(hard_wrap_ansi(hint_line, columns))
 
     return RenderedScreen(lines=screen_lines, cursor_row=cursor_row, cursor_column=cursor_column)
+
+
+def style_input_box_lines(lines: list[str], *, input_row_count: int, columns: int) -> list[str]:
+    styled: list[str] = []
+    for index, line in enumerate(lines):
+        if index >= input_row_count:
+            styled.append(line)
+            continue
+        padding = max(0, columns - visible_width(line))
+        styled.append(INPUT_BOX_STYLE + line + (" " * padding) + ANSI_RESET)
+    return styled
 
 
 def vertical_cursor_index(buffer: str, cursor_index: int, delta: int) -> int:

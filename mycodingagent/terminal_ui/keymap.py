@@ -31,6 +31,10 @@ DEFAULT_KEYMAP: Keymap = {
     "right": ("right",),
     "up": ("up",),
     "down": ("down",),
+    "select_left": ("shift+left",),
+    "select_right": ("shift+right",),
+    "select_up": ("shift+up",),
+    "select_down": ("shift+down",),
 }
 
 SUPPORTED_ACTIONS = frozenset(DEFAULT_KEYMAP)

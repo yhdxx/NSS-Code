@@ -127,14 +127,11 @@ def render_status_line(message: str, *, file: TextIO | None = None) -> None:
 
 
 def clear_terminal(*, file: TextIO | None = None) -> None:
-    """Clear the Agent-controlled terminal region without erasing scrollback."""
+    """Clear the visible Agent screen without erasing terminal scrollback."""
     output = _resolve_file(file)
     if not _isatty(output):
         return
-    if _TERMINAL_REGION_MARKED:
-        output.write("\033[u\033[J")
-    else:
-        output.write("\r\033[J")
+    output.write("\033[H\033[2J")
     output.flush()
 
 

@@ -22,7 +22,6 @@ from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.code_intelligence import ProjectGraphService, WorkspaceCodeIndex
 from mycodingagent.terminal_ui.input import read_user_prompt
 from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
-from mycodingagent.terminal_ui.output import mark_terminal_region_start
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration import CONFIG  # 统一读取项目运行配置。
@@ -272,7 +271,6 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         long_term_memory_runtime.schedule_startup_backfill()
 
     mcp_user_rounds = 0
-    mark_terminal_region_start()
 
     try:  # 开始可能抛出异常的保护代码块。
         while True:  # 在条件满足时持续循环。
@@ -282,10 +280,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     messages = rollover.new_messages
             try:  # 开始可能抛出异常的保护代码块。
                 print("----------------------------------------------\n\n")  # 执行当前步骤的业务逻辑。
-                prompt = read_user_prompt("\001\033[7m\002 ⌨️  User(输入exit退出对话)： \001\033[0m\002", command_registry)  # 保存配置值或中间计算结果。
-
-                # 重置颜色（readline 模式下用 \001\002 包裹后，这里不需要额外 print）
-                # print 还是会输出，但作为安全兜底保留
+                print("\033[1;97m ⌨️  User(输入exit退出对话)：\033[0m", flush=True)
+                prompt = read_user_prompt("  ", command_registry)  # 保存配置值或中间计算结果。
                 print("----------------------------------------------\n\n")  # 执行当前步骤的业务逻辑。
             except (EOFError, KeyboardInterrupt):  # 捕获并处理指定异常。
                 # Ctrl+D 或 Ctrl+C 安全退出

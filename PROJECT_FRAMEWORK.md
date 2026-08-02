@@ -115,8 +115,8 @@ read_user_prompt()
 - Home/End 与 Ctrl+A/Ctrl+E 跳转当前行首/行尾。
 - Backspace/Delete；粘贴 token 作为整体删除。
 - 多行 bracketed paste，编辑期间显示为 `[Pasted Content N chars]`，提交时展开真实内容。
-- Ctrl+J 换行，Tab/Shift+Tab 缩进或取消缩进，Alt+A 全选。
-- Ctrl+C 在有输入框选区时复制，否则中断；Ctrl+V 粘贴。
+- Ctrl+J 换行，Tab/Shift+Tab 缩进或取消缩进，Alt+A 或 Shift+方向键创建输入框内部选区。
+- Ctrl+C 在有输入框内部选区时复制，否则中断；终端鼠标选区仍由终端模拟器处理；Ctrl+V 粘贴。
 - `MYCODINGAGENT_KEYMAP` 可指定 JSON 文件覆盖快捷键 action 绑定。
 - `/` 命令候选。
 

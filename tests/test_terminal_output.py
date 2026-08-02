@@ -160,7 +160,7 @@ def test_clear_terminal_clears_agent_region_without_full_screen_reset(monkeypatc
     clear_terminal(file=tty_buffer)
     clear_terminal(file=plain_buffer)
 
-    assert tty_buffer.content == "\r\033[J"
+    assert tty_buffer.content == "\033[H\033[2J"
     assert tty_buffer.flushed is True
     assert plain_buffer.content == ""
 
@@ -168,8 +168,7 @@ def test_clear_terminal_clears_agent_region_without_full_screen_reset(monkeypatc
     mark_terminal_region_start(file=marked_buffer)
     clear_terminal(file=marked_buffer)
 
-    assert marked_buffer.content == "\033[s\033[u\033[J"
-    assert "\033[2J" not in marked_buffer.content
+    assert marked_buffer.content == "\033[s\033[H\033[2J"
     assert "\033[3J" not in marked_buffer.content
 
 
