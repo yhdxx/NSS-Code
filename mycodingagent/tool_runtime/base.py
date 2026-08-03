@@ -2,7 +2,7 @@ from __future__ import annotations  # 启用未来版本语法特性。
 
 from abc import ABC, abstractmethod  # 导入当前模块需要的依赖。
 from dataclasses import dataclass  # 导入当前模块需要的依赖。
-from pathlib import Path  # 导入当前模块需要的依赖。
+from pathlib import Path, PurePosixPath  # 导入当前模块需要的依赖。
 from typing import Any, Literal  # 导入当前模块需要的依赖。
 
 from pydantic import BaseModel  # 导入当前模块需要的依赖。
@@ -16,6 +16,56 @@ SANDBOX_ROOT_ENV = CONFIG.sandbox.root_env  # 保存配置值或中间计算结�
 
 ToolCategory = Literal["read", "write", "command"]  # 保存配置值或中间计算结果。
 DOCKER_WORKSPACE_ALIAS = CONFIG.sandbox.docker_workspace_alias  # 兼容 Docker 容器内常见的工作区根路径别名。
+
+
+def expand_brace_patterns(pattern: str, *, max_expansions: int = 32) -> tuple[str, ...]:
+    """Expand common `{a,b}` glob groups without invoking a shell."""
+    pending = [pattern]
+    expanded: list[str] = []
+    while pending:
+        current = pending.pop()
+        open_index = -1
+        close_index = -1
+        for index, char in enumerate(current):
+            if char == "{":
+                open_index = index
+            elif char == "}" and open_index >= 0:
+                body = current[open_index + 1 : index]
+                if "," in body and "{" not in body:
+                    close_index = index
+                    break
+                open_index = -1
+        if close_index < 0:
+            expanded.append(current)
+            continue
+        choices = current[open_index + 1 : close_index].split(",")
+        if not all(choices):
+            raise ValueError("Glob 花括号选项不能为空")
+        prefix = current[:open_index]
+        suffix = current[close_index + 1 :]
+        pending.extend(prefix + choice + suffix for choice in reversed(choices))
+        if len(pending) + len(expanded) > max_expansions:
+            raise ValueError(f"Glob 花括号展开不能超过 {max_expansions} 个模式")
+    return tuple(dict.fromkeys(expanded))
+
+
+def glob_pattern_matches(relative_path: str, pattern: str) -> bool:
+    """Match a POSIX relative path and let every `**/` span zero directories."""
+    pending = [pattern]
+    seen: set[str] = set()
+    candidate = PurePosixPath(relative_path)
+    while pending:
+        current = pending.pop()
+        if current in seen:
+            continue
+        seen.add(current)
+        if candidate.match(current):
+            return True
+        marker = current.find("**/")
+        while marker >= 0:
+            pending.append(current[:marker] + current[marker + 3 :])
+            marker = current.find("**/", marker + 3)
+    return False
 
 
 def get_sandbox_root() -> Path:  # 定义函数，封装可复用逻辑。

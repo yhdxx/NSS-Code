@@ -1,7 +1,6 @@
 from __future__ import annotations  # 启用未来版本语法特性。
 
 import asyncio
-import fnmatch
 import os
 import re  # 导入当前模块需要的依赖。
 from threading import Event
@@ -9,21 +8,31 @@ from pathlib import Path  # 导入当前模块需要的依赖。
 
 from pydantic import BaseModel, Field  # 导入当前模块需要的依赖。
 
-from mycodingagent.tool_runtime.base import SKIP_DIRS, Tool, ToolResult, is_path_in_sandbox, resolve_sandbox_path  # 导入当前模块需要的依赖。
+from mycodingagent.tool_runtime.base import (
+    MAX_OUTPUT_CHARS,
+    SKIP_DIRS,
+    Tool,
+    ToolResult,
+    expand_brace_patterns,
+    get_sandbox_root,
+    glob_pattern_matches,
+    is_path_in_sandbox,
+    resolve_sandbox_path,
+)
 
 MAX_GREP_MATCHES = 200
 
 
 class Params(BaseModel):  # 定义用于封装相关状态和行为的类。
-    pattern: str = Field(description="要搜索的正则表达式")  # 保存配置值或中间计算结果。
-    path: str = Field(default=".", description="搜索起始目录")  # 保存配置值或中间计算结果。
+    pattern: str = Field(min_length=1, description="要搜索的单行 Python 正则表达式")  # 保存配置值或中间计算结果。
+    path: str = Field(default=".", min_length=1, description="要搜索的文件或目录")  # 保存配置值或中间计算结果。
     include: str = Field(default="", description="文件名 Glob 过滤条件，例如 '*.py'")  # 保存配置值或中间计算结果。
 
 
 class Grep(Tool):  # 定义用于封装相关状态和行为的类。
     name = "Grep"  # 保存配置值或中间计算结果。
     description = (
-        "使用正则表达式搜索沙箱内的文件内容，返回 file:line:content 格式的匹配结果。"
+        "使用单行 Python 正则表达式搜索沙箱内的文件或目录，返回 file:line:content 格式的匹配结果。"
         "尽量使用 '*.py' 等 include 过滤条件，避免宽泛扫描整个工作区。"
     )  # 保存配置值或中间计算结果。
     params_model = Params  # 保存配置值或中间计算结果。
@@ -47,16 +56,23 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not base.exists():  # 根据条件决定是否执行后续分支。
             return ToolResult(output=f"错误：路径不存在：{params.path}", is_error=True)  # 返回当前函数的处理结果。
+        if not (base.is_file() or base.is_dir()):
+            return ToolResult(output=f"错误：路径不是普通文件或目录：{params.path}", is_error=True)
 
         try:  # 开始可能抛出异常的保护代码块。
             regex = re.compile(params.pattern)  # 保存配置值或中间计算结果。
         except re.error as e:  # 捕获并处理指定异常。
             return ToolResult(output=f"错误：正则表达式无效：{e}", is_error=True)  # 返回当前函数的处理结果。
 
-        include_pattern = params.include or "*"  # 保存配置值或中间计算结果。
+        try:
+            include_patterns = expand_brace_patterns(params.include or "*")
+        except ValueError as exc:
+            return ToolResult(output=f"错误：include 模式无效：{exc}", is_error=True)
 
         results: list[str] = []  # 保存配置值或中间计算结果。
-        for file_path, rel in _iter_search_files(base, include_pattern, self._sandbox_root or base):  # 遍历集合中的元素。
+        output_chars = 0
+        sandbox_root = (self._sandbox_root or get_sandbox_root()).resolve(strict=False)
+        for file_path, rel in _iter_search_files(base, include_patterns, sandbox_root):  # 遍历集合中的元素。
             if stop.is_set():
                 return ToolResult(output="搜索已中断。", is_error=True)
             try:  # 开始可能抛出异常的保护代码块。
@@ -67,7 +83,17 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
                 if stop.is_set():
                     return ToolResult(output="搜索已中断。", is_error=True)
                 if regex.search(line):  # 根据条件决定是否执行后续分支。
-                    results.append(f"{rel}:{line_num}:{line}")  # 执行当前步骤的业务逻辑。
+                    rendered = f"{rel}:{line_num}:{line}"
+                    separator_chars = 1 if results else 0
+                    remaining = MAX_OUTPUT_CHARS - output_chars - separator_chars
+                    if len(rendered) > remaining:
+                        if remaining > 0:
+                            results.append(rendered[:remaining])
+                        output = "\n".join(results)
+                        output += "\n... <搜索输出达到字符上限；请缩小 path、pattern 或 include 范围>"
+                        return ToolResult(output=output)
+                    results.append(rendered)  # 执行当前步骤的业务逻辑。
+                    output_chars += separator_chars + len(rendered)
                     if len(results) >= MAX_GREP_MATCHES:
                         output = "\n".join(results)
                         output += f"\n... <匹配数达到 {MAX_GREP_MATCHES} 后已截断；请使用更精确的模式或 include 过滤条件>"
@@ -78,9 +104,16 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
         return ToolResult(output="\n".join(results))  # 返回当前函数的处理结果。
 
 
-def _iter_search_files(base: Path, include_pattern: str, sandbox_root: Path):
+def _iter_search_files(base: Path, include_patterns: tuple[str, ...], sandbox_root: Path):
+    if base.is_file():
+        resolved = base.resolve(strict=False)
+        relative = Path(base.name)
+        if is_path_in_sandbox(resolved, sandbox_root) and _include_matches(relative.as_posix(), include_patterns):
+            yield base, relative
+        return
+
     for root, dirnames, filenames in os.walk(base):
-        dirnames[:] = [name for name in dirnames if name not in SKIP_DIRS]
+        dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
         root_path = Path(root)
         for filename in sorted(filenames):
             file_path = root_path / filename
@@ -95,16 +128,14 @@ def _iter_search_files(base: Path, include_pattern: str, sandbox_root: Path):
                 continue
             if any(part in SKIP_DIRS for part in rel.parts):  # 根据条件决定是否执行后续分支。
                 continue
-            if not _include_matches(str(rel), include_pattern):
+            if not _include_matches(rel.as_posix(), include_patterns):
                 continue
             yield file_path, rel
 
 
-def _include_matches(relative_path: str, include_pattern: str) -> bool:
-    if fnmatch.fnmatch(relative_path, include_pattern):
-        return True
-    if "/" not in include_pattern and fnmatch.fnmatch(Path(relative_path).name, include_pattern):
-        return True
-    if include_pattern.startswith("**/") and fnmatch.fnmatch(relative_path, include_pattern[3:]):
-        return True
-    return False
+def _include_matches(relative_path: str, include_patterns: tuple[str, ...]) -> bool:
+    return any(_include_pattern_matches(relative_path, pattern) for pattern in include_patterns)
+
+
+def _include_pattern_matches(relative_path: str, include_pattern: str) -> bool:
+    return glob_pattern_matches(relative_path, include_pattern)

@@ -10,7 +10,7 @@ from pathlib import Path  # 表示并保存宿主机上的沙箱根目录路径�
 from pydantic import BaseModel, Field  # 定义并校验 Bash 工具对外暴露的参数 schema。
 
 from mycodingagent.configuration import CONFIG  # 统一读取 Docker 镜像、资源限制和超时配置。
-from mycodingagent.tool_runtime.base import Tool, ToolResult, get_sandbox_root  # 复用统一工具基类、返回结构和沙箱根目录解析逻辑。
+from mycodingagent.tool_runtime.base import MAX_OUTPUT_CHARS, Tool, ToolResult, get_sandbox_root  # 复用统一工具基类、返回结构和沙箱根目录解析逻辑。
 from mycodingagent.tool_runtime.command_policy import (  # 高危命令分类与用户审批；沙箱之外再加一层不可逆操作保护。
     USER_DENIED_COMMAND_MESSAGE,
     CommandApprovalHook,
@@ -50,10 +50,45 @@ def docker_subprocess_env() -> dict[str, str]:  # 为所有 Docker CLI 子进程
     return env
 
 
+async def _read_limited_stream(
+    stream: asyncio.StreamReader | None,
+    limit: int,
+) -> tuple[bytes, int]:
+    if stream is None:
+        return b"", 0
+    kept = bytearray()
+    omitted = 0
+    while True:
+        chunk = await stream.read(65536)
+        if not chunk:
+            break
+        remaining = max(0, limit - len(kept))
+        kept.extend(chunk[:remaining])
+        omitted += max(0, len(chunk) - remaining)
+    return bytes(kept), omitted
+
+
+async def _finish_stream_tasks(
+    *tasks: asyncio.Task[tuple[bytes, int]] | None,
+) -> None:
+    active = [task for task in tasks if task is not None]
+    if active:
+        await asyncio.gather(*active, return_exceptions=True)
+
+
+def _format_limited_stream(label: str, content: bytes, omitted: int) -> str:
+    text = content.decode(errors="replace")
+    if omitted:
+        text += f"\n... <{label}已截断 {omitted} 字节>"
+    return f"{label}：\n{text}"
+
+
 class Params(BaseModel):  # Bash 工具的入参模型，会被工具注册表转成可暴露给模型的 JSON Schema。
-    command: str = Field(description="要执行的 Shell 命令")  # 要交给 `bash -lc` 执行的完整命令字符串，可包含管道、重定向和多行脚本。
+    command: str = Field(min_length=1, description="要执行的 Shell 命令")  # 要交给 `bash -lc` 执行的完整命令字符串，可包含管道、重定向和多行脚本。
     timeout: int = Field(
         default=CONFIG.docker.default_timeout,
+        ge=1,
+        le=MAX_TIMEOUT,
         description=f"超时时间，单位为秒，最大值为 {MAX_TIMEOUT}",
     )  # 调用方期望的超时时间；实际执行时会再受 MAX_TIMEOUT 限制。
     intent: str = Field(default="", description="本次命令的简短目的")  # 基类 schema 会强制要求 intent；这里显式声明，避免校验时被丢弃。
@@ -92,7 +127,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         if shutil.which("docker") is None:  # 先检查宿主环境是否能找到 Docker，避免进入子进程后才得到不清晰的失败信息。
             return ToolResult(output="错误：未找到 docker 可执行程序", is_error=True)  # Docker 不可用时直接返回工具错误，agent 可据此向用户说明环境问题。
 
-        timeout = min(params.timeout, MAX_TIMEOUT)  # 对调用方提供的超时时间做硬上限保护，防止长时间占用 Docker 资源。
+        timeout = params.timeout  # 参数模型已经把超时时间约束在有效范围内。
         image = get_docker_image()  # 使用和启动预拉取一致的镜像名，确保每次 Bash 调用都进入同一个镜像族。
         docker_error = await self._check_docker_daemon()  # 在真正执行命令前确认 Docker daemon 可访问，优先暴露权限/服务状态问题。
         if docker_error:  # Docker daemon 不可访问时，不继续构造容器命令。
@@ -160,6 +195,8 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         ]  # Docker CLI 的完整 argv，后续直接交给 asyncio 子进程执行。
 
         proc: asyncio.subprocess.Process | None = None
+        stdout_task: asyncio.Task[tuple[bytes, int]] | None = None
+        stderr_task: asyncio.Task[tuple[bytes, int]] | None = None
         try:  # 子进程启动、等待和输出收集都放在保护块中，统一转换为工具错误输出。
             proc = await asyncio.create_subprocess_exec(  # 异步启动 Docker CLI，不阻塞 agent 主事件循环。
                 *command,  # 将 Docker argv 逐项传入，保持参数边界清晰。
@@ -167,29 +204,42 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                 stderr=asyncio.subprocess.PIPE,  # 捕获标准错误，保留测试失败、编译报错等诊断信息。
                 env=docker_subprocess_env(),
             )  # 子进程对象保存了 PID、returncode 和 communicate 等控制接口。
-            stdout, stderr = await asyncio.wait_for(proc.communicate(), timeout=timeout)  # 等待容器命令结束，并在超时时主动中断等待。
+            stdout_task = asyncio.create_task(_read_limited_stream(proc.stdout, MAX_OUTPUT_CHARS))
+            stderr_task = asyncio.create_task(_read_limited_stream(proc.stderr, MAX_OUTPUT_CHARS))
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+            (stdout, stdout_omitted), (stderr, stderr_omitted) = await asyncio.gather(
+                stdout_task,
+                stderr_task,
+            )
         except asyncio.CancelledError:
             if proc is not None and proc.returncode is None:
                 proc.kill()
                 await proc.wait()
+            await _finish_stream_tasks(stdout_task, stderr_task)
             await self._force_remove_container(container_name)
             raise
         except asyncio.TimeoutError:  # 命令超过允许时间仍未结束时进入清理路径。
             if proc is not None and proc.returncode is None:
                 proc.kill()  # 先终止宿主侧 docker run 进程，避免本地子进程继续占用事件循环资源。
                 await proc.wait()  # 等待 docker run 进程退出，回收子进程状态。
+            await _finish_stream_tasks(stdout_task, stderr_task)
             await self._force_remove_container(container_name)  # 再按容器名强制删除容器，处理 Docker 侧仍在运行的情况。
             return ToolResult(output=f"错误：命令在 {timeout} 秒后超时", is_error=True)  # 把超时作为工具错误返回，便于模型调整命令。
         except FileNotFoundError:  # 即使前面检查过 docker，也保留竞态兜底，例如 PATH 被修改或二进制被移除。
             return ToolResult(output="错误：未找到 docker 可执行程序", is_error=True)  # 返回和预检查一致的错误文本。
         except Exception as e:  # 捕获 Docker 启动失败、权限问题等其他异常，避免异常冒泡导致 agent 崩溃。
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            await _finish_stream_tasks(stdout_task, stderr_task)
+            await self._force_remove_container(container_name)
             return ToolResult(output=f"执行命令失败：{e}", is_error=True)  # 将异常信息压缩成工具输出交还给模型。
 
         parts: list[str] = []  # 分段保存 stdout/stderr，只有存在内容时才加入最终输出。
-        if stdout:  # Docker 命令产生标准输出时，按独立区块返回。
-            parts.append(f"标准输出：\n{stdout.decode(errors='replace')}")  # 解码失败的字节用替换字符处理，避免二进制或乱码让工具报错。
-        if stderr:  # Docker 命令产生标准错误时，保留为独立区块，方便区分正常输出和诊断信息。
-            parts.append(f"标准错误：\n{stderr.decode(errors='replace')}")  # 同样使用容错解码，保证错误日志一定能作为文本返回。
+        if stdout or stdout_omitted:  # Docker 命令产生标准输出时，按独立区块返回。
+            parts.append(_format_limited_stream("标准输出", stdout, stdout_omitted))
+        if stderr or stderr_omitted:  # Docker 命令产生标准错误时，保留为独立区块，方便区分正常输出和诊断信息。
+            parts.append(_format_limited_stream("标准错误", stderr, stderr_omitted))
         if not parts:  # 命令完全没有输出时，也返回一个显式占位，避免调用方误以为工具结果丢失。
             parts.append("（无输出）")  # 明确表示命令执行结束但 stdout/stderr 都为空。
 

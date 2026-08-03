@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, Any  # 导入当前模块需要的依赖。
 from pydantic import BaseModel, Field  # 导入当前模块需要的依赖。
 
 from mycodingagent.tool_runtime.base import Tool, ToolResult, resolve_sandbox_path  # 导入当前模块需要的依赖。
+from mycodingagent.tool_runtime.text_files import (
+    read_text_preserving_newlines,
+    write_text_preserving_newlines,
+)
 from mycodingagent.tool_runtime.write_policy import (
     USER_DENIED_WRITE_MESSAGE,
     WriteApprovalHook,
@@ -57,6 +61,8 @@ class WriteFile(Tool):  # 定义用于封装相关状态和行为的类。
         path, error = resolve_sandbox_path(params.file_path, self._sandbox_root)  # 保存配置值或中间计算结果。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
+        if path.exists() and not path.is_file():
+            return ToolResult(output=f"错误：路径不是文件：{params.file_path}", is_error=True)
 
         if self._state_cache and path.exists():  # 根据条件决定是否执行后续分支。
             ok, err_msg = self._state_cache.check(str(path))  # 保存配置值或中间计算结果。
@@ -66,7 +72,7 @@ class WriteFile(Tool):  # 定义用于封装相关状态和行为的类。
         existing = ""
         if path.exists():
             try:
-                existing = path.read_text(encoding="utf-8")
+                existing = read_text_preserving_newlines(path)
             except Exception as exc:
                 return ToolResult(output=f"写入前读取文件失败：{exc}", is_error=True)
         if self._approval_hook is not None:
@@ -88,8 +94,7 @@ class WriteFile(Tool):  # 定义用于封装相关状态和行为的类。
             self.file_history.track_edit(str(path))  # 执行当前步骤的业务逻辑。
 
         try:  # 开始可能抛出异常的保护代码块。
-            path.parent.mkdir(parents=True, exist_ok=True)  # 保存配置值或中间计算结果。
-            path.write_text(params.content, encoding="utf-8")  # 保存配置值或中间计算结果。
+            write_text_preserving_newlines(path, params.content)  # 保存配置值或中间计算结果。
             if self._cache:  # 根据条件决定是否执行后续分支。
                 self._cache.invalidate(str(path))  # 执行当前步骤的业务逻辑。
             if self._state_cache:  # 根据条件决定是否执行后续分支。

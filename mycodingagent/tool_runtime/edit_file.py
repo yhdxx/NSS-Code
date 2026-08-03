@@ -6,6 +6,10 @@ from typing import TYPE_CHECKING, Any  # 导入当前模块需要的依赖。
 from pydantic import BaseModel, Field  # 导入当前模块需要的依赖。
 
 from mycodingagent.tool_runtime.base import Tool, ToolResult, resolve_sandbox_path  # 导入当前模块需要的依赖。
+from mycodingagent.tool_runtime.text_files import (
+    read_text_preserving_newlines,
+    write_text_preserving_newlines,
+)
 from mycodingagent.tool_runtime.write_policy import (
     USER_DENIED_WRITE_MESSAGE,
     WriteApprovalHook,
@@ -60,6 +64,8 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not path.exists():  # 根据条件决定是否执行后续分支。
             return ToolResult(output=f"错误：文件不存在：{params.file_path}", is_error=True)  # 返回当前函数的处理结果。
+        if not path.is_file():
+            return ToolResult(output=f"错误：路径不是文件：{params.file_path}", is_error=True)
 
         if self._state_cache:  # 根据条件决定是否执行后续分支。
             ok, err_msg = self._state_cache.check(str(path))  # 保存配置值或中间计算结果。
@@ -67,7 +73,7 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
                 return ToolResult(output=err_msg, is_error=True)  # 返回当前函数的处理结果。
 
         try:  # 开始可能抛出异常的保护代码块。
-            content = path.read_text(encoding="utf-8")  # 保存配置值或中间计算结果。
+            content = read_text_preserving_newlines(path)  # 保存配置值或中间计算结果。
         except Exception as e:  # 捕获并处理指定异常。
             return ToolResult(output=f"读取文件失败：{e}", is_error=True)  # 返回当前函数的处理结果。
 
@@ -98,7 +104,7 @@ class EditFile(Tool):  # 定义用于封装相关状态和行为的类。
         if self.file_history is not None:
             self.file_history.track_edit(str(path))
         try:  # 开始可能抛出异常的保护代码块。
-            path.write_text(new_content, encoding="utf-8")  # 保存配置值或中间计算结果。
+            write_text_preserving_newlines(path, new_content)  # 保存配置值或中间计算结果。
             if self._cache:  # 根据条件决定是否执行后续分支。
                 self._cache.invalidate(str(path))  # 执行当前步骤的业务逻辑。
             if self._state_cache:  # 根据条件决定是否执行后续分支。
