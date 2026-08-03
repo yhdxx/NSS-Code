@@ -223,6 +223,14 @@ myAgent
 | `milvus.port` | `MYCODINGAGENT_MILVUS_PORT` | `"19530"` | Milvus 端口 |
 | **`milvus.token`** | **`MYCODINGAGENT_MILVUS_TOKEN`** | `""` | **Milvus 认证令牌（隐私字段）** |
 | `milvus.collection` | `MYCODINGAGENT_MILVUS_COLLECTION` | `"mycodingagent_skills"` | 集合名称 |
+| `milvus.dense_index_type` | `MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE` | `"HNSW"` | dense 向量索引类型 |
+| `milvus.dense_metric_type` | `MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE` | `"COSINE"` | dense 向量距离度量 |
+| `milvus.hnsw_m` | `MYCODINGAGENT_MILVUS_HNSW_M` | `16` | HNSW 建索引连接数 |
+| `milvus.hnsw_ef_construction` | `MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION` | `200` | HNSW 建索引搜索宽度 |
+| `milvus.hnsw_ef` | `MYCODINGAGENT_MILVUS_HNSW_EF` | `64` | HNSW 查询搜索宽度 |
+| `milvus.sparse_index_type` | `MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE` | `"SPARSE_INVERTED_INDEX"` | BM25 稀疏向量索引类型 |
+| `milvus.sparse_metric_type` | `MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE` | `"BM25"` | BM25 稀疏向量度量 |
+| `milvus.sparse_inverted_index_algo` | `MYCODINGAGENT_MILVUS_SPARSE_ALGO` | `"DAAT_MAXSCORE"` | BM25 稀疏倒排索引算法 |
 | `milvus.rrf_k` | `MYCODINGAGENT_MILVUS_RRF_K` | `60` | RRF 融合 K 值 |
 
 ### 4.11 `mcp` — MCP Server
@@ -274,6 +282,14 @@ myAgent
 | `MYCODINGAGENT_MILVUS_ENABLED` | `milvus.enabled` | bool |
 | `MYCODINGAGENT_MILVUS_HOST` | `milvus.host` | string |
 | `MYCODINGAGENT_MILVUS_TOKEN` | `milvus.token` | string |
+| `MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE` | `milvus.dense_index_type` | string |
+| `MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE` | `milvus.dense_metric_type` | string |
+| `MYCODINGAGENT_MILVUS_HNSW_M` | `milvus.hnsw_m` | int |
+| `MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION` | `milvus.hnsw_ef_construction` | int |
+| `MYCODINGAGENT_MILVUS_HNSW_EF` | `milvus.hnsw_ef` | int |
+| `MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE` | `milvus.sparse_index_type` | string |
+| `MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE` | `milvus.sparse_metric_type` | string |
+| `MYCODINGAGENT_MILVUS_SPARSE_ALGO` | `milvus.sparse_inverted_index_algo` | string |
 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
 | `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | path |
 

@@ -5,7 +5,9 @@ import os
 import subprocess
 import sys
 from pathlib import Path
+from types import SimpleNamespace
 
+import mycodingagent.skill_runtime.vector_store as vector_store
 from mycodingagent.skill_runtime.embeddings import _extract_embeddings
 from mycodingagent.skill_runtime.models import SkillRecord
 from mycodingagent.skill_runtime.vector_store import (
@@ -31,6 +33,14 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     }
     env.pop("MYCODINGAGENT_CONFIG", None)
     env.pop("MYCODINGAGENT_MILVUS_PORT", None)
+    env.pop("MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_HNSW_M", None)
+    env.pop("MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION", None)
+    env.pop("MYCODINGAGENT_MILVUS_HNSW_EF", None)
+    env.pop("MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_SPARSE_ALGO", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
     env.pop("MYCODINGAGENT_BGE_MODEL", None)
     env.pop("MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD", None)
@@ -54,6 +64,14 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     }
     env.pop("MYCODINGAGENT_CONFIG", None)
     env.pop("MYCODINGAGENT_MILVUS_PORT", None)
+    env.pop("MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_HNSW_M", None)
+    env.pop("MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION", None)
+    env.pop("MYCODINGAGENT_MILVUS_HNSW_EF", None)
+    env.pop("MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE", None)
+    env.pop("MYCODINGAGENT_MILVUS_SPARSE_ALGO", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
     env.pop("MYCODINGAGENT_BGE_MODEL", None)
     env.pop("MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD", None)
@@ -81,6 +99,16 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'dimension': CONFIG.embedding.dimension,\n"
         "  'milvus_uri': CONFIG.milvus.uri,\n"
         "  'milvus_collection': CONFIG.milvus.collection,\n"
+        "  'milvus_dense_index_type': CONFIG.milvus.dense_index_type,\n"
+        "  'milvus_dense_metric_type': CONFIG.milvus.dense_metric_type,\n"
+        "  'milvus_hnsw_m': CONFIG.milvus.hnsw_m,\n"
+        "  'milvus_hnsw_ef_construction': CONFIG.milvus.hnsw_ef_construction,\n"
+        "  'milvus_hnsw_ef': CONFIG.milvus.hnsw_ef,\n"
+        "  'milvus_sparse_index_type': CONFIG.milvus.sparse_index_type,\n"
+        "  'milvus_sparse_metric_type': CONFIG.milvus.sparse_metric_type,\n"
+        "  'milvus_sparse_inverted_index_algo': CONFIG.milvus.sparse_inverted_index_algo,\n"
+        "  'milvus_has_legacy_index_type': hasattr(CONFIG.milvus, 'index_type'),\n"
+        "  'milvus_has_legacy_metric_type': hasattr(CONFIG.milvus, 'metric_type'),\n"
         "  'memory_state_dir': str(CONFIG.memory.state_dir),\n"
         "  'memory_db_path': str(CONFIG.memory.db_path),\n"
         "  'mcp_project_config_path': str(CONFIG.mcp.project_config_path),\n"
@@ -116,6 +144,14 @@ def test_config_file_controls_embedding_and_milvus(tmp_path):
                     "host": "127.0.0.1",
                     "port": "19531",
                     "collection": "custom_skills",
+                    "dense_index_type": "FLAT",
+                    "dense_metric_type": "IP",
+                    "hnsw_m": 32,
+                    "hnsw_ef_construction": 300,
+                    "hnsw_ef": 96,
+                    "sparse_index_type": "SPARSE_INVERTED_INDEX",
+                    "sparse_metric_type": "BM25",
+                    "sparse_inverted_index_algo": "DAAT_WAND",
                 },
             }
         ),
@@ -130,6 +166,16 @@ def test_config_file_controls_embedding_and_milvus(tmp_path):
     assert data["dimension"] == 1536
     assert data["milvus_uri"] == "http://127.0.0.1:19531"
     assert data["milvus_collection"] == "custom_skills"
+    assert data["milvus_dense_index_type"] == "FLAT"
+    assert data["milvus_dense_metric_type"] == "IP"
+    assert data["milvus_hnsw_m"] == 32
+    assert data["milvus_hnsw_ef_construction"] == 300
+    assert data["milvus_hnsw_ef"] == 96
+    assert data["milvus_sparse_index_type"] == "SPARSE_INVERTED_INDEX"
+    assert data["milvus_sparse_metric_type"] == "BM25"
+    assert data["milvus_sparse_inverted_index_algo"] == "DAAT_WAND"
+    assert data["milvus_has_legacy_index_type"] is False
+    assert data["milvus_has_legacy_metric_type"] is False
 
 
 def test_config_file_overrides_environment_variable(tmp_path):
@@ -254,6 +300,45 @@ def test_dashscope_embedding_response_shape_is_supported():
     )
 
     assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+
+
+def test_milvus_dense_params_are_hnsw_specific(monkeypatch):
+    monkeypatch.setattr(
+        vector_store,
+        "CONFIG",
+        SimpleNamespace(
+            milvus=SimpleNamespace(
+                dense_index_type="HNSW",
+                dense_metric_type="COSINE",
+                hnsw_m=16,
+                hnsw_ef_construction=200,
+                hnsw_ef=64,
+            )
+        ),
+    )
+
+    assert vector_store._dense_index_params() == {"M": 16, "efConstruction": 200}
+    assert vector_store._dense_search_params() == {
+        "metric_type": "COSINE",
+        "params": {"ef": 64},
+    }
+
+    monkeypatch.setattr(
+        vector_store,
+        "CONFIG",
+        SimpleNamespace(
+            milvus=SimpleNamespace(
+                dense_index_type="FLAT",
+                dense_metric_type="COSINE",
+                hnsw_m=16,
+                hnsw_ef_construction=200,
+                hnsw_ef=64,
+            )
+        ),
+    )
+
+    assert vector_store._dense_index_params() == {}
+    assert vector_store._dense_search_params() == {"metric_type": "COSINE"}
 
 
 class _FakeMilvusClient:

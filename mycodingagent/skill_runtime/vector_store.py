@@ -222,10 +222,7 @@ class MilvusVectorStore(SkillVectorStore):
             index_name="skill_dense_hnsw_index",
             index_type=CONFIG.milvus.dense_index_type,
             metric_type=CONFIG.milvus.dense_metric_type,
-            params={
-                "M": CONFIG.milvus.hnsw_m,
-                "efConstruction": CONFIG.milvus.hnsw_ef_construction,
-            },
+            params=_dense_index_params(),
         )
         index_params.add_index(
             field_name=SPARSE_FIELD,
@@ -285,10 +282,7 @@ class MilvusVectorStore(SkillVectorStore):
         dense_request = AnnSearchRequest(
             [query_vector],
             DENSE_FIELD,
-            {
-                "metric_type": CONFIG.milvus.dense_metric_type,
-                "params": {"ef": CONFIG.milvus.hnsw_ef},
-            },
+            _dense_search_params(),
             limit=limit,
         )
         sparse_request = AnnSearchRequest(
@@ -497,6 +491,26 @@ def _rrf_ranker() -> Any:
         return RRFRanker(k=CONFIG.milvus.rrf_k)
     except TypeError:
         return RRFRanker(CONFIG.milvus.rrf_k)
+
+
+def _is_hnsw_index(index_type: str) -> bool:
+    return index_type.strip().upper() == "HNSW"
+
+
+def _dense_index_params() -> dict[str, int]:
+    if not _is_hnsw_index(CONFIG.milvus.dense_index_type):
+        return {}
+    return {
+        "M": CONFIG.milvus.hnsw_m,
+        "efConstruction": CONFIG.milvus.hnsw_ef_construction,
+    }
+
+
+def _dense_search_params() -> dict[str, Any]:
+    params: dict[str, Any] = {"metric_type": CONFIG.milvus.dense_metric_type}
+    if _is_hnsw_index(CONFIG.milvus.dense_index_type):
+        params["params"] = {"ef": CONFIG.milvus.hnsw_ef}
+    return params
 
 
 def _boost_preferred(results: list[SearchResult], preferred_names: list[str]) -> list[SearchResult]:

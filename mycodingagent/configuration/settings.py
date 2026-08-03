@@ -1049,11 +1049,31 @@ class MilvusConfig:
     consistency_level: str = field(
         default_factory=lambda: _user_str("milvus.consistency_level", ("MYCODINGAGENT_MILVUS_CONSISTENCY_LEVEL",), "Strong")
     )
-    index_type: str = field(
-        default_factory=lambda: _user_str("milvus.index_type", ("MYCODINGAGENT_MILVUS_INDEX_TYPE",), "HNSW")
+    dense_index_type: str = field(
+        default_factory=lambda: _user_str("milvus.dense_index_type", ("MYCODINGAGENT_MILVUS_DENSE_INDEX_TYPE",), "HNSW")
     )
-    metric_type: str = field(
-        default_factory=lambda: _user_str("milvus.metric_type", ("MYCODINGAGENT_MILVUS_METRIC_TYPE",), "COSINE")
+    dense_metric_type: str = field(
+        default_factory=lambda: _user_str("milvus.dense_metric_type", ("MYCODINGAGENT_MILVUS_DENSE_METRIC_TYPE",), "COSINE")
+    )
+    hnsw_m: int = field(
+        default_factory=lambda: _user_int("milvus.hnsw_m", ("MYCODINGAGENT_MILVUS_HNSW_M",), 16)
+    )
+    hnsw_ef_construction: int = field(
+        default_factory=lambda: _user_int(
+            "milvus.hnsw_ef_construction",
+            ("MYCODINGAGENT_MILVUS_HNSW_EF_CONSTRUCTION",),
+            200,
+        )
+    )
+    hnsw_ef: int = field(
+        default_factory=lambda: _user_int("milvus.hnsw_ef", ("MYCODINGAGENT_MILVUS_HNSW_EF",), 64)
+    )
+    sparse_index_type: str = field(
+        default_factory=lambda: _user_str(
+            "milvus.sparse_index_type",
+            ("MYCODINGAGENT_MILVUS_SPARSE_INDEX_TYPE",),
+            "SPARSE_INVERTED_INDEX",
+        )
     )
     sparse_metric_type: str = field(
         default_factory=lambda: _user_str("milvus.sparse_metric_type", ("MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE",), "BM25")
