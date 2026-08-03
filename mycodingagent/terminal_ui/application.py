@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Callable, Iterable
+from collections.abc import Callable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import RLock
@@ -11,7 +11,6 @@ from typing import Any, Protocol, TextIO
 from prompt_toolkit import Application
 from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.buffer import Buffer
-from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
 from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
@@ -21,12 +20,11 @@ from prompt_toolkit.key_binding import KeyBindings
 from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
-from prompt_toolkit.layout.menus import CompletionsMenu
 from prompt_toolkit.output.defaults import create_output
 from prompt_toolkit.output import ColorDepth
 from prompt_toolkit.utils import get_cwidth
 
-from mycodingagent.commands import CommandRegistry
+from mycodingagent.commands import CommandRegistry, CommandSpec
 from mycodingagent.terminal_ui.message_queue import FollowUpSignal, MessageQueue
 from mycodingagent.terminal_ui.theme import (
     ACTIVE_USER_ANSI,
@@ -62,23 +60,6 @@ class SharedTerminalInput:
     async def read_choice(self, prompt: str, *, allowed: set[str]) -> str:
         answer = (await request_text(prompt)).strip().lower()
         return answer if answer in allowed else ""
-
-
-class _CommandCompleter(Completer):
-    def __init__(self) -> None:
-        self.registry: CommandRegistry | None = None
-
-    def get_completions(self, document: Document, complete_event: Any) -> Iterable[Completion]:
-        registry = self.registry
-        text = document.text_before_cursor
-        if registry is None or not text.startswith("/") or any(char.isspace() for char in text):
-            return
-        for spec in registry.suggestions(text):
-            yield Completion(
-                spec.name,
-                start_position=-len(text),
-                display_meta=spec.description,
-            )
 
 
 @dataclass(frozen=True)
@@ -151,9 +132,10 @@ class TerminalApplication:
         self._stream_active = False
         self._stream_label = "模型"
         self._stream_text = ""
-        self._completer = _CommandCompleter()
-        self._suppress_command_completion = False
-        self._dismissed_completion_text: str | None = None
+        self._command_registry: CommandRegistry | None = None
+        self._command_suggestions: list[CommandSpec] = []
+        self._command_selection_index: int | None = None
+        self._dismissed_command_text: str | None = None
         self._application: Application[Any] | None = None
         self._input_buffer: Buffer | None = None
         self._loading_control: FormattedTextControl | None = None
@@ -317,7 +299,8 @@ class TerminalApplication:
         if not self.is_tty:
             return await self.read_prompt(command_registry, prompt_header=prompt_header)
         self._modal_input = False
-        self._completer.registry = command_registry
+        self._command_registry = command_registry
+        self._refresh_command_suggestions()
         self._prompt_header = prompt_header
         self._refresh_status()
         self._focus_input()
@@ -348,7 +331,8 @@ class TerminalApplication:
                 raise EOFError
             return line.rstrip("\r\n")
         self._modal_input = True
-        self._completer.registry = command_registry
+        self._command_registry = command_registry
+        self._refresh_command_suggestions()
         if not preserve_selection:
             self._selection_options = []
             self._selection_index = 0
@@ -448,36 +432,8 @@ class TerminalApplication:
 
     def _build_application(self) -> None:
         key_bindings = KeyBindings()
-        self._input_buffer = Buffer(
-            multiline=True,
-            completer=self._completer,
-            complete_while_typing=False,
-        )
-
-        def refresh_command_completion(buffer: Buffer) -> None:
-            if self._suppress_command_completion:
-                return
-            text = buffer.document.text_before_cursor
-            if self._dismissed_completion_text is not None:
-                if text == self._dismissed_completion_text:
-                    return
-                self._dismissed_completion_text = None
-            registry = self._completer.registry
-            should_open = bool(
-                registry is not None
-                and text.startswith("/")
-                and not any(char.isspace() for char in text)
-                and registry.suggestions(text)
-            )
-            if not should_open:
-                if buffer.complete_state is not None:
-                    buffer.cancel_completion()
-                return
-            buffer.start_completion(select_first=True)
-            if buffer.complete_state is not None and buffer.complete_state.current_completion is None:
-                buffer.complete_next()
-
-        self._input_buffer.on_text_changed += refresh_command_completion
+        self._input_buffer = Buffer(multiline=True)
+        self._input_buffer.on_text_changed += self._refresh_command_suggestions
         input_control = BufferControl(buffer=self._input_buffer)
         input_window = Window(
             input_control,
@@ -528,7 +484,15 @@ class TerminalApplication:
         composer = ConditionalContainer(
             HSplit(
                 [
-                    CompletionsMenu(max_height=8, scroll_offset=1),
+                    ConditionalContainer(
+                        Window(
+                            FormattedTextControl(self._formatted_command_suggestions),
+                            height=self._command_suggestions_height,
+                            wrap_lines=False,
+                            style="class:completion-menu.completion",
+                        ),
+                        filter=Condition(lambda: bool(self._command_suggestions)),
+                    ),
                     queue_preview,
                     input_window,
                     status_window,
@@ -555,20 +519,13 @@ class TerminalApplication:
         def submit(event: Any) -> None:
             if not self._ready and not self._modal_input:
                 return
-            completion_state = event.current_buffer.complete_state
-            if completion_state is not None:
-                completion = completion_state.current_completion
-                if completion is None and completion_state.completions:
-                    completion = completion_state.completions[0]
-                if completion is not None:
-                    self._suppress_command_completion = True
-                    try:
-                        event.current_buffer.apply_completion(completion)
-                    finally:
-                        self._suppress_command_completion = False
-                    event.current_buffer.cancel_completion()
-                else:
-                    event.current_buffer.cancel_completion()
+            selected_index = self._command_selection_index
+            if self._command_suggestions and selected_index is not None:
+                command = self._command_suggestions[selected_index].name
+                self._dismissed_command_text = command
+                self._clear_command_suggestions()
+                event.current_buffer.set_document(Document(command, len(command)))
+                event.app.invalidate()
                 return
             if self._selection_options:
                 text = f"__selection__:{self._selection_index}"
@@ -595,11 +552,9 @@ class TerminalApplication:
 
         @key_bindings.add("escape", eager=True)
         def interrupt(event: Any) -> None:
-            if event.current_buffer.complete_state is not None:
-                self._dismissed_completion_text = (
-                    event.current_buffer.complete_state.original_document.text_before_cursor
-                )
-                event.current_buffer.cancel_completion()
+            if self._command_suggestions:
+                self._dismissed_command_text = event.current_buffer.document.text_before_cursor
+                self._clear_command_suggestions()
                 event.app.invalidate()
                 return
             if self._modal_input:
@@ -635,44 +590,6 @@ class TerminalApplication:
                 return
             buffer.insert_text("/")
 
-        def delete_from_command_input(event: Any, *, backwards: bool) -> None:
-            buffer = event.current_buffer
-            completion_state = buffer.complete_state
-            if completion_state is None:
-                if backwards:
-                    buffer.delete_before_cursor(count=1)
-                else:
-                    buffer.delete(count=1)
-                return
-
-            original = completion_state.original_document
-            self._suppress_command_completion = True
-            try:
-                buffer.cancel_completion()
-                buffer.set_document(original)
-                before = buffer.text
-                if backwards:
-                    buffer.delete_before_cursor(count=1)
-                else:
-                    buffer.delete(count=1)
-            finally:
-                self._suppress_command_completion = False
-
-            if buffer.text == before:
-                self._dismissed_completion_text = buffer.document.text_before_cursor
-            else:
-                self._dismissed_completion_text = None
-                refresh_command_completion(buffer)
-            event.app.invalidate()
-
-        @key_bindings.add("backspace", eager=True)
-        def delete_previous_character(event: Any) -> None:
-            delete_from_command_input(event, backwards=True)
-
-        @key_bindings.add("delete", eager=True)
-        def delete_next_character(event: Any) -> None:
-            delete_from_command_input(event, backwards=False)
-
         @key_bindings.add("c-c")
         def cancel(event: Any) -> None:
             if self._modal_input:
@@ -688,8 +605,14 @@ class TerminalApplication:
 
         @key_bindings.add("up")
         def select_previous(event: Any) -> None:
-            if event.current_buffer.complete_state is not None:
-                event.current_buffer.complete_previous()
+            if self._command_suggestions:
+                if self._command_selection_index is None:
+                    self._command_selection_index = len(self._command_suggestions) - 1
+                else:
+                    self._command_selection_index = (
+                        self._command_selection_index - 1
+                    ) % len(self._command_suggestions)
+                event.app.invalidate()
                 return
             if self._selection_options:
                 self._selection_index = (self._selection_index - 1) % len(self._selection_options)
@@ -697,8 +620,14 @@ class TerminalApplication:
 
         @key_bindings.add("down")
         def select_next(event: Any) -> None:
-            if event.current_buffer.complete_state is not None:
-                event.current_buffer.complete_next()
+            if self._command_suggestions:
+                if self._command_selection_index is None:
+                    self._command_selection_index = 0
+                else:
+                    self._command_selection_index = (
+                        self._command_selection_index + 1
+                    ) % len(self._command_suggestions)
+                event.app.invalidate()
                 return
             if self._selection_options:
                 self._selection_index = (self._selection_index + 1) % len(self._selection_options)
@@ -770,6 +699,67 @@ class TerminalApplication:
             for line in lines
         )
         self._render_queue.put_nowait(block)
+
+    def _refresh_command_suggestions(self, buffer: Buffer | None = None) -> None:
+        buffer = buffer or self._input_buffer
+        if buffer is None:
+            return
+        text = buffer.document.text_before_cursor
+        if self._dismissed_command_text is not None:
+            if text == self._dismissed_command_text:
+                self._clear_command_suggestions()
+                self._invalidate()
+                return
+            self._dismissed_command_text = None
+        registry = self._command_registry
+        if (
+            registry is None
+            or not text.startswith("/")
+            or any(char.isspace() for char in text)
+        ):
+            suggestions: list[CommandSpec] = []
+        else:
+            suggestions = registry.suggestions(text)
+        self._command_suggestions = suggestions
+        self._command_selection_index = None
+        self._invalidate()
+
+    def _clear_command_suggestions(self) -> None:
+        self._command_suggestions = []
+        self._command_selection_index = None
+
+    def _visible_command_suggestions(self) -> list[tuple[int, CommandSpec]]:
+        max_visible = 8
+        selected = self._command_selection_index
+        if selected is None or selected < max_visible:
+            start = 0
+        else:
+            start = selected - max_visible + 1
+        return list(enumerate(self._command_suggestions[start : start + max_visible], start))
+
+    def _command_suggestions_height(self) -> Dimension:
+        return Dimension.exact(len(self._visible_command_suggestions()))
+
+    def _formatted_command_suggestions(self) -> FormattedText:
+        visible = self._visible_command_suggestions()
+        fragments: list[tuple[str, str]] = []
+        for row, (index, spec) in enumerate(visible):
+            current = index == self._command_selection_index
+            command_style = (
+                "class:completion-menu.completion.current"
+                if current
+                else "class:completion-menu.completion"
+            )
+            meta_style = (
+                "class:completion-menu.meta.completion.current"
+                if current
+                else "class:completion-menu.meta.completion"
+            )
+            marker = "›" if current else " "
+            suffix = "\n" if row < len(visible) - 1 else ""
+            fragments.append((command_style, f" {marker} {spec.name}"))
+            fragments.append((meta_style, f"  {spec.description}{suffix}"))
+        return FormattedText(fragments)
 
     def _input_prefix(self, line_number: int, wrap_count: int) -> FormattedText:
         if wrap_count:

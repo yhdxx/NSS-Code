@@ -46,7 +46,7 @@ def test_background_output_does_not_corrupt_active_prompt() -> None:
     asyncio.run(scenario())
 
 
-def test_slash_opens_command_palette_and_enter_accepts_before_submit() -> None:
+def test_slash_opens_hint_without_completing_until_arrow_selection_is_confirmed() -> None:
     async def scenario() -> None:
         master_fd, slave_fd = pty.openpty()
         input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
@@ -62,14 +62,19 @@ def test_slash_opens_command_palette_and_enter_accepts_before_submit() -> None:
             await asyncio.sleep(0.1)
 
             assert terminal._input_buffer is not None
-            assert terminal._input_buffer.complete_state is not None
-            assert terminal._input_buffer.complete_state.current_completion is not None
+            assert terminal._input_buffer.text == "/"
+            assert [spec.name for spec in terminal._command_suggestions] == ["/plan"]
+            assert terminal._command_selection_index is None
 
+            os.write(master_fd, b"\x1b[B")
+            await asyncio.sleep(0.05)
+            assert terminal._input_buffer.text == "/"
+            assert terminal._command_selection_index == 0
             os.write(master_fd, b"\r")
             await asyncio.sleep(0.05)
             assert not task.done()
             assert terminal._input_buffer.text == "/plan"
-            assert terminal._input_buffer.complete_state is None
+            assert terminal._command_suggestions == []
 
             os.write(master_fd, b"\r")
             assert await asyncio.wait_for(task, timeout=2.0) == "/plan"
@@ -112,7 +117,7 @@ def test_slash_palette_is_rendered_above_input_at_terminal_bottom() -> None:
             assert "切换模型" in rendered
 
             os.set_blocking(master_fd, True)
-            os.write(master_fd, b"\r\r")
+            os.write(master_fd, b"\x1b[B\r\r")
             assert await asyncio.wait_for(task, timeout=2.0) == "/model"
         finally:
             await terminal.close()
@@ -141,14 +146,14 @@ def test_escape_closes_slash_palette_without_interrupting_agent() -> None:
             os.write(master_fd, b"/")
             await asyncio.sleep(0.1)
             assert terminal._input_buffer is not None
-            assert terminal._input_buffer.complete_state is not None
+            assert terminal._command_suggestions
 
             os.write(master_fd, b"\x1b")
             await asyncio.sleep(0.75)
 
-            assert terminal._input_buffer.complete_state is None
+            assert terminal._command_suggestions == []
             assert not cancel_event.is_set()
-            os.write(master_fd, b"plan\r\r")
+            os.write(master_fd, b"plan\r")
             assert await asyncio.wait_for(task, timeout=2.0) == "/plan"
         finally:
             terminal.bind_cancel_event(None)
@@ -161,7 +166,7 @@ def test_escape_closes_slash_palette_without_interrupting_agent() -> None:
     asyncio.run(scenario())
 
 
-def test_backspace_edits_original_slash_command_after_completion_navigation() -> None:
+def test_backspace_edits_command_after_hint_selection_is_confirmed() -> None:
     async def scenario() -> None:
         master_fd, slave_fd = pty.openpty()
         input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
@@ -180,15 +185,21 @@ def test_backspace_edits_original_slash_command_after_completion_navigation() ->
             await asyncio.sleep(0.05)
 
             assert terminal._input_buffer is not None
-            assert terminal._input_buffer.complete_state is not None
+            assert terminal._input_buffer.text == "/"
+            assert terminal._command_selection_index == 0
+
+            os.write(master_fd, b"\r")
+            await asyncio.sleep(0.05)
+            assert terminal._input_buffer.text == "/mode"
+            assert terminal._command_suggestions == []
 
             os.write(master_fd, b"\x7f")
             await asyncio.sleep(0.1)
 
-            assert terminal._input_buffer.text == ""
-            assert terminal._input_buffer.complete_state is None
-            os.write(master_fd, b"hello\r")
-            assert await asyncio.wait_for(task, timeout=2.0) == "hello"
+            assert terminal._input_buffer.text == "/mod"
+            assert terminal._command_selection_index is None
+            os.write(master_fd, b"el\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "/model"
         finally:
             await terminal.close()
             input_stream.close()
@@ -199,7 +210,7 @@ def test_backspace_edits_original_slash_command_after_completion_navigation() ->
     asyncio.run(scenario())
 
 
-def test_delete_at_end_closes_slash_completion_instead_of_reopening_it() -> None:
+def test_delete_edits_command_after_hint_selection_is_confirmed() -> None:
     async def scenario() -> None:
         master_fd, slave_fd = pty.openpty()
         input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
@@ -216,15 +227,20 @@ def test_delete_at_end_closes_slash_completion_instead_of_reopening_it() -> None
             os.write(master_fd, b"\x1b[B")
             await asyncio.sleep(0.05)
             assert terminal._input_buffer is not None
-            assert terminal._input_buffer.complete_state is not None
+            assert terminal._input_buffer.text == "/"
 
-            os.write(master_fd, b"\x1b[3~")
+            os.write(master_fd, b"\r")
+            await asyncio.sleep(0.05)
+            assert terminal._input_buffer.text == "/model"
+            assert terminal._command_suggestions == []
+
+            os.write(master_fd, b"\x1b[D\x1b[3~")
             await asyncio.sleep(0.1)
 
-            assert terminal._input_buffer.text == "/"
-            assert terminal._input_buffer.complete_state is None
-            os.write(master_fd, b"\x7fhello\r")
-            assert await asyncio.wait_for(task, timeout=2.0) == "hello"
+            assert terminal._input_buffer.text == "/mode"
+            assert terminal._command_selection_index is None
+            os.write(master_fd, b"l\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "/model"
         finally:
             await terminal.close()
             input_stream.close()
