@@ -1,8 +1,11 @@
 from __future__ import annotations
 
 import asyncio
+import fcntl
 import os
 import pty
+import struct
+import termios
 
 from mycodingagent.terminal_ui.application import TerminalApplication
 from mycodingagent.terminal_ui.theme import ACTIVE_USER_ANSI
@@ -150,6 +153,56 @@ def test_queued_message_preview_uses_required_title_and_one_line_truncation() ->
         output_stream.close()
         os.close(master_fd)
         os.close(slave_fd)
+
+
+def test_terminal_resize_redraws_compact_composer_without_committing_separator_lines() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+
+        def resize(columns: int) -> None:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+            assert terminal._application is not None
+            terminal._application._on_resize()
+
+        try:
+            resize(80)
+            await terminal.start()
+            terminal.mark_ready()
+            assert terminal._input_buffer is not None
+            terminal._input_buffer.text = "x" * 120
+
+            resize(40)
+            await asyncio.sleep(0.05)
+            narrow_height = terminal._input_height().preferred
+            resize(120)
+            await asyncio.sleep(0.05)
+            wide_height = terminal._input_height().preferred
+            assert narrow_height > wide_height
+
+            terminal._input_buffer.reset()
+            prompt_task = asyncio.create_task(terminal.read_message())
+            os.write(master_fd, b"still works\r")
+            assert await asyncio.wait_for(prompt_task, timeout=2.0) == "still works"
+        finally:
+            await terminal.close()
+            os.set_blocking(master_fd, False)
+            chunks: list[bytes] = []
+            while True:
+                try:
+                    chunks.append(os.read(master_fd, 65536))
+                except BlockingIOError:
+                    break
+            rendered = b"".join(chunks).decode("utf-8", errors="ignore")
+            assert "────────" not in rendered
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
 
 
 def test_general_terminal_output_adapter_is_line_based() -> None:

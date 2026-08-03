@@ -18,6 +18,7 @@ from mycodingagent.terminal_ui.theme import (
     PRIMARY_TEXT,
     RICH_THEME_STYLES,
     SECONDARY_TEXT,
+    TOOL_ACTION_TEAL,
 )
 from mycodingagent.tool_runtime.command_policy import analyze_command
 
@@ -123,6 +124,7 @@ def test_terminal_theme_uses_the_configured_semantic_palette():
     assert all(MAIN_BACKGROUND in style for style in RICH_THEME_STYLES.values())
     assert PRIMARY_TEXT in RICH_THEME_STYLES["tool.write"]
     assert SECONDARY_TEXT in RICH_THEME_STYLES["tool.output"]
+    assert TOOL_ACTION_TEAL in RICH_THEME_STYLES["tool.read"]
 
 
 def test_final_answer_markdown_uses_primary_text_by_default(capsys):
@@ -133,6 +135,15 @@ def test_final_answer_markdown_uses_primary_text_by_default(capsys):
     assert "模型：" in output
     assert "普通文本" in output
     assert "标题" in output
+
+
+def test_long_markdown_lines_are_wrapped_without_losing_content(capsys):
+    repeated = "完整内容不能被截断。" * 20
+
+    render_assistant_markdown(f"1. 上下文双层管理：{repeated}")
+
+    output = capsys.readouterr().out
+    assert repeated in "".join(output.split())
 
 
 class _TTYBuffer:

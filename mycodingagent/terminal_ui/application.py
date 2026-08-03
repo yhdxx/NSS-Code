@@ -31,7 +31,6 @@ from mycodingagent.terminal_ui.theme import (
     ACTIVE_USER_ANSI,
     RESET_ANSI,
     prompt_toolkit_style,
-    render_main_rows,
 )
 
 
@@ -403,7 +402,6 @@ class TerminalApplication:
             HSplit(
                 [
                     queue_preview,
-                    Window(height=1, char="─", style="class:separator"),
                     input_window,
                     status_window,
                 ]
@@ -543,7 +541,7 @@ class TerminalApplication:
     def _enqueue_output(self, text: str) -> None:
         with self._output_lock:
             self._append_output(text)
-        self._render_queue.put_nowait(render_main_rows(text))
+        self._render_queue.put_nowait(text)
 
     def _apply_clear(self) -> None:
         with self._output_lock:

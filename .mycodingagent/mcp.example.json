@@ -1,21 +1,27 @@
 {
-  "_comment": "myCodingAgent MCP 配置模板。复制为当前工作目录的 `.mycodingagent/mcp.json` 或用户级 `~/.mycodingagent/mcp.json` 后使用。JSON 不支持注释，本模板用 `_comment` 字段写说明；loader 会忽略这些字段。",
+  "_comment": "myCodingAgent 首次启动会把本模板复制为 `~/.mycodingagent/mcp.json`。项目级配置可放在当前工作目录的 `.mycodingagent/mcp.json`。JSON 不支持注释，本模板用 `_comment` 字段写说明；loader 会忽略这些字段。",
   "servers": {
     "_comment": "servers 下每个对象名就是 MCP Server 名称；同名 server 在后加载的配置中会覆盖前者。",
     "github": {
       "disabled": true,
-      "_comment": "GitHub MCP 示例。启用前把 disabled 改为 false，并设置 GITHUB_PERSONAL_ACCESS_TOKEN。",
+      "_comment": "GitHub 官方 MCP Server。启用前把 disabled 改为 false，并在启动 myAgent 的 shell 中 export GITHUB_PERSONAL_ACCESS_TOKEN。",
       "transport": "stdio",
-      "command": "npx",
-      "args": ["-y", "@modelcontextprotocol/server-github"],
-      "env": {
-        "GITHUB_PERSONAL_ACCESS_TOKEN": "请替换为真实 GitHub token，或删除 env 后在 shell 中 export 同名变量"
-      },
+      "command": "docker",
+      "args": [
+        "run",
+        "-i",
+        "--rm",
+        "-e",
+        "GITHUB_PERSONAL_ACCESS_TOKEN",
+        "-e",
+        "GITHUB_TOOLSETS=repos,issues,pull_requests",
+        "ghcr.io/github/github-mcp-server"
+      ],
       "description": "GitHub 仓库、Issue、PR 和代码搜索操作",
       "tags": ["github", "git", "repo"],
       "aliases": ["gh"],
       "keywords": ["GitHub", "代码仓库", "PR", "issue"],
-      "startup_timeout": 20,
+      "startup_timeout": 30,
       "call_timeout": 60,
       "permissions": {
         "_comment": "只读工具不会询问；写入、危险或未知工具会触发审批。工具名必须与 server 暴露的 MCP tool 名一致。",

@@ -64,7 +64,7 @@ class MCPConfigLoader:
         env_path_var: str = "MYCODINGAGENT_MCP_CONFIG",
     ) -> None:
         self.project_path = project_path or Path.cwd() / ".mycodingagent" / "mcp.json"
-        self.user_path = user_path or Path.home() / ".config" / "myCodingAgent" / "mcp.json"
+        self.user_path = user_path or Path.home() / ".mycodingagent" / "mcp.json"
         self.env_path_var = env_path_var
 
     def load(self) -> dict[str, MCPServerConfig]:

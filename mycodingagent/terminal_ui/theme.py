@@ -9,6 +9,7 @@ WINDOW_CHROME = "#3E3E3E"
 PRIMARY_TEXT = "#D7D7D7"
 SECONDARY_TEXT = "#8F8F8F"
 MUTED_BORDER = "#282828"
+TOOL_ACTION_TEAL = "#5FD7C4"
 
 
 PROMPT_TOOLKIT_STYLES: dict[str, str] = {
@@ -16,7 +17,6 @@ PROMPT_TOOLKIT_STYLES: dict[str, str] = {
     "input.body": f"bg:{COMPOSER_BACKGROUND} {PRIMARY_TEXT}",
     "input.prefix": f"bg:{COMPOSER_BACKGROUND} {PRIMARY_TEXT} bold",
     "status": f"bg:{MAIN_BACKGROUND} {SECONDARY_TEXT}",
-    "separator": f"bg:{MAIN_BACKGROUND} {MUTED_BORDER}",
     "queue.title": f"bg:{MAIN_BACKGROUND} {SECONDARY_TEXT}",
     "queue.item": f"bg:{MAIN_BACKGROUND} {SECONDARY_TEXT}",
     "completion-menu.completion": f"bg:{MUTED_BORDER} {PRIMARY_TEXT}",
@@ -36,7 +36,7 @@ RICH_THEME_STYLES: dict[str, str] = {
     "tool.section": f"bold {PRIMARY_TEXT} on {MAIN_BACKGROUND}",
     "tool.branch": f"{SECONDARY_TEXT} on {MAIN_BACKGROUND}",
     "tool.arg": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
-    "tool.read": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
+    "tool.read": f"{TOOL_ACTION_TEAL} on {MAIN_BACKGROUND}",
     "tool.write": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
     "bash.command": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
     "bash.low": f"{SECONDARY_TEXT} on {MAIN_BACKGROUND}",
@@ -70,24 +70,8 @@ def _rgb_escape(color: str, *, background: bool) -> str:
     return f"\x1b[{channel};2;{red};{green};{blue}m"
 
 
-MAIN_BACKGROUND_ANSI = _rgb_escape(MAIN_BACKGROUND, background=True)
 ACTIVE_USER_ANSI = (
     _rgb_escape(COMPOSER_BACKGROUND, background=True)
     + _rgb_escape(PRIMARY_TEXT, background=False)
 )
 RESET_ANSI = "\x1b[0m"
-
-
-def render_main_rows(text: str) -> str:
-    """Fill emitted scrollback rows with the application background."""
-    if not text:
-        return text
-    rows = text.splitlines(keepends=True)
-    rendered: list[str] = []
-    for row in rows:
-        has_newline = row.endswith("\n")
-        content = row[:-1] if has_newline else row
-        rendered.append(MAIN_BACKGROUND_ANSI + content)
-        if has_newline:
-            rendered.append(MAIN_BACKGROUND_ANSI + "\x1b[K" + RESET_ANSI + "\n")
-    return "".join(rendered)

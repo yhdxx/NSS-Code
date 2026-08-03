@@ -594,7 +594,7 @@ def _print_text(console: Any, text: str, *, style: str) -> None:
 def _console(file: TextIO) -> Any:
     if Console is None or Theme is None:
         return None
-    return Console(file=file, soft_wrap=True, highlight=False, theme=_theme())
+    return Console(file=file, soft_wrap=False, highlight=False, theme=_theme())
 
 
 def _theme() -> Any:

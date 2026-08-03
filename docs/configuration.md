@@ -246,7 +246,7 @@ myAgent
 ## 5. 完整配置示例
 
 完整 JSON 模板见仓库中 `.mycodingagent/config.example.json`，首次启动时会复制为 `~/.mycodingagent/config.json`。
-仓库内 MCP 配置只保留 `.mycodingagent/mcp.example.json` 模板；如需启用 MCP，请复制到当前工作目录的 `.mycodingagent/mcp.json` 或用户级 `~/.mycodingagent/mcp.json`。
+首次启动会自动把 `.mycodingagent/mcp.example.json` 复制为用户级 `~/.mycodingagent/mcp.json`，并同步说明到 `~/.mycodingagent/MCP.md`。项目级覆盖配置仍可放在当前工作目录的 `.mycodingagent/mcp.json`。
 
 ---
 

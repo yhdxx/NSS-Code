@@ -395,7 +395,7 @@ MCP 配置加载顺序：
 
 后加载的同名 server 覆盖前者。
 
-仓库只保留 MCP 配置模板 `.mycodingagent/mcp.example.json`；需要项目级 MCP 配置时，将模板复制到当前工作目录的 `.mycodingagent/mcp.json`。完整字段说明和 GitHub token 配置示例见 `docs/configuration.md`。
+首次启动会自动生成用户级 `~/.mycodingagent/mcp.json` 和 `~/.mycodingagent/MCP.md`。需要项目级覆盖时，在当前工作目录创建 `.mycodingagent/mcp.json`。完整字段说明和 GitHub token 配置示例见 `docs/mcp.md`。
 
 ### 8.1 Discovery
 

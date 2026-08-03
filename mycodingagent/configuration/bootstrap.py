@@ -10,16 +10,24 @@ from pathlib import Path
 USER_CONFIG_DIR = Path.home() / ".mycodingagent"
 USER_CONFIG_PATH = USER_CONFIG_DIR / "config.json"
 USER_CONFIG_README_PATH = USER_CONFIG_DIR / "README.md"
+USER_MCP_CONFIG_PATH = USER_CONFIG_DIR / "mcp.json"
+USER_MCP_README_PATH = USER_CONFIG_DIR / "MCP.md"
 
 
 @dataclass
 class ConfigBootstrapResult:
     config_path: Path
     readme_path: Path
+    mcp_config_path: Path
+    mcp_readme_path: Path
     created_config: bool = False
     recreated_invalid_config: bool = False
     backup_path: Path | None = None
     synced_readme: bool = False
+    created_mcp_config: bool = False
+    recreated_invalid_mcp_config: bool = False
+    mcp_backup_path: Path | None = None
+    synced_mcp_readme: bool = False
     messages: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     fatal_error: str = ""
@@ -37,9 +45,18 @@ def bootstrap_user_config(*, home: Path | None = None, repo_root: Path | None = 
     config_dir = home / ".mycodingagent"
     config_path = config_dir / "config.json"
     readme_path = config_dir / "README.md"
+    mcp_config_path = config_dir / "mcp.json"
+    mcp_readme_path = config_dir / "MCP.md"
     template_path = repo_root / ".mycodingagent" / "config.example.json"
+    mcp_template_path = repo_root / ".mycodingagent" / "mcp.example.json"
     docs_path = repo_root / "docs" / "configuration.md"
-    result = ConfigBootstrapResult(config_path=config_path, readme_path=readme_path)
+    mcp_docs_path = repo_root / "docs" / "mcp.md"
+    result = ConfigBootstrapResult(
+        config_path=config_path,
+        readme_path=readme_path,
+        mcp_config_path=mcp_config_path,
+        mcp_readme_path=mcp_readme_path,
+    )
 
     try:
         config_dir.mkdir(parents=True, exist_ok=True)
@@ -47,65 +64,162 @@ def bootstrap_user_config(*, home: Path | None = None, repo_root: Path | None = 
         result.fatal_error = f"无法创建配置目录 {config_dir}: {exc}"
         return result
 
-    _sync_readme(docs_path=docs_path, readme_path=readme_path, result=result)
-    _ensure_config_file(template_path=template_path, config_path=config_path, result=result)
+    result.synced_readme = _sync_document(
+        source_path=docs_path,
+        target_path=readme_path,
+        label="配置教程",
+        result=result,
+    )
+    result.synced_mcp_readme = _sync_document(
+        source_path=mcp_docs_path,
+        target_path=mcp_readme_path,
+        label="MCP 配置说明",
+        result=result,
+    )
+    (
+        result.created_config,
+        result.recreated_invalid_config,
+        result.backup_path,
+    ) = _ensure_json_file(
+        template_path=template_path,
+        target_path=config_path,
+        label="配置文件",
+        required=True,
+        result=result,
+    )
+    if not result.fatal_error:
+        (
+            result.created_mcp_config,
+            result.recreated_invalid_mcp_config,
+            result.mcp_backup_path,
+        ) = _ensure_json_file(
+            template_path=mcp_template_path,
+            target_path=mcp_config_path,
+            label="MCP 配置文件",
+            required=False,
+            result=result,
+        )
     return result
 
 
-def _sync_readme(*, docs_path: Path, readme_path: Path, result: ConfigBootstrapResult) -> None:
-    if not docs_path.exists():
-        result.warnings.append(f"未找到配置教程源文件：{docs_path}")
-        return
+def _sync_document(
+    *,
+    source_path: Path,
+    target_path: Path,
+    label: str,
+    result: ConfigBootstrapResult,
+) -> bool:
+    if not source_path.exists():
+        result.warnings.append(f"未找到{_after_chinese(label)}源文件：{source_path}")
+        return False
     try:
-        shutil.copy2(docs_path, readme_path)
+        shutil.copy2(source_path, target_path)
     except OSError as exc:
-        result.warnings.append(f"无法同步配置教程到 {readme_path}: {exc}")
-        return
-    result.synced_readme = True
+        result.warnings.append(f"无法同步{_after_chinese(label)}到 {target_path}: {exc}")
+        return False
+    return True
 
 
-def _ensure_config_file(*, template_path: Path, config_path: Path, result: ConfigBootstrapResult) -> None:
+def _ensure_json_file(
+    *,
+    template_path: Path,
+    target_path: Path,
+    label: str,
+    required: bool,
+    result: ConfigBootstrapResult,
+) -> tuple[bool, bool, Path | None]:
     if not template_path.exists():
-        result.fatal_error = f"未找到配置模板：{template_path}"
-        return
+        _report_bootstrap_error(
+            f"未找到{_after_chinese(label)}模板：{template_path}",
+            required=required,
+            result=result,
+        )
+        return False, False, None
 
-    if not config_path.exists():
-        if _copy_template(template_path=template_path, config_path=config_path, result=result):
-            result.created_config = True
-            result.messages.append(f"已创建配置文件：{config_path}")
-        return
+    if not target_path.exists():
+        if _copy_template(
+            template_path=template_path,
+            target_path=target_path,
+            label=label,
+            required=required,
+            result=result,
+        ):
+            result.messages.append(f"已创建{_after_chinese(label)}：{target_path}")
+            return True, False, None
+        return False, False, None
 
     try:
-        raw = config_path.read_text(encoding="utf-8")
+        raw = target_path.read_text(encoding="utf-8")
     except OSError as exc:
-        result.fatal_error = f"无法读取配置文件 {config_path}: {exc}"
-        return
+        _report_bootstrap_error(
+            f"无法读取{_after_chinese(label)} {target_path}: {exc}",
+            required=required,
+            result=result,
+        )
+        return False, False, None
 
     parsed = _parse_config_json(raw)
     if parsed is not None:
-        return
+        return False, False, None
 
-    backup_path = _backup_path(config_path)
+    backup_path = _backup_path(target_path)
     try:
-        config_path.replace(backup_path)
+        target_path.replace(backup_path)
     except OSError as exc:
-        result.fatal_error = f"配置文件无效且备份失败 {config_path}: {exc}"
-        return
+        _report_bootstrap_error(
+            f"{label}无效且备份失败 {target_path}: {exc}",
+            required=required,
+            result=result,
+        )
+        return False, False, None
 
-    result.backup_path = backup_path
-    if _copy_template(template_path=template_path, config_path=config_path, result=result):
-        result.recreated_invalid_config = True
-        result.messages.append(f"配置文件无效，已备份到：{backup_path}")
-        result.messages.append(f"已重建配置模板：{config_path}")
+    if _copy_template(
+        template_path=template_path,
+        target_path=target_path,
+        label=label,
+        required=required,
+        result=result,
+    ):
+        result.messages.append(f"{label}无效，已备份到：{backup_path}")
+        result.messages.append(f"已重建{_after_chinese(label)}模板：{target_path}")
+        return False, True, backup_path
+    return False, False, backup_path
 
 
-def _copy_template(*, template_path: Path, config_path: Path, result: ConfigBootstrapResult) -> bool:
+def _copy_template(
+    *,
+    template_path: Path,
+    target_path: Path,
+    label: str,
+    required: bool,
+    result: ConfigBootstrapResult,
+) -> bool:
     try:
-        shutil.copy2(template_path, config_path)
+        shutil.copy2(template_path, target_path)
     except OSError as exc:
-        result.fatal_error = f"无法创建配置文件 {config_path}: {exc}"
+        _report_bootstrap_error(
+            f"无法创建{_after_chinese(label)} {target_path}: {exc}",
+            required=required,
+            result=result,
+        )
         return False
     return True
+
+
+def _report_bootstrap_error(
+    message: str,
+    *,
+    required: bool,
+    result: ConfigBootstrapResult,
+) -> None:
+    if required:
+        result.fatal_error = message
+    else:
+        result.warnings.append(message)
+
+
+def _after_chinese(label: str) -> str:
+    return f" {label}" if label[:1].isascii() else label
 
 
 def _is_valid_config_json(raw: str) -> bool:

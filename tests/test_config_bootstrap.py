@@ -48,7 +48,12 @@ def _fake_repo(tmp_path: Path) -> Path:
         ),
         encoding="utf-8",
     )
+    (repo / ".mycodingagent" / "mcp.example.json").write_text(
+        json.dumps({"servers": {"github": {"disabled": True}}}),
+        encoding="utf-8",
+    )
     (repo / "docs" / "configuration.md").write_text("# 配置教程\n", encoding="utf-8")
+    (repo / "docs" / "mcp.md").write_text("# MCP 配置说明\n", encoding="utf-8")
     return repo
 
 
@@ -60,10 +65,16 @@ def test_bootstrap_creates_user_config_and_readme(tmp_path):
 
     config_path = home / ".mycodingagent" / "config.json"
     readme_path = home / ".mycodingagent" / "README.md"
+    mcp_config_path = home / ".mycodingagent" / "mcp.json"
+    mcp_readme_path = home / ".mycodingagent" / "MCP.md"
     assert result.created_config is True
     assert result.synced_readme is True
+    assert result.created_mcp_config is True
+    assert result.synced_mcp_readme is True
     assert json.loads(config_path.read_text(encoding="utf-8"))["model"]["profiles"]["main"]["model"] == "demo-model"
     assert readme_path.read_text(encoding="utf-8") == "# 配置教程\n"
+    assert json.loads(mcp_config_path.read_text(encoding="utf-8"))["servers"]["github"]["disabled"] is True
+    assert mcp_readme_path.read_text(encoding="utf-8") == "# MCP 配置说明\n"
 
 
 def test_bootstrap_preserves_existing_valid_config(tmp_path):
@@ -127,6 +138,40 @@ def test_bootstrap_backs_up_and_recreates_non_object_config(tmp_path):
     assert json.loads(config_path.read_text(encoding="utf-8"))["model"]["profiles"]["main"]["model"] == "demo-model"
 
 
+def test_bootstrap_preserves_existing_mcp_config(tmp_path):
+    home = tmp_path / "home"
+    repo = _fake_repo(tmp_path)
+    mcp_path = home / ".mycodingagent" / "mcp.json"
+    mcp_path.parent.mkdir(parents=True)
+    mcp_path.write_text(
+        json.dumps({"servers": {"custom": {"command": "custom-server"}}}),
+        encoding="utf-8",
+    )
+
+    result = bootstrap_user_config(home=home, repo_root=repo)
+
+    assert result.created_mcp_config is False
+    assert result.recreated_invalid_mcp_config is False
+    assert json.loads(mcp_path.read_text(encoding="utf-8")) == {
+        "servers": {"custom": {"command": "custom-server"}}
+    }
+
+
+def test_bootstrap_backs_up_invalid_mcp_config(tmp_path):
+    home = tmp_path / "home"
+    repo = _fake_repo(tmp_path)
+    mcp_path = home / ".mycodingagent" / "mcp.json"
+    mcp_path.parent.mkdir(parents=True)
+    mcp_path.write_text("{", encoding="utf-8")
+
+    result = bootstrap_user_config(home=home, repo_root=repo)
+
+    assert result.recreated_invalid_mcp_config is True
+    assert result.mcp_backup_path is not None
+    assert result.mcp_backup_path.read_text(encoding="utf-8") == "{"
+    assert json.loads(mcp_path.read_text(encoding="utf-8"))["servers"]["github"]["disabled"] is True
+
+
 def test_repository_config_template_exposes_external_configuration_fields():
     template = json.loads((ROOT / ".mycodingagent" / "config.example.json").read_text(encoding="utf-8"))
     required_paths = [
@@ -185,5 +230,8 @@ def test_main_bootstrap_creates_config_before_runtime_config_import(tmp_path):
     assert result.returncode == 1
     assert (tmp_path / "home" / ".mycodingagent" / "config.json").exists()
     assert (tmp_path / "home" / ".mycodingagent" / "README.md").exists()
+    assert (tmp_path / "home" / ".mycodingagent" / "mcp.json").exists()
+    assert (tmp_path / "home" / ".mycodingagent" / "MCP.md").exists()
     assert "已创建配置文件" in result.stdout
+    assert "已创建 MCP 配置文件" in result.stdout
     assert "启动配置无效" in result.stderr
