@@ -5,12 +5,19 @@ import json
 
 from mycodingagent.llm_runtime.streaming import PendingToolCall
 from mycodingagent.terminal_ui.output import (
-    TERMINAL_THEME_STYLES,
     clear_terminal,
     default_bash_display_level,
     mark_terminal_region_start,
     render_assistant_markdown,
     render_tool_calls,
+)
+from mycodingagent.terminal_ui.theme import (
+    COMPOSER_BACKGROUND,
+    MAIN_BACKGROUND,
+    MUTED_BORDER,
+    PRIMARY_TEXT,
+    RICH_THEME_STYLES,
+    SECONDARY_TEXT,
 )
 from mycodingagent.tool_runtime.command_policy import analyze_command
 
@@ -107,25 +114,18 @@ def test_rendering_does_not_mutate_tool_calls():
     assert [(call.tool_id, call.tool_name, call.arguments) for call in calls] == before
 
 
-def test_terminal_theme_is_greyscale_first_with_limited_semantic_color():
-    joined_styles = " ".join(TERMINAL_THEME_STYLES.values())
-    assert "magenta" not in joined_styles
-    assert "cyan" not in joined_styles
-    assert "purple" not in joined_styles
-    accent_words = ("green", "yellow", "red", "blue")
-    accent_count = sum(any(word in style for word in accent_words) for style in TERMINAL_THEME_STYLES.values())
-    neutral_count = len(TERMINAL_THEME_STYLES) - accent_count
-    assert neutral_count > accent_count
-    assert TERMINAL_THEME_STYLES["tool.write"].startswith("grey")
-    assert TERMINAL_THEME_STYLES["tool.section"] == "bold bright_white"
-    assert TERMINAL_THEME_STYLES["tool.arg"].startswith("grey")
-    assert TERMINAL_THEME_STYLES["tool.read"] == "bright_blue"
-    assert TERMINAL_THEME_STYLES["markdown.h1"] == "bold bright_white"
-    assert TERMINAL_THEME_STYLES["markdown.base"] == "bright_white"
-    assert TERMINAL_THEME_STYLES["markdown.paragraph"] == "bright_white"
+def test_terminal_theme_uses_the_configured_semantic_palette():
+    assert MAIN_BACKGROUND == "#380C2A"
+    assert COMPOSER_BACKGROUND == "#4F2943"
+    assert PRIMARY_TEXT == "#D7D7D7"
+    assert SECONDARY_TEXT == "#8F8F8F"
+    assert MUTED_BORDER == "#282828"
+    assert all(MAIN_BACKGROUND in style for style in RICH_THEME_STYLES.values())
+    assert PRIMARY_TEXT in RICH_THEME_STYLES["tool.write"]
+    assert SECONDARY_TEXT in RICH_THEME_STYLES["tool.output"]
 
 
-def test_final_answer_markdown_is_rendered_bright_white_by_default(capsys):
+def test_final_answer_markdown_uses_primary_text_by_default(capsys):
     render_assistant_markdown("普通文本\n\n# 标题\n\n- item")
 
     output = capsys.readouterr().out
@@ -179,7 +179,7 @@ def test_write_file_preview_uses_neutral_block_not_green_action_color(capsys):
 
     assert "• Write app.py" in output
     assert "print('ok')" in output
-    assert TERMINAL_THEME_STYLES["tool.output"].startswith("grey")
+    assert SECONDARY_TEXT in RICH_THEME_STYLES["tool.output"]
 
 
 def test_terminal_output_does_not_import_tool_runtime_policy():

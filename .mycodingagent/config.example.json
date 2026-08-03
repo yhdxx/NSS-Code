@@ -138,7 +138,6 @@
     "session_activation_reward": 0.3,
     "user_skill_cache_max_entries": 1000,
     "session_skill_cache_max_entries": 200,
-    "output_recall_skill": true,
     "vector_sync_batch_size": 2,
     "vector_sync_max_retries": 3
   },

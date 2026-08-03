@@ -158,7 +158,7 @@ def test_ask_model_reuses_turn_tools_and_omits_temporary_system_from_history(mon
                 return "", [agent_client.PendingToolCall("call_1", "FakeTool", "{}")], None
             return "done", [], None
 
-        async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
+        async def fake_execute_local_tool(registry, tool_name, raw_args):
             return ToolExecution("tool ok")
 
         monkeypatch.setattr(agent_client, "build_round_tools", fake_build_round_tools)
@@ -347,7 +347,7 @@ def test_ask_model_allows_multi_step_recovery_loop(monkeypatch):
             assert "exact recovered evidence" in messages[-1]["content"]
             return "final answer from evidence", [], None
 
-        async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
+        async def fake_execute_local_tool(registry, tool_name, raw_args):
             tool_calls_seen.append(tool_name)
             if tool_name == "SearchRecoverableContext":
                 return ToolExecution('{"contexts":[{"context_id":"ctx_1","summary":"build failure"}]}')
@@ -472,6 +472,41 @@ def test_ask_model_records_token_usage_and_prints_summaries(monkeypatch, tmp_pat
     assert restored.token_usage.request_count == 1
     assert restored.token_usage.prompt_cache_hit_tokens == 70
     assert restored.token_usage.prompt_cache_miss_tokens == 30
+
+
+def test_long_term_memory_lookup_prints_runtime_boundaries(monkeypatch, tmp_path, capsys):
+    class LongTermMemoryStub:
+        async def retrieve_for_turn(self, *, current_query, recent_messages):
+            assert current_query == "remember this"
+            assert isinstance(recent_messages, list)
+            return SimpleNamespace(to_runtime_payload=lambda: {"memory": None})
+
+        async def record_turn_usage_and_maybe_prompt_skill_promotion(self, **_kwargs):
+            return None
+
+    async def scenario() -> None:
+        runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+
+        async def fake_stream_one_round(*_args, **_kwargs):
+            return "done", [], None
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
+        await ask_model_with_raw_client(
+            raw_client=object(),
+            prompt="remember this",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+            memory_runtime=runtime,
+            long_term_memory_runtime=LongTermMemoryStub(),
+        )
+        await runtime.close()
+
+    asyncio.run(scenario())
+    output = capsys.readouterr().out
+
+    assert "[Runtime] 正在查询长期记忆..." in output
+    assert "[Runtime] 长期记忆查询完成。" in output
 
 
 def test_token_output_flags_control_terminal_lines(monkeypatch, tmp_path, capsys):

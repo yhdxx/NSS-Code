@@ -185,11 +185,6 @@ class SkillRuntime:
             session_candidates=session_candidates,
             pinned_names=set(self._session_pinned_tool_names) | set(self._turn_pinned_tool_names) | self.default_tool_names,
         )
-        if CONFIG.skills.output_recall_skill:
-            print(f"[SKILL] 检索候选: {_format_recall_names(result.record.tool_name for result in retrieval_results)}", flush=True)
-            print(f"[SKILL] 用户LRFU候选: {_format_recall_names(candidate.skill_name for candidate in user_candidates)}", flush=True)
-            print(f"[SKILL] 会话LRFU候选: {_format_recall_names(candidate.skill_name for candidate in session_candidates)}", flush=True)
-            print(f"[SKILL] Runtime Context推荐: {_format_recall_names(record.tool_name for record in selected)}", flush=True)
         by_name = {result.record.tool_name: result for result in retrieval_results}
         recommendations: list[SearchResult] = []
         for rank, record in enumerate(selected[:top_k], start=1):
@@ -230,57 +225,24 @@ class SkillRuntime:
     def _ensure_vector_index_complete(self, report: SkillSyncReport | None = None) -> None:
         try:
             stale_records = self.vector_store.stale_records(self.records)
-        except Exception as exc:
-            print(f"[SKILL] 向量索引状态检查失败，已跳过本次检查并启用本地关键词兜底: {exc}", flush=True)
+        except Exception:
             return
         if not stale_records:
             return
 
         batch_size = max(1, CONFIG.skills.vector_sync_batch_size)
-        total_count = len(stale_records)
-        synced_count = 0
-        failed_count = 0
-        print(f"[SKILL] 向量索引补齐: 0/{total_count} { _progress_bar(0, total_count) }", flush=True)
-        for index in range(0, total_count, batch_size):
+        for index in range(0, len(stale_records), batch_size):
             batch = stale_records[index:index + batch_size]
-            ok, exc = self._upsert_vector_batch_with_retry(
-                batch,
-                batch_label=f"{index + 1}-{index + len(batch)}/{total_count}",
-            )
+            ok, _ = self._upsert_vector_batch_with_retry(batch)
             if not ok:
-                failed_count += len(batch)
-                print(
-                    "[SKILL] 向量索引补齐批次失败，已跳过该批并继续启动: "
-                    f"{index + 1}-{index + len(batch)}/{total_count}: {exc}",
-                    flush=True,
-                )
-                print(
-                    f"[SKILL] 向量索引补齐: {synced_count + failed_count}/{total_count} "
-                    f"{_progress_bar(synced_count + failed_count, total_count)} "
-                    f"(成功 {synced_count}, 失败 {failed_count})",
-                    flush=True,
-                )
                 continue
-            synced_count += len(batch)
-            print(
-                f"[SKILL] 向量索引补齐: {synced_count + failed_count}/{total_count} "
-                f"{_progress_bar(synced_count + failed_count, total_count)} "
-                f"(成功 {synced_count}, 失败 {failed_count})",
-                flush=True,
-            )
             if report is not None:
                 report.embedding_cache_hits += getattr(self.vector_store, "last_cache_hits", 0)
                 report.embedding_cache_misses += getattr(self.vector_store, "last_cache_misses", 0)
-        if failed_count:
-            print(
-                f"[SKILL] 向量索引补齐部分完成: 成功 {synced_count}, 失败 {failed_count}; "
-                "失败项本轮使用本地关键词兜底。",
-                flush=True,
-            )
         if report is not None:
             report.changed = True
 
-    def _upsert_vector_batch_with_retry(self, batch: list[SkillRecord], *, batch_label: str) -> tuple[bool, Exception | None]:
+    def _upsert_vector_batch_with_retry(self, batch: list[SkillRecord]) -> tuple[bool, Exception | None]:
         max_retries = max(1, CONFIG.skills.vector_sync_max_retries)
         last_exc: Exception | None = None
         for attempt in range(1, max_retries + 1):
@@ -292,11 +254,6 @@ class SkillRuntime:
                 if attempt >= max_retries:
                     break
                 wait_seconds = min(2 ** (attempt - 1), 8)
-                print(
-                    f"[SKILL] 向量索引补齐批次重试 {attempt}/{max_retries}: "
-                    f"{batch_label}: {exc}; {wait_seconds}s 后重试",
-                    flush=True,
-                )
                 time.sleep(wait_seconds)
         return False, last_exc
 
@@ -744,19 +701,6 @@ def _skill_payload_from_record(record: SkillRecord) -> dict[str, Any]:
         "recommended_action": "invoke_skill",
         "invoke_tool": "invoke_skill",
     }
-
-
-def _format_recall_names(names: Any) -> str:
-    values = [str(name) for name in names if name]
-    return ", ".join(values) if values else "(none)"
-
-
-def _progress_bar(done: int, total: int, *, width: int = 24) -> str:
-    if total <= 0:
-        return "[" + "-" * width + "] 0%"
-    ratio = min(max(done / total, 0.0), 1.0)
-    filled = int(round(width * ratio))
-    return "[" + "#" * filled + "-" * (width - filled) + f"] {ratio:.0%}"
 
 
 def _merge_search_results(

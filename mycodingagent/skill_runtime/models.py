@@ -57,29 +57,3 @@ class SkillSyncReport:
     embedding_cache_hits: int = 0
     embedding_cache_misses: int = 0
     rejected: list[str] = field(default_factory=list)
-
-    def summary(self) -> str:
-        if (
-            not self.changed
-            and not self.reference_added
-            and not self.reference_updated
-            and not self.reference_deleted
-            and not self.embedding_cache_hits
-            and not self.embedding_cache_misses
-        ):
-            return "Skill index unchanged."
-        parts = [
-            f"added={self.added}",
-            f"updated={self.updated}",
-            f"deleted={self.deleted}",
-        ]
-        if self.reference_added or self.reference_updated or self.reference_deleted:
-            parts.append(f"reference_added={self.reference_added}")
-            parts.append(f"reference_updated={self.reference_updated}")
-            parts.append(f"reference_deleted={self.reference_deleted}")
-        if self.embedding_cache_hits or self.embedding_cache_misses:
-            parts.append(f"embedding_cache_hits={self.embedding_cache_hits}")
-            parts.append(f"embedding_cache_misses={self.embedding_cache_misses}")
-        if self.rejected:
-            parts.append(f"rejected={len(self.rejected)}")
-        return "Skill index updated: " + ", ".join(parts)

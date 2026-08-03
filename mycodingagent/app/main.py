@@ -245,8 +245,7 @@ async def _run(terminal: TerminalApplication) -> None:
         skill_roots=CONFIG.skills.roots,
         registry=registry,
     )  # 结束上方的多行结构。
-    skill_report = await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_tool/skill 工具执行入口。
-    print(skill_report.summary(), flush=True)  # 输出本次 SKILL 索引变化情况。
+    await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_tool/skill 工具执行入口。
     mcp_manager: MCPClientManager | None = None
     capability_router: CapabilityRouter | None = None
     if CONFIG.mcp.enabled:
@@ -336,6 +335,8 @@ async def _run(terminal: TerminalApplication) -> None:
                 memory_runtime.set_work_mode(WorkMode.GENERAL.value)
             print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
 
+    terminal.mark_ready()
+
     mcp_user_rounds = 0
 
     try:  # 开始可能抛出异常的保护代码块。
@@ -345,7 +346,7 @@ async def _run(terminal: TerminalApplication) -> None:
                 if rollover.performed and rollover.new_messages is not None:
                     messages = rollover.new_messages
             try:  # 开始可能抛出异常的保护代码块。
-                prompt = await terminal.read_prompt(
+                prompt = await terminal.read_message(
                     command_registry,
                     prompt_header="User (输入 exit 退出对话)",
                 )  # 保存配置值或中间计算结果。
@@ -423,6 +424,7 @@ async def _run(terminal: TerminalApplication) -> None:
                         work_mode=work_mode.current.value,
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=turn_cancel,
+                        follow_up_event=terminal.follow_up_signal,
                     )  # 结束上方的多行结构。
                 finally:
                     terminal.bind_cancel_event(None)

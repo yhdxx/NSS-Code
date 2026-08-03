@@ -9,6 +9,7 @@ from openai import APIConnectionError, APIStatusError, APITimeoutError
 from pydantic import BaseModel
 
 from mycodingagent.llm_runtime import client
+from mycodingagent.llm_runtime import streaming
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
@@ -164,6 +165,23 @@ def _run_stream(fake_client, tools=None):
         client.stream_one_round(fake_client, "test-model", [{"role": "user", "content": "hi"}], tools or [])
     )
     return result.text, result.tool_calls, result.usage
+
+
+def test_skill_tool_calls_are_hidden_from_terminal(monkeypatch):
+    rendered_calls = []
+    monkeypatch.setattr(
+        streaming,
+        "render_tool_calls",
+        lambda calls, **_kwargs: rendered_calls.extend(calls),
+    )
+    fake_client = _FakeClient(
+        [_FakeStream(_tool_call_chunks("call_skill", "search_tool", '{"query":"test"}'))]
+    )
+
+    _text, calls, _usage = _run_stream(fake_client)
+
+    assert [call.tool_name for call in calls] == ["search_tool"]
+    assert rendered_calls == []
 
 
 def test_system_prompt_requires_mcp_tool_discovery_before_execution():
@@ -381,7 +399,7 @@ def _run_ask_model(monkeypatch, stream_outcomes: list, tool_output: tuple[str, b
     async def fake_stream_one_round(_client, _model, _messages, _tools):
         return outcomes.pop(0)
 
-    async def fake_execute_local_tool(registry, tool_name, raw_args, skill_runtime):
+    async def fake_execute_local_tool(registry, tool_name, raw_args):
         executed.append(tool_name)
         return client.ToolExecution(tool_output[0], tool_output[1])
 

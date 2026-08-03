@@ -1,11 +1,10 @@
 from __future__ import annotations
 
 import asyncio
-import inspect
 import hashlib
 import json
 from dataclasses import dataclass
-from typing import Any, Callable
+from typing import Any
 from uuid import uuid4
 
 from mycodingagent.tool_runtime.base import Tool
@@ -69,7 +68,6 @@ async def execute_tool(
     tool: Tool,
     args: dict[str, Any],
     *,
-    on_notice: Callable[[], Any] | None = None,
     cancel_event: asyncio.Event | None = None,
     execution_recorder: Any | None = None,
     session_id: str = "",
@@ -93,10 +91,6 @@ async def execute_tool(
         )
     try:
         params = tool.params_model.model_validate(args)
-        if on_notice is not None:
-            notice_result = on_notice()
-            if inspect.isawaitable(notice_result):
-                await notice_result
         task = asyncio.create_task(tool.execute(params))
         if cancel_event is None:
             result = await task

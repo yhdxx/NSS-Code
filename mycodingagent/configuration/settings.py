@@ -869,9 +869,6 @@ class SkillConfig:
     session_skill_cache_max_entries: int = field(
         default_factory=lambda: _user_int("skills.session_skill_cache_max_entries", ("MYCODINGAGENT_SESSION_SKILL_CACHE_MAX_ENTRIES",), 200)
     )
-    output_recall_skill: bool = field(
-        default_factory=lambda: _user_bool("skills.output_recall_skill", ("MYCODINGAGENT_OUTPUT_RECALL_SKILL",), True)
-    )
     vector_sync_batch_size: int = field(
         default_factory=lambda: max(1, _user_int("skills.vector_sync_batch_size", ("MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE",), 2))
     )

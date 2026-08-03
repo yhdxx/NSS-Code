@@ -18,6 +18,7 @@ except ImportError:  # pragma: no cover - only relevant before dependencies are 
     Theme = None  # type: ignore[assignment]
 
 from mycodingagent.terminal_ui.highlighters import detect_language, highlight_for_terminal
+from mycodingagent.terminal_ui.theme import RICH_THEME_STYLES
 
 
 _TERMINAL_REGION_MARKED = False
@@ -53,41 +54,9 @@ MAX_BLOCK_TEXT = 1200
 BashDisplayLevel = Literal["low", "approval", "high"]
 BashDisplayClassifier = Callable[[str], tuple[BashDisplayLevel, str]]
 
-TERMINAL_THEME_STYLES: dict[str, str] = {
-    "label": "bold bright_white",
-    "text": "grey70",
-    "status": "grey50",
-    "error": "bold red",
-    "tool.output": "grey58",
-    "tool.generic": "grey70",
-    "tool.section": "bold bright_white",
-    "tool.branch": "grey50",
-    "tool.arg": "grey70",
-    "tool.read": "bright_blue",
-    "tool.write": "grey70",
-    "bash.command": "grey70",
-    "bash.low": "green",
-    "bash.approval": "yellow",
-    "bash.high": "bold red",
-    "edit.old": "yellow",
-    "edit.new": "green",
-    "markdown.base": "bright_white",
-    "markdown.paragraph": "bright_white",
-    "markdown.h1": "bold bright_white",
-    "markdown.h2": "bold bright_white",
-    "markdown.h3": "bold bright_white",
-    "markdown.h4": "bold bright_white",
-    "markdown.h5": "bold bright_white",
-    "markdown.h6": "bold bright_white",
-    "markdown.code": "grey85",
-    "markdown.code_block": "grey85",
-    "markdown.block_quote": "italic grey58",
-    "markdown.link": "underline bright_blue",
-}
-
-
 def render_assistant_markdown(text: str, *, label: str = "模型", file: TextIO | None = None) -> None:
     """Render a completed assistant answer as Markdown in the terminal."""
+    _notify_agent_output(file)
     output = _resolve_file(file)
     console = _console(output)
     _print_text(console, f"{label}：", style="label")
@@ -96,7 +65,7 @@ def render_assistant_markdown(text: str, *, label: str = "模型", file: TextIO 
     if Console is None:
         print(text, file=output, flush=True)
         return
-    console.print(highlight_for_terminal(text, declared_language="markdown", style="bright_white"))
+    console.print(highlight_for_terminal(text, declared_language="markdown", style="markdown.base"))
 
 
 def render_assistant_text(
@@ -108,6 +77,7 @@ def render_assistant_text(
     style: str = "text",
 ) -> None:
     """Render assistant text without Markdown transformation."""
+    _notify_agent_output(file)
     output = _resolve_file(file)
     console = _console(output)
     rendered = f"{label}：{text}"
@@ -171,8 +141,6 @@ def tool_status_message(tool_name: str) -> str:
         return "修改文件中"
     if tool_name == "Bash":
         return "执行命令中"
-    if tool_name == "invoke_skill" or tool_name.startswith("skill_"):
-        return "执行 Skill 中"
     return "执行工具中"
 
 
@@ -185,6 +153,7 @@ def render_tool_calls(
     """Render tool calls as compact, colored terminal UI blocks."""
     if not tool_calls:
         return
+    _notify_agent_output(file)
     output = _resolve_file(file)
     console = _console(output)
     pending_reads: list[_ToolCallView] = []
@@ -216,6 +185,7 @@ def render_tool_result_preview(
     file: TextIO | None = None,
     max_chars: int = 1200,
 ) -> None:
+    _notify_agent_output(file)
     output = _resolve_file(file)
     console = _console(output)
     style = "error" if is_error else "tool.output"
@@ -290,7 +260,12 @@ class TerminalStatus:
     ) -> None:
         self.message = message
         self.output = _resolve_file(file)
-        self.enabled = bool(enabled and _isatty(self.output))
+        self.terminal = None
+        if file is None:
+            from mycodingagent.terminal_ui.application import current_terminal
+
+            self.terminal = current_terminal()
+        self.enabled = bool(enabled and (self.terminal is not None or _isatty(self.output)))
         self.interval_seconds = interval_seconds
         self._task: asyncio.Task[None] | None = None
 
@@ -305,7 +280,9 @@ class TerminalStatus:
             with contextlib.suppress(asyncio.CancelledError):
                 await self._task
             self._task = None
-        if self.enabled:
+        if self.terminal is not None:
+            self.terminal.set_status("")
+        elif self.enabled:
             self.output.write("\r\033[2K")
             self.output.flush()
 
@@ -313,9 +290,13 @@ class TerminalStatus:
         dots = (".", "..", "...")
         index = 0
         while True:
-            self.output.write("\r\033[2K")
-            self.output.write(f"\033[90mH-Agent:{self.message}{dots[index % len(dots)]}\033[0m")
-            self.output.flush()
+            status = f"H-Agent:{self.message}{dots[index % len(dots)]}"
+            if self.terminal is not None:
+                self.terminal.set_status(status)
+            else:
+                self.output.write("\r\033[2K")
+                self.output.write(f"\033[90m{status}\033[0m")
+                self.output.flush()
             index += 1
             await asyncio.sleep(self.interval_seconds)
 
@@ -617,7 +598,17 @@ def _console(file: TextIO) -> Any:
 
 
 def _theme() -> Any:
-    return Theme(TERMINAL_THEME_STYLES)
+    return Theme(RICH_THEME_STYLES)
+
+
+def _notify_agent_output(file: TextIO | None) -> None:
+    if file is not None:
+        return
+    from mycodingagent.terminal_ui.application import current_terminal
+
+    terminal = current_terminal()
+    if terminal is not None:
+        terminal.notify_agent_output()
 
 
 def _resolve_file(file: TextIO | None) -> TextIO:

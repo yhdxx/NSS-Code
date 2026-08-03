@@ -8,6 +8,7 @@ from typing import Any
 from openai import APIConnectionError, APIError, APITimeoutError, AsyncOpenAI
 
 from mycodingagent.configuration import CONFIG
+from mycodingagent.memory.message_filters import is_skill_related_tool
 from mycodingagent.terminal_ui.output import (
     BashDisplayLevel,
     processing_status,
@@ -195,7 +196,12 @@ async def stream_one_round(
         if calls:
             if text:
                 render_assistant_text(text, label=output_label)
-            render_tool_calls(calls, bash_classifier=bash_classifier or _runtime_bash_display_level)
+            visible_calls = [call for call in calls if not is_skill_related_tool(call.tool_name)]
+            if visible_calls:
+                render_tool_calls(
+                    visible_calls,
+                    bash_classifier=bash_classifier or _runtime_bash_display_level,
+                )
         else:
             render_assistant_markdown(text, label=output_label)
     return StreamRoundResult("".join(content_parts), calls, last_usage)

@@ -21,7 +21,7 @@ def test_interruption_between_tools_keeps_protocol_pairs(monkeypatch):
 
         executed: list[str] = []
 
-        async def fake_execute(registry, tool_name, raw_args, skill_runtime, **kwargs):
+        async def fake_execute(registry, tool_name, raw_args, **kwargs):
             executed.append(tool_name)
             cancel_event.set()
             return ToolExecution("first completed")
@@ -72,5 +72,49 @@ def test_stream_interruption_is_not_an_api_error(monkeypatch):
         )
         assert result.interrupted is True
         assert not result.text.startswith("Error: API")
+
+    asyncio.run(scenario())
+
+
+def test_queued_follow_up_pauses_after_completed_tool_and_keeps_protocol_pairs(monkeypatch):
+    async def scenario():
+        follow_up_event = asyncio.Event()
+        calls = [
+            PendingToolCall("call_1", "FakeTool", "{}"),
+            PendingToolCall("call_2", "FakeTool", "{}"),
+        ]
+
+        async def fake_stream(*args, **kwargs):
+            return StreamRoundResult("", calls)
+
+        executed: list[str] = []
+
+        async def fake_execute(registry, tool_name, raw_args, **kwargs):
+            executed.append(tool_name)
+            follow_up_event.set()
+            return ToolExecution("first completed")
+
+        monkeypatch.setattr(agent_client, "stream_one_round", fake_stream)
+        monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute)
+
+        text, messages = await ask_model_with_raw_client(
+            raw_client=object(),
+            prompt="do two things",
+            registry=object(),
+            tools=[],
+            messages=[{"role": "system", "content": "fixed"}],
+            follow_up_event=follow_up_event,
+        )
+
+        assistant_calls = next(message["tool_calls"] for message in messages if message.get("tool_calls"))
+        tool_messages = [message for message in messages if message.get("role") == "tool"]
+        assert {call["id"] for call in assistant_calls} == {
+            message["tool_call_id"] for message in tool_messages
+        }
+        assert executed == ["FakeTool"]
+        assert tool_messages[0]["content"] == "first completed"
+        assert "排队消息" in tool_messages[1]["content"]
+        assert "工具调用结束后暂停" in text
+        assert messages[-1]["metadata"]["queued_follow_up"] is True
 
     asyncio.run(scenario())

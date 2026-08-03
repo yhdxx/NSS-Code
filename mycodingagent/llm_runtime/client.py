@@ -32,9 +32,11 @@ from mycodingagent.llm_runtime.streaming import stream_one_round
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.terminal_ui.output import (
     processing_status,
+    render_assistant_text,
     render_project_graph_bootstrap_tree,
     tool_status_message,
 )
+from mycodingagent.terminal_ui.message_queue import FollowUpSignal
 from mycodingagent.tool_runtime import ToolRegistry, create_default_registry  # 导入本地工具注册表类型，以及创建默认读写/搜索/Bash 工具的方法。
 from mycodingagent.tool_runtime.execution import (
     CodeQueryLedger,
@@ -360,74 +362,6 @@ def indent_multiline_text(value: str, prefix: str = "    ") -> str:  # 给多行
     return "\n".join(f"{prefix}{line}" for line in lines)  # 给每一行前面加缩进，并重新拼成多行文本。
 
 
-def skill_tool_notice(tool_name: str, args: dict[str, Any], skill_runtime: Any | None = None) -> str:  # 为 SKILL 相关工具调用生成终端可见的简短提示。
-    notice_tool_name = str(args.get("skill_name") or "") if tool_name == "invoke_skill" else tool_name
-    record = get_skill_record_for_notice(skill_runtime, notice_tool_name)
-    if record is not None:
-        lines = [f"[SKILL] 调用：{record.tool_name} ({record.name})"]
-        description = compact_notice_value(record.description, limit=160)
-        if description:
-            lines.append(f"  描述：{description}")
-        instruction = compact_notice_value(args.get("instruction"), limit=160)
-        if instruction:
-            lines.append(f"  instruction：{instruction}")
-        return "\n".join(lines)
-
-    if tool_name == "search_tool":  # search_tool 是按能力检索 SKILL 的管理工具。
-        query = compact_notice_value(args.get("query"))
-        return f"[SKILL] 检索: {query}" if query else "[SKILL] 检索"
-    if tool_name == "Get_all_tool":  # Get_all_tool 会列出当前可用的全部 SKILL。
-        return "[SKILL] 列出全部可用 skill"
-    if tool_name == "Get_tool_by_name":  # Get_tool_by_name 会按名称激活并返回某个 SKILL schema。
-        requested_name = compact_notice_value(args.get("tool_name"))
-        return f"[SKILL] 获取工具定义: {requested_name}" if requested_name else "[SKILL] 获取工具定义"
-    if tool_name == "invoke_skill":
-        requested_name = compact_notice_value(args.get("skill_name"))
-        instruction = compact_notice_value(args.get("instruction"))
-        if requested_name and instruction:
-            return f"[SKILL] 调用: {requested_name} instruction={instruction}"
-        return f"[SKILL] 调用: {requested_name}" if requested_name else "[SKILL] 调用"
-    if tool_name == "search_skill_references":
-        query = compact_notice_value(args.get("query"))
-        skill_name = compact_notice_value(args.get("skill_name"))
-        target = f" skill={skill_name}" if skill_name else ""
-        return f"[SKILL] 检索 references: {query}{target}" if query else f"[SKILL] 检索 references{target}"
-    if tool_name == "Get_skill_reference":
-        skill_name = compact_notice_value(args.get("skill_name"))
-        reference_path = compact_notice_value(args.get("reference_path"))
-        if skill_name and reference_path:
-            return f"[SKILL] 读取 reference: {skill_name} {reference_path}"
-        return "[SKILL] 读取 reference"
-    if tool_name.startswith("skill_"):  # 真正的 SKILL 工具名统一以 skill_ 开头。
-        instruction = compact_notice_value(args.get("instruction"))
-        return f"[SKILL] 调用: {tool_name} instruction={instruction}" if instruction else f"[SKILL] 调用: {tool_name}"
-    return ""
-
-
-def get_skill_record_for_notice(skill_runtime: Any | None, tool_name: str) -> Any | None:
-    if skill_runtime is None:
-        return None
-    get_record = getattr(skill_runtime, "get_record", None)
-    if not callable(get_record):
-        return None
-    try:
-        return get_record(tool_name)
-    except Exception:
-        return None
-
-
-def compact_notice_value(value: Any, limit: int = 120) -> str:  # 把参数压缩成单行摘要，避免终端刷出大段上下文。
-    if value is None:
-        return ""
-    if isinstance(value, str):
-        text = " ".join(value.split())
-    else:
-        text = json.dumps(value, ensure_ascii=False)
-    if len(text) <= limit:
-        return text
-    return text[:limit] + f"... <truncated {len(text) - limit} chars>"
-
-
 def parse_tool_arguments(raw_args: str) -> dict[str, Any]:
     try:
         parsed = json.loads(raw_args) if raw_args else {}
@@ -482,7 +416,6 @@ async def execute_local_tool(
     registry: ToolRegistry,
     tool_name: str,
     raw_args: str,
-    skill_runtime: Any | None = None,
     cancel_event: asyncio.Event | None = None,
     execution_recorder: Any | None = None,
     session_id: str = "",
@@ -494,15 +427,9 @@ async def execute_local_tool(
     if tool is None:
         return ToolExecution(f"错误：未知工具 {tool_name}", is_error=True)
 
-    def show_notice() -> None:
-        notice = skill_tool_notice(tool_name, args, skill_runtime)
-        if notice:
-            print(notice, flush=True)
-
     return await execute_tool(
         tool,
         args,
-        on_notice=show_notice,
         cancel_event=cancel_event,
         execution_recorder=execution_recorder,
         session_id=session_id,
@@ -600,6 +527,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     work_mode: str = "general",
     long_term_memory_runtime: Any | None = None,
     cancel_event: asyncio.Event | None = None,
+    follow_up_event: FollowUpSignal | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:  # 返回 `(最终模型文本, 更新后的消息历史)`，供 CLI 继续保持上下文。
     # `messages` 在工具调用后的完整结构示例：  # 展示本函数维护的对话历史长什么样。
     # [  # 消息历史是一个有序数组，顺序就是模型看到的上下文顺序。
@@ -831,6 +759,9 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             print_turn_token_summary()
             await record_long_term_turn_usage(False)
             end_skill_turn()
+            render_assistant_text(
+                "本轮已被用户中断。已完成的工具结果已保留，可以继续对话。"
+            )
             return interruption_text, messages
         if assistant_text.startswith("Error: API ") and not tool_calls:
             # `turn_start` 指向用户消息追加之前的位置。本轮如果已经执行过工具，
@@ -887,6 +818,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             end_skill_turn()
             return assistant_text, messages  # 返回最终文本和完整消息历史给调用方。
 
+        follow_up_after_tool = False
         for index, tool_call in enumerate(tool_calls):  # 逐个执行模型请求的本地工具调用。
             tool_call_id = tool_call.tool_id or f"tool_call_{index}"  # 计算工具调用 ID，必须和上面的 assistant tool_calls 对象一致。
             registry_get = getattr(registry, "get", None)
@@ -899,7 +831,9 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             )
             if blocked is None:
                 blocked = code_query_ledger.preflight(tool_call.tool_name, tool_call.arguments)
-            if blocked is not None:
+            if follow_up_after_tool:
+                execution = ToolExecution("收到新的排队消息，本工具调用未执行。", is_error=True)
+            elif blocked is not None:
                 execution = blocked
             elif cancel_event is not None and cancel_event.is_set():
                 execution = ToolExecution("因用户中断，本工具调用未执行。", is_error=True)
@@ -911,7 +845,12 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                     execution_kwargs.update(
                         {"execution_recorder": memory_runtime, "session_id": session_id}
                     )
-                status_enabled = selected_tool is not None and selected_tool.is_read_only
+                skill_related_tool = is_skill_related_tool(tool_call.tool_name)
+                status_enabled = (
+                    selected_tool is not None
+                    and selected_tool.is_read_only
+                    and not skill_related_tool
+                )
                 async with processing_status(
                     tool_status_message(tool_call.tool_name),
                     enabled=status_enabled,
@@ -920,7 +859,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                         registry,
                         tool_call.tool_name,
                         tool_call.arguments,
-                        skill_runtime,
                         **execution_kwargs,
                     )
             code_query_ledger.record(tool_call.tool_name, tool_call.arguments, execution)
@@ -976,6 +914,23 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 messages.append(tool_message)  # 把工具执行结果追加为 role=tool 消息，供模型下一轮读取。
             round_messages.append(tool_message)
             save_session_state()
+            if follow_up_event is not None and follow_up_event.is_set():
+                follow_up_after_tool = True
+        if follow_up_after_tool and not (cancel_event is not None and cancel_event.is_set()):
+            interruption_text = "当前任务已在工具调用结束后暂停，接下来处理排队消息。"
+            interrupted_message = {
+                "role": "assistant",
+                "content": interruption_text,
+                "metadata": {"interrupted": True, "queued_follow_up": True},
+            }
+            messages.append(interrupted_message)
+            round_messages.append(interrupted_message)
+            save_session_state(sync=True)
+            print_turn_token_summary()
+            await record_long_term_turn_usage(False)
+            end_skill_turn()
+            render_assistant_text(interruption_text)
+            return interruption_text, messages
         if cancel_event is not None and cancel_event.is_set():
             interruption_text = "本轮已被用户中断。已完成的工具结果已保留，可以继续对话。"
             interrupted_message = {
@@ -989,6 +944,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             print_turn_token_summary()
             await record_long_term_turn_usage(False)
             end_skill_turn()
+            render_assistant_text(interruption_text)
             return interruption_text, messages
 
     print_turn_token_summary()
