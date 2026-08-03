@@ -12,4 +12,4 @@ if __name__ == "__main__":
 
     from mycodingagent.app.main import main
 
-    asyncio.run(main())
+    raise SystemExit(asyncio.run(main()))

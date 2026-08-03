@@ -46,3 +46,33 @@ def test_workspace_lease_atexit_cleanup_allows_reacquire(tmp_path, monkeypatch):
 
     second.acquire()
     second.release()
+
+
+def test_workspace_lease_reports_lock_storage_error(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    lease = WorkspaceLease(workspace, tmp_path / "state")
+
+    def fail_acquire():
+        raise OSError(30, "Read-only file system")
+
+    monkeypatch.setattr(lease._lock, "acquire", fail_acquire)
+
+    with pytest.raises(WorkspaceLeaseError, match="state.*writable"):
+        lease.acquire()
+
+
+def test_workspace_lease_releases_lock_when_metadata_write_fails(tmp_path, monkeypatch):
+    workspace = tmp_path / "workspace"
+    workspace.mkdir()
+    lease = WorkspaceLease(workspace, tmp_path / "state")
+
+    def fail_metadata():
+        raise OSError(13, "Permission denied")
+
+    monkeypatch.setattr(lease, "_write_metadata", fail_metadata)
+
+    with pytest.raises(WorkspaceLeaseError, match="metadata"):
+        lease.acquire()
+
+    assert not lease._lock.is_locked

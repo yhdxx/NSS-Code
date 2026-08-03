@@ -14,6 +14,7 @@ for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_P
 import asyncio  # 导入当前模块需要的依赖。
 import json
 import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
+import traceback
 from pathlib import Path
 
 import pyfiglet  # 导入当前模块需要的依赖。
@@ -56,9 +57,14 @@ from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.work_mode import WorkMode, WorkModeManager
 
-def _print_missing_required_config(errors: list[str]) -> None:
-    print(
-        "未检测到必要推理模型配置。\n"
+
+class StartupConfigurationError(RuntimeError):
+    pass
+
+
+def _configuration_error_message(errors: list[str]) -> str:
+    return (
+        "启动配置无效。\n"
         f"请编辑配置文件：{USER_CONFIG_PATH}\n"
         f"配置教程已同步到：{USER_CONFIG_README_PATH}\n\n"
         "最小可用配置：\n"
@@ -72,31 +78,41 @@ def _print_missing_required_config(errors: list[str]) -> None:
         "  embedding.provider/model/endpoint 嵌入模型与端点\n"
         "  milvus.host/port/collection       Skill 向量索引存储\n\n"
         "具体问题：\n"
-        + "\n".join(f"  - {error}" for error in errors),
-        flush=True,
+        + "\n".join(f"  - {error}" for error in errors)
     )
 
 
-async def main() -> None:  # 定义异步函数，供事件循环调用。
+async def main() -> int:  # 定义异步函数，供事件循环调用。
     terminal = TerminalApplication()
     await terminal.start()
+    startup_error: str | None = None
     try:
         try:
             await _run(terminal)
-        except IncompatibleSchemaError as exc:
-            print(f"无法启动：{exc}", flush=True)
+        except (IncompatibleSchemaError, StartupConfigurationError, WorkspaceLeaseError) as exc:
+            startup_error = f"无法启动：{exc}"
+        except Exception as exc:
+            startup_error = f"无法启动：{type(exc).__name__}: {exc}"
+            if CONFIG.client.debug:
+                startup_error += "\n" + traceback.format_exc()
     finally:
         await asyncio.sleep(0)
         await terminal.close()
+    if startup_error is not None:
+        print(startup_error, file=sys.stderr, flush=True)
+        return 1
+    return 0
 
 
 async def _run(terminal: TerminalApplication) -> None:
     model_manager = ModelManager()
-    config_errors = model_manager.validation_errors(require_long_term_memory=CONFIG.long_term_memory.enabled)
+    config_errors = [
+        *model_manager.validation_errors(require_long_term_memory=CONFIG.long_term_memory.enabled),
+        *CONFIG.embedding.validation_errors(),
+    ]
     if config_errors:
-        _print_missing_required_config(config_errors)
         await model_manager.close()
-        return  # 基础配置缺失时不进入 Docker / Skill / MCP 初始化。
+        raise StartupConfigurationError(_configuration_error_message(config_errors))
 
     ascii_art = pyfiglet.figlet_format("MyCodingAgent")  # 保存配置值或中间计算结果。
     print(ascii_art)  # 执行当前步骤的业务逻辑。
@@ -114,10 +130,9 @@ async def _run(terminal: TerminalApplication) -> None:
     if CONFIG.sandbox.workspace_lease_enabled:
         try:
             workspace_lease.acquire()
-        except WorkspaceLeaseError as exc:
-            print(f"无法启动：{exc}", flush=True)
+        except WorkspaceLeaseError:
             await model_manager.close()
-            return
+            raise
     file_state_cache = FileStateCache()  # 记录模型读过的文件，用于识别已读文件的外部变更。
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
     workspace_tracker.start()  # 启动后台监听线程；不可用时静默降级为不提示。
@@ -459,4 +474,4 @@ async def _run(terminal: TerminalApplication) -> None:
         print("\n连接已关闭，再见！")  # 执行当前步骤的业务逻辑。
 
 if __name__ == "__main__":  # 根据条件决定是否执行后续分支。
-    asyncio.run(main())  # 执行当前步骤的业务逻辑。
+    raise SystemExit(asyncio.run(main()))  # 执行当前步骤的业务逻辑。

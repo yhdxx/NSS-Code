@@ -8,6 +8,7 @@ from pathlib import Path
 from types import SimpleNamespace
 
 import mycodingagent.skill_runtime.vector_store as vector_store
+from mycodingagent.configuration.settings import EmbeddingConfig
 from mycodingagent.skill_runtime.embeddings import _extract_embeddings
 from mycodingagent.skill_runtime.models import SkillRecord
 from mycodingagent.skill_runtime.vector_store import (
@@ -290,6 +291,24 @@ def test_dashscope_embedding_response_shape_is_supported():
     )
 
     assert vectors == [[0.1, 0.2], [0.3, 0.4]]
+
+
+def test_embedding_config_rejects_removed_provider_alias():
+    config = EmbeddingConfig(provider="bge_http")
+
+    assert config.validation_errors() == [
+        "embedding.provider='bge_http' 不受支持；支持：http、local、hash"
+    ]
+
+
+def test_http_embedding_config_validates_api_contract():
+    config = EmbeddingConfig(provider="http", api_format="custom", endpoint="", model="")
+
+    assert config.validation_errors() == [
+        "embedding.api_format='custom' 不受支持；支持：ollama、openai、dashscope",
+        "embedding.endpoint 不能为空",
+        "embedding.model 不能为空",
+    ]
 
 
 def test_milvus_dense_params_are_hnsw_specific(monkeypatch):

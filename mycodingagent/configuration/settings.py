@@ -955,6 +955,7 @@ class EmbeddingConfig:
             ),
         )
     )
+
     dimension: int = field(
         default_factory=lambda: max(1, _user_int("embedding.dimension", ("MYCODINGAGENT_EMBEDDING_DIMENSION",), 1024))
     )
@@ -974,6 +975,26 @@ class EmbeddingConfig:
     headers: dict = field(
         default_factory=lambda: _user_dict("embedding.headers", ("MYCODINGAGENT_EMBEDDING_HEADERS",), {})
     )
+
+    def validation_errors(self) -> list[str]:
+        provider = self.provider.strip().lower()
+        errors: list[str] = []
+        if provider not in {"http", "local", "hash"}:
+            errors.append(
+                f"embedding.provider={self.provider!r} 不受支持；支持：http、local、hash"
+            )
+        elif provider == "http":
+            api_format = self.api_format.strip().lower()
+            if api_format not in {"ollama", "openai", "dashscope"}:
+                errors.append(
+                    f"embedding.api_format={self.api_format!r} 不受支持；"
+                    "支持：ollama、openai、dashscope"
+                )
+            if not self.endpoint.strip():
+                errors.append("embedding.endpoint 不能为空")
+            if not self.model.strip():
+                errors.append("embedding.model 不能为空")
+        return errors
 
 @dataclass(frozen=True)
 class MilvusConfig:

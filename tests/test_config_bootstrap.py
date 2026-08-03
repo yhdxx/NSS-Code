@@ -179,10 +179,11 @@ def test_main_bootstrap_creates_config_before_runtime_config_import(tmp_path):
         stdout=subprocess.PIPE,
         stderr=subprocess.PIPE,
         timeout=30,
-        check=True,
+        check=False,
     )
 
+    assert result.returncode == 1
     assert (tmp_path / "home" / ".mycodingagent" / "config.json").exists()
     assert (tmp_path / "home" / ".mycodingagent" / "README.md").exists()
     assert "已创建配置文件" in result.stdout
-    assert "未检测到必要推理模型配置" in result.stdout
+    assert "启动配置无效" in result.stderr
