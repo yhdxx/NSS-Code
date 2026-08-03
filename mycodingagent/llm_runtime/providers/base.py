@@ -69,6 +69,7 @@ class ChatRequest:
     extra_body: dict[str, Any] | None = None
     temperature: float | None = None
     tool_choice: Any = None
+    stream_sink: Any = None
 
 
 class InferenceProvider(Protocol):

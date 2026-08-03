@@ -87,7 +87,8 @@ class OpenAICompatibleProvider:
             pending_tool_calls = {}
             last_usage = None
             try:
-                async with processing_status("分析中", enabled=request.display):
+                status = processing_status("分析中", enabled=request.display)
+                async with status:
                     stream, interrupted = await _wait_or_cancel(
                         self._client.chat.completions.create(**payload),
                         request.cancel_event,
@@ -103,6 +104,8 @@ class OpenAICompatibleProvider:
                         if interrupted:
                             await stream.close()
                             text = "".join(content_parts)
+                            if request.stream_sink is not None and text:
+                                request.stream_sink.abort(text)
                             if request.display and text:
                                 render_assistant_text(text, label=request.output_label)
                             return StreamRoundResult(text, [], last_usage, interrupted=True)
@@ -112,6 +115,9 @@ class OpenAICompatibleProvider:
                         text = getattr(delta, "content", None)
                         if text:
                             content_parts.append(text)
+                            await status.stop()
+                            if request.stream_sink is not None:
+                                request.stream_sink.delta(text)
                         for tool_delta in getattr(delta, "tool_calls", None) or []:
                             state = pending_tool_calls.setdefault(tool_delta.index, PendingToolCall())
                             if tool_delta.id:
@@ -129,10 +135,14 @@ class OpenAICompatibleProvider:
             except (APIConnectionError, APITimeoutError, APIError) as exc:
                 if not _retryable_api_error(exc) or attempt >= CONFIG.client.api_max_retries:
                     error = _api_error_message(exc)
+                    if request.stream_sink is not None:
+                        request.stream_sink.reset()
                     if request.display:
                         render_assistant_text(error, label=request.output_label)
                     return StreamRoundResult(error, [])
                 delay = CONFIG.client.api_retry_base_delay * (2**attempt)
+                if request.stream_sink is not None:
+                    request.stream_sink.reset()
                 if request.display:
                     print(
                         f"[连接中断，{delay:.1f}s 后重试 {attempt + 1}/{CONFIG.client.api_max_retries}] {exc}",
@@ -145,6 +155,8 @@ class OpenAICompatibleProvider:
         calls = [pending_tool_calls[index] for index in sorted(pending_tool_calls)]
         text = "".join(content_parts)
         if request.display:
+            if request.stream_sink is not None and text:
+                request.stream_sink.finish(text, markdown=not calls)
             if calls:
                 if text:
                     render_assistant_text(text, label=request.output_label)

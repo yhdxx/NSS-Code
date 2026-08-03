@@ -102,6 +102,40 @@ def test_active_user_message_uses_composer_background() -> None:
         os.close(slave_fd)
 
 
+def test_plan_selection_uses_composer_panel_and_arrow_keys() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            task = asyncio.create_task(
+                terminal.select_plan(
+                    "Plan\n目标：修复问题\n\n1. 分析\n2. 实现",
+                    ["按照计划实施", "清空上下文并按照计划实施", "不实施并补充信息"],
+                )
+            )
+            await asyncio.sleep(0.05)
+
+            fragments = terminal._formatted_plan_selection()
+            assert any(style == "class:plan.preview" and "修复问题" in text for style, text in fragments)
+            assert any(style == "class:plan.option.current" and "按照计划实施" in text for style, text in fragments)
+
+            os.write(master_fd, b"\x1b[B\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == 1
+            assert terminal._plan_selection_preview == ""
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
 def test_loading_hides_composer_and_discards_early_input() -> None:
     async def scenario() -> None:
         master_fd, slave_fd = pty.openpty()
@@ -197,6 +231,45 @@ def test_terminal_resize_redraws_compact_composer_without_committing_separator_l
                     break
             rendered = b"".join(chunks).decode("utf-8", errors="ignore")
             assert "────────" not in rendered
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_streaming_assistant_region_survives_resize_and_keeps_input_working() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+
+        def resize(columns: int) -> None:
+            fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 24, columns, 0, 0))
+            assert terminal._application is not None
+            terminal._application._on_resize()
+
+        try:
+            resize(80)
+            await terminal.start()
+            terminal.mark_ready()
+            stream = terminal.begin_assistant_stream("模型")
+            stream.delta("正在流式输出 " * 80)
+            resize(42)
+            await asyncio.sleep(0.05)
+            resize(120)
+            await asyncio.sleep(0.05)
+            assert terminal._stream_active is True
+            assert "正在流式输出" in terminal._stream_text
+
+            stream.finish(terminal._stream_text)
+            prompt_task = asyncio.create_task(terminal.read_message())
+            os.write(master_fd, b"next message\r")
+            assert await asyncio.wait_for(prompt_task, timeout=2.0) == "next message"
+        finally:
+            await terminal.close()
             input_stream.close()
             output_stream.close()
             os.close(master_fd)

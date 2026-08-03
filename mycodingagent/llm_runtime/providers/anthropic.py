@@ -61,7 +61,12 @@ class AnthropicProvider:
                 response.raise_for_status()
                 async for line in response.aiter_lines():
                     if request.cancel_event is not None and request.cancel_event.is_set():
-                        return StreamRoundResult("".join(text_parts), [], interrupted=True)
+                        text = "".join(text_parts)
+                        if request.stream_sink is not None and text:
+                            request.stream_sink.abort(text)
+                        if request.display and text:
+                            render_assistant_text(text, label=request.output_label)
+                        return StreamRoundResult(text, [], interrupted=True)
                     if not line.startswith("data:"):
                         continue
                     data = line[5:].strip()
@@ -71,9 +76,14 @@ class AnthropicProvider:
                         event = json.loads(data)
                     except json.JSONDecodeError:
                         continue
+                    before = len(text_parts)
                     _consume_anthropic_event(event, text_parts, tool_calls)
+                    if request.stream_sink is not None and len(text_parts) > before:
+                        request.stream_sink.delta("".join(text_parts[before:]))
         except Exception as exc:
             error = f"Error: API request failed: {exc}"
+            if request.stream_sink is not None:
+                request.stream_sink.reset()
             if request.display:
                 render_assistant_text(error, label=request.output_label)
             return StreamRoundResult(error, [])
@@ -81,6 +91,8 @@ class AnthropicProvider:
         calls = [tool_calls[index] for index in sorted(tool_calls)]
         text = "".join(text_parts)
         if request.display:
+            if request.stream_sink is not None and text:
+                request.stream_sink.finish(text, markdown=not calls)
             if calls:
                 if text:
                     render_assistant_text(text, label=request.output_label)

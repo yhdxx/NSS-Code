@@ -11,6 +11,8 @@ from pydantic import BaseModel
 from mycodingagent.llm_runtime import client
 from mycodingagent.llm_runtime import streaming
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
+from mycodingagent.llm_runtime.providers.base import ChatRequest, ModelProfile
+from mycodingagent.llm_runtime.providers.openai_compatible import OpenAICompatibleProvider
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_runtime.bash import Bash
@@ -165,6 +167,48 @@ def _run_stream(fake_client, tools=None):
         client.stream_one_round(fake_client, "test-model", [{"role": "user", "content": "hi"}], tools or [])
     )
     return result.text, result.tool_calls, result.usage
+
+
+def test_openai_provider_emits_text_deltas_before_final_render() -> None:
+    events: list[tuple] = []
+
+    class Sink:
+        def delta(self, text: str) -> None:
+            events.append(("delta", text))
+
+        def finish(self, text: str, *, markdown: bool = True) -> None:
+            events.append(("finish", text, markdown))
+
+        def abort(self, text: str) -> None:
+            events.append(("abort", text))
+
+        def reset(self) -> None:
+            events.append(("reset",))
+
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.profile = ModelProfile(
+        key="test",
+        provider="test",
+        model="test-model",
+        api="test-key",
+    )
+    provider._client = _FakeClient([_FakeStream([_text_chunk("hello "), _text_chunk("world")])])
+
+    result = asyncio.run(
+        provider.stream_chat(
+            ChatRequest(
+                messages=[{"role": "user", "content": "hi"}],
+                stream_sink=Sink(),
+            )
+        )
+    )
+
+    assert result.text == "hello world"
+    assert events == [
+        ("delta", "hello "),
+        ("delta", "world"),
+        ("finish", "hello world", True),
+    ]
 
 
 def test_skill_tool_calls_are_hidden_from_terminal(monkeypatch):

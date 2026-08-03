@@ -18,6 +18,8 @@ class CommandContext:
     cancel_event: Any = None
     work_mode: Any = None
     project_graph_runtime: Any = None
+    plan_runtime: Any = None
+    terminal: Any = None
 
 
 @dataclass

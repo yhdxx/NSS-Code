@@ -28,6 +28,7 @@ class ContextBudgetState:
 @dataclass(frozen=True)
 class RuntimeContext:
     work_mode: str = "general"
+    interaction_mode: str = "normal"
     context_render_mode: str = "raw"
     workspace_changes: WorkspaceChanges = field(default_factory=WorkspaceChanges)
     context_budget: ContextBudgetState | None = None
@@ -35,6 +36,8 @@ class RuntimeContext:
     project_graph: dict[str, Any] | None = None
     task_snapshot: str | None = None
     long_term_memory: dict[str, Any] | None = None
+    tool_policy: dict[str, Any] | None = None
+    plan: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return {**self.stable_payload(), **self.notice_payload()}
@@ -42,8 +45,13 @@ class RuntimeContext:
     def stable_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
             "work_mode": self.work_mode,
+            "interaction_mode": self.interaction_mode,
             "context_render_mode": self.context_render_mode,
         }
+        if self.tool_policy:
+            payload["tool_policy"] = self.tool_policy
+        if self.plan:
+            payload["plan"] = self.plan
         if self.capabilities:
             payload["capabilities"] = self.capabilities
         if self.project_graph:
@@ -99,6 +107,9 @@ class RuntimeContextBuilder:
         capabilities: Any | None = None,
         project_graph: Any | None = None,
         long_term_memory: dict[str, Any] | None = None,
+        interaction_mode: str = "normal",
+        tool_policy: dict[str, Any] | None = None,
+        plan: dict[str, Any] | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
@@ -106,15 +117,21 @@ class RuntimeContextBuilder:
         self.capabilities = capabilities
         self.project_graph = project_graph
         self.long_term_memory = long_term_memory
+        self.interaction_mode = interaction_mode
+        self.tool_policy = tool_policy
+        self.plan = plan
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
             work_mode=self.work_mode,
+            interaction_mode=self.interaction_mode,
             context_render_mode=self.context_mode,
             workspace_changes=self._workspace_changes(),
             capabilities=self._capability_payload(),
             project_graph=self._project_graph_payload(),
             long_term_memory=self.long_term_memory,
+            tool_policy=self.tool_policy,
+            plan=self.plan,
         )
 
     def _workspace_changes(self) -> WorkspaceChanges:

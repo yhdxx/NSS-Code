@@ -25,6 +25,7 @@ from mycodingagent.memory.models import (
     WorkspaceCheckpoint,
     WorkspaceFileSnapshot,
 )
+from mycodingagent.plan_runtime.models import PlanRecord, PlanStatus, PlanStep, PlanStepStatus
 from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY, require_component_schema
 
 
@@ -67,6 +68,9 @@ class SQLiteMemoryStore:
                     "execution_records",
                     "historical_session_refs",
                     "session_token_usage",
+                    "session_plan_runtime",
+                    "session_plans",
+                    "session_plan_steps",
                 ),
             )
             conn.execute(
@@ -97,6 +101,40 @@ class SQLiteMemoryStore:
                     content_json TEXT NOT NULL,
                     created_at REAL NOT NULL,
                     PRIMARY KEY (session_id, message_index)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_plan_runtime (
+                    session_id TEXT PRIMARY KEY,
+                    interaction_mode TEXT NOT NULL DEFAULT 'normal',
+                    current_plan_id TEXT NOT NULL DEFAULT ''
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_plans (
+                    plan_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    objective TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_plan_steps (
+                    plan_id TEXT NOT NULL,
+                    step_id TEXT NOT NULL,
+                    position INTEGER NOT NULL,
+                    text TEXT NOT NULL,
+                    status TEXT NOT NULL,
+                    note TEXT NOT NULL DEFAULT '',
+                    PRIMARY KEY (plan_id, step_id)
                 )
                 """
             )
@@ -427,6 +465,110 @@ class SQLiteMemoryStore:
         with self._connect() as conn:
             row = conn.execute("SELECT work_mode FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
         return str(row["work_mode"] or "general") if row is not None else "general"
+
+    def set_interaction_mode(self, session_id: str, interaction_mode: str) -> None:
+        if interaction_mode not in {"normal", "plan"}:
+            raise ValueError("interaction_mode must be normal or plan")
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO session_plan_runtime(session_id, interaction_mode)
+                VALUES (?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET interaction_mode=excluded.interaction_mode
+                """,
+                (session_id, interaction_mode),
+            )
+
+    def save_plan(self, plan: PlanRecord) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO session_plans(plan_id, session_id, objective, status, created_at, updated_at)
+                VALUES (?, ?, ?, ?, ?, ?)
+                ON CONFLICT(plan_id) DO UPDATE SET
+                    objective=excluded.objective,
+                    status=excluded.status,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    plan.id,
+                    plan.session_id,
+                    plan.objective,
+                    plan.status.value,
+                    plan.created_at,
+                    plan.updated_at,
+                ),
+            )
+            conn.execute("DELETE FROM session_plan_steps WHERE plan_id = ?", (plan.id,))
+            conn.executemany(
+                """
+                INSERT INTO session_plan_steps(plan_id, step_id, position, text, status, note)
+                VALUES (?, ?, ?, ?, ?, ?)
+                """,
+                [
+                    (plan.id, step.id, step.position, step.text, step.status.value, step.note)
+                    for step in plan.steps
+                ],
+            )
+            conn.execute(
+                """
+                INSERT INTO session_plan_runtime(session_id, current_plan_id)
+                VALUES (?, ?)
+                ON CONFLICT(session_id) DO UPDATE SET current_plan_id=excluded.current_plan_id
+                """,
+                (plan.session_id, plan.id),
+            )
+
+    def load_plan_runtime_state(self, session_id: str) -> dict[str, object]:
+        with self._connect() as conn:
+            runtime = conn.execute(
+                "SELECT interaction_mode, current_plan_id FROM session_plan_runtime WHERE session_id = ?",
+                (session_id,),
+            ).fetchone()
+            if runtime is None:
+                return {"interaction_mode": "normal", "plan": None}
+            plan_id = str(runtime["current_plan_id"] or "")
+            if not plan_id:
+                return {"interaction_mode": str(runtime["interaction_mode"] or "normal"), "plan": None}
+            row = conn.execute(
+                "SELECT * FROM session_plans WHERE plan_id = ? AND session_id = ?",
+                (plan_id, session_id),
+            ).fetchone()
+            if row is None:
+                return {"interaction_mode": str(runtime["interaction_mode"] or "normal"), "plan": None}
+            step_rows = conn.execute(
+                "SELECT * FROM session_plan_steps WHERE plan_id = ? ORDER BY position",
+                (plan_id,),
+            ).fetchall()
+        plan = PlanRecord(
+            id=str(row["plan_id"]),
+            session_id=str(row["session_id"]),
+            objective=str(row["objective"]),
+            status=PlanStatus(str(row["status"])),
+            steps=tuple(
+                PlanStep(
+                    id=str(step["step_id"]),
+                    text=str(step["text"]),
+                    position=int(step["position"]),
+                    status=PlanStepStatus(str(step["status"])),
+                    note=str(step["note"] or ""),
+                )
+                for step in step_rows
+            ),
+            created_at=float(row["created_at"]),
+            updated_at=float(row["updated_at"]),
+        )
+        return {"interaction_mode": str(runtime["interaction_mode"] or "normal"), "plan": plan}
+
+    def clear_plan_runtime_state(self, session_id: str) -> None:
+        with self._connect() as conn:
+            plan_ids = conn.execute(
+                "SELECT plan_id FROM session_plans WHERE session_id = ?", (session_id,)
+            ).fetchall()
+            for row in plan_ids:
+                conn.execute("DELETE FROM session_plan_steps WHERE plan_id = ?", (row["plan_id"],))
+            conn.execute("DELETE FROM session_plans WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM session_plan_runtime WHERE session_id = ?", (session_id,))
 
     def save_messages(self, *, session_id: str, messages: list[dict]) -> None:
         now = time()
@@ -1056,6 +1198,7 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM execution_records WHERE session_id = ?", (session_id,))
+            self._delete_plan_state(conn, session_id)
             return cursor.rowcount > 0
 
     def delete_expired_sessions(self, *, max_age_seconds: float) -> int:
@@ -1090,7 +1233,18 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM execution_records WHERE session_id = ?", (session_id,))
+                self._delete_plan_state(conn, session_id)
             return len(session_ids)
+
+    @staticmethod
+    def _delete_plan_state(conn: sqlite3.Connection, session_id: str) -> None:
+        plan_rows = conn.execute(
+            "SELECT plan_id FROM session_plans WHERE session_id = ?", (session_id,)
+        ).fetchall()
+        for row in plan_rows:
+            conn.execute("DELETE FROM session_plan_steps WHERE plan_id = ?", (row["plan_id"],))
+        conn.execute("DELETE FROM session_plans WHERE session_id = ?", (session_id,))
+        conn.execute("DELETE FROM session_plan_runtime WHERE session_id = ?", (session_id,))
 
     def load_session(self, session_id: str) -> SessionState | None:
         with self._connect() as conn:

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import sys
-from collections.abc import Iterable
+from collections.abc import Callable, Iterable
 from contextvars import ContextVar
 from dataclasses import dataclass
 from threading import RLock
@@ -13,6 +13,7 @@ from prompt_toolkit.application import run_in_terminal
 from prompt_toolkit.buffer import Buffer
 from prompt_toolkit.completion import Completer, Completion
 from prompt_toolkit.document import Document
+from prompt_toolkit.data_structures import Point
 from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.input.defaults import create_input
@@ -141,9 +142,15 @@ class TerminalApplication:
         self._prompt_header = "User"
         self._status = ""
         self._activity_status = ""
+        self._mode_status = ""
+        self._shift_tab_handler: Callable[[], bool] | None = None
         self._cancel_event: asyncio.Event | None = None
         self._selection_options: list[str] = []
         self._selection_index = 0
+        self._plan_selection_preview = ""
+        self._stream_active = False
+        self._stream_label = "模型"
+        self._stream_text = ""
         self._completer = _CommandCompleter()
         self._application: Application[Any] | None = None
         self._input_buffer: Buffer | None = None
@@ -242,6 +249,42 @@ class TerminalApplication:
     def set_status(self, text: str) -> None:
         self._activity_status = text
         self._refresh_status()
+
+    def set_interaction_mode(self, mode: str) -> None:
+        self._mode_status = "Plan" if mode == "plan" else ""
+        self._refresh_status()
+
+    def bind_shift_tab_handler(self, handler: Callable[[], bool] | None) -> None:
+        self._shift_tab_handler = handler
+
+    def commit_runtime_user_message(self, text: str) -> None:
+        self._commit_user_message(text)
+
+    def begin_assistant_stream(self, label: str = "模型") -> "TerminalAssistantStream":
+        return TerminalAssistantStream(self, label)
+
+    def _stream_start(self, label: str) -> None:
+        self._stream_active = True
+        self._stream_label = label
+        self._stream_text = ""
+        self._invalidate()
+
+    def _stream_delta(self, text: str) -> None:
+        if not text:
+            return
+        self._stream_text += text
+        self.notify_agent_output()
+        self._invalidate()
+
+    def _stream_finish(self, _text: str, *, markdown: bool) -> None:
+        self._stream_active = False
+        self._stream_text = ""
+        self._invalidate()
+
+    def _stream_abort(self, _text: str) -> None:
+        self._stream_active = False
+        self._stream_text = ""
+        self._invalidate()
 
     def mark_ready(self) -> None:
         """Expose the normal composer after startup initialization has completed."""
@@ -366,6 +409,41 @@ class TerminalApplication:
             return None
         return selected if 0 <= selected < len(options_before_clear) else None
 
+    async def select_plan(self, preview: str, options: list[str]) -> int | None:
+        if not options:
+            return None
+        if not self.is_tty:
+            self.stdout.write(preview.rstrip() + "\n")
+            for index, option in enumerate(options, start=1):
+                self.stdout.write(f"  {index}. {option}\n")
+            self.stdout.flush()
+            return await self.select("请选择计划处理方式：", options)
+        self._plan_selection_preview = preview.rstrip()
+        self._selection_options = list(options)
+        self._selection_index = 0
+        self._invalidate()
+        try:
+            raw = await self.read_prompt(
+                None,
+                prompt_header="使用 ↑/↓ 选择，Enter 确认，Esc 取消",
+                preserve_selection=True,
+            )
+        except (TerminalCancelled, EOFError):
+            return None
+        finally:
+            options_before_clear = self._selection_options
+            self._plan_selection_preview = ""
+            self._selection_options = []
+            self._selection_index = 0
+            self._invalidate()
+        if raw.startswith("__selection__:"):
+            return int(raw.split(":", 1)[1])
+        try:
+            selected = int(raw) - 1
+        except ValueError:
+            return None
+        return selected if 0 <= selected < len(options_before_clear) else None
+
     def _build_application(self) -> None:
         key_bindings = KeyBindings()
         self._input_buffer = Buffer(
@@ -398,6 +476,28 @@ class TerminalApplication:
             ),
             filter=Condition(self._has_status),
         )
+        stream_window = ConditionalContainer(
+            Window(
+                FormattedTextControl(self._formatted_stream),
+                height=self._stream_height,
+                wrap_lines=True,
+                style="class:stream.text",
+            ),
+            filter=Condition(lambda: self._stream_active),
+        )
+        plan_selection = ConditionalContainer(
+            Window(
+                FormattedTextControl(
+                    self._formatted_plan_selection,
+                    get_cursor_position=self._plan_selection_cursor,
+                    show_cursor=False,
+                ),
+                height=self._plan_selection_height,
+                wrap_lines=True,
+                style="class:plan.preview",
+            ),
+            filter=Condition(lambda: bool(self._plan_selection_preview)),
+        )
         composer = ConditionalContainer(
             HSplit(
                 [
@@ -416,6 +516,8 @@ class TerminalApplication:
         body = HSplit(
             [
                 loading,
+                stream_window,
+                plan_selection,
                 composer,
             ]
         )
@@ -470,6 +572,19 @@ class TerminalApplication:
                 else:
                     self.emit("已请求中断当前任务，将立即处理排队消息。\n")
                 self._refresh_status()
+
+        @key_bindings.add("s-tab", eager=True)
+        def exit_plan_mode(event: Any) -> None:
+            if self._selection_options or self._modal_input:
+                return
+            handler = self._shift_tab_handler
+            if handler is not None and handler():
+                if self._agent_busy and self._cancel_event is not None:
+                    self._cancel_event.set()
+                    self.emit("已退出 Plan 模式，并中断当前规划请求。\n")
+                else:
+                    self.emit("已退出 Plan 模式。\n")
+                self.set_interaction_mode("normal")
 
         @key_bindings.add("c-c")
         def cancel(event: Any) -> None:
@@ -600,6 +715,68 @@ class TerminalApplication:
             fragments.append(("class:queue.item", f"└ {self._truncate_queue_message(message)}{suffix}"))
         return FormattedText(fragments)
 
+    def _stream_height(self) -> Dimension:
+        rows = 24
+        columns = 80
+        if self._prompt_output is not None:
+            size = self._prompt_output.get_size()
+            rows = max(8, size.rows)
+            columns = max(10, size.columns)
+        max_rows = max(2, rows - self._input_height().preferred - 4)
+        text = f"{self._stream_label}:\n{self._stream_text}"
+        visual_lines = sum(
+            max(1, (max(1, get_cwidth(line)) + columns - 1) // columns)
+            for line in text.splitlines() or [""]
+        )
+        return Dimension.exact(min(max_rows, visual_lines))
+
+    def _formatted_stream(self) -> FormattedText:
+        rows = 24
+        columns = 80
+        if self._prompt_output is not None:
+            size = self._prompt_output.get_size()
+            rows = max(8, size.rows)
+            columns = max(10, size.columns)
+        max_chars = max(columns * max(2, rows - 6), columns)
+        text = self._stream_text
+        if len(text) > max_chars:
+            text = "...\n" + text[-max_chars:]
+        return FormattedText(
+            [
+                ("class:stream.label", f"{self._stream_label}:\n"),
+                ("class:stream.text", text),
+            ]
+        )
+
+    def _plan_selection_height(self) -> Dimension:
+        rows = 24
+        columns = 80
+        if self._prompt_output is not None:
+            size = self._prompt_output.get_size()
+            rows = max(8, size.rows)
+            columns = max(10, size.columns)
+        lines = [*self._plan_selection_preview.splitlines(), "", *self._selection_options]
+        visual_lines = sum(
+            max(1, (max(1, get_cwidth(line)) + columns - 1) // columns)
+            for line in lines
+        )
+        return Dimension.exact(min(max(4, rows - 4), visual_lines + 1))
+
+    def _formatted_plan_selection(self) -> FormattedText:
+        fragments: list[tuple[str, str]] = [
+            ("class:plan.preview", self._plan_selection_preview + "\n\n")
+        ]
+        for index, option in enumerate(self._selection_options):
+            style = "class:plan.option.current" if index == self._selection_index else "class:plan.option"
+            marker = "›" if index == self._selection_index else " "
+            fragments.append((style, f" {marker} {option}\n"))
+        fragments.append(("class:plan.hint", " 使用 ↑/↓ 选择，Enter 确认，Esc 取消"))
+        return FormattedText(fragments)
+
+    def _plan_selection_cursor(self) -> Point:
+        preview_lines = len(self._plan_selection_preview.splitlines())
+        return Point(x=0, y=preview_lines + 2 + self._selection_index)
+
     def _truncate_queue_message(self, text: str) -> str:
         normalized = " ".join(text.split())
         columns = 80
@@ -648,7 +825,7 @@ class TerminalApplication:
         else:
             queue_status = ""
         self._status = " | ".join(
-            part for part in (self._activity_status, queue_status) if part
+            part for part in (self._mode_status, self._activity_status, queue_status) if part
         )
         self._invalidate()
 
@@ -658,8 +835,58 @@ class TerminalApplication:
             application.invalidate()
 
 
+class TerminalAssistantStream:
+    def __init__(self, terminal: TerminalApplication, label: str) -> None:
+        self._terminal = terminal
+        self._label = label
+        self._started = False
+        self._finished = False
+
+    def start(self) -> None:
+        if self._started:
+            return
+        self._started = True
+        self._terminal._stream_start(self._label)
+
+    def delta(self, text: str) -> None:
+        if self._finished:
+            return
+        if not self._started:
+            self.start()
+        self._terminal._stream_delta(text)
+
+    def finish(self, text: str, *, markdown: bool = True) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        if not self._started:
+            self.start()
+        self._terminal._stream_finish(text, markdown=markdown)
+
+    def abort(self, text: str) -> None:
+        if self._finished:
+            return
+        self._finished = True
+        self._terminal._stream_abort(text)
+
+    def reset(self) -> None:
+        if self._finished:
+            return
+        self._started = False
+        self._terminal._stream_active = False
+        self._terminal._stream_text = ""
+        self._terminal._invalidate()
+
+
 def current_terminal() -> TerminalApplication | None:
     return _CURRENT_TERMINAL.get()
+
+
+def create_assistant_stream(label: str = "模型") -> TerminalAssistantStream | None:
+    terminal = current_terminal()
+    if terminal is None or not terminal.is_tty:
+        return None
+    return terminal.begin_assistant_stream(label)
 
 
 async def request_text(prompt: str) -> str:
@@ -684,6 +911,13 @@ async def request_selection(prompt: str, options: list[str]) -> int | None:
     except (EOFError, KeyboardInterrupt, ValueError):
         return None
     return selected if 0 <= selected < len(options) else None
+
+
+async def request_plan_selection(preview: str, options: list[str]) -> int | None:
+    terminal = current_terminal()
+    if terminal is not None:
+        return await terminal.select_plan(preview, options)
+    return await request_selection(preview, options)
 
 
 async def request_confirmation(prompt: str) -> bool:

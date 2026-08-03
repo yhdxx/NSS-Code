@@ -24,6 +24,7 @@ from mycodingagent.terminal_ui.session_selector import select_session_interactiv
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.multi_agent.context import run_summary_for_main_context
 from mycodingagent.work_mode import WorkMode
+from mycodingagent.plan_runtime import InteractionMode
 
 
 def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
@@ -168,6 +169,14 @@ def build_command_registry() -> CommandRegistry:
     )
     registry.register(
         CommandSpec(
+            name="/plan",
+            aliases=("plan", "计划模式"),
+            description="进入只禁止工作区写入与 Bash 的计划模式",
+            handler=handle_plan_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/mode",
             aliases=("mode", "工作模式"),
             description="交互选择 General 或 Code 工作模式",
@@ -225,6 +234,21 @@ def build_command_registry() -> CommandRegistry:
         )
     )
     return registry
+
+
+async def handle_plan_command(context: CommandContext, arguments: str) -> CommandResult:
+    if arguments.strip():
+        print("用法：/plan", flush=True)
+        return CommandResult()
+    plan_runtime = context.plan_runtime
+    if plan_runtime is None:
+        print("Plan 运行时未启用。", flush=True)
+        return CommandResult()
+    plan_runtime.enter_plan_mode()
+    if context.terminal is not None:
+        context.terminal.set_interaction_mode(InteractionMode.PLAN.value)
+    print("已进入 Plan 模式。工作区写入与 Bash 已关闭。", flush=True)
+    return CommandResult(messages=context.messages)
 
 
 async def handle_mode_command(context: CommandContext, arguments: str) -> CommandResult:
@@ -601,6 +625,8 @@ async def handle_clear_command(context: CommandContext, arguments: str) -> Comma
     )
     await memory_runtime.drain()
     mark_long_term_memory_pending(context, saved_session_id)
+    if context.plan_runtime is not None:
+        context.plan_runtime.reset_current_session()
     memory_runtime.clear_current_session_id()
     new_session_id = memory_runtime.start_session(_current_model_name(context))
     await memory_runtime.drain()

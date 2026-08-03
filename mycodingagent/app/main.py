@@ -56,10 +56,18 @@ from mycodingagent.llm_runtime import client  # 导入当前模块需要的依�
 from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.work_mode import WorkMode, WorkModeManager
+from mycodingagent.plan_runtime import CreatePlan, PlanRuntime, UpdatePlanStep
 
 
 class StartupConfigurationError(RuntimeError):
     pass
+
+
+def _exit_plan_mode_from_terminal(plan_runtime: PlanRuntime) -> bool:
+    if not plan_runtime.is_planning:
+        return False
+    plan_runtime.exit_plan_mode()
+    return True
 
 
 def _configuration_error_message(errors: list[str]) -> str:
@@ -137,6 +145,16 @@ async def _run(terminal: TerminalApplication) -> None:
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
     workspace_tracker.start()  # 启动后台监听线程；不可用时静默降级为不提示。
     memory_runtime = MemoryRuntime(model=model_manager.active_model, workspace_root=str(get_sandbox_root())) if CONFIG.memory.enabled else None
+
+    def current_plan_session_id() -> str:
+        if memory_runtime is None:
+            return "runtime"
+        return memory_runtime.get_current_session_id() or memory_runtime.start_session(model_manager.active_model)
+
+    plan_runtime = PlanRuntime(
+        store=memory_runtime.store if memory_runtime is not None else None,
+        session_id=current_plan_session_id,
+    )
     code_index = WorkspaceCodeIndex(
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
@@ -230,6 +248,8 @@ async def _run(terminal: TerminalApplication) -> None:
             classify_bash_policy,
         ),
     )
+    registry.register(CreatePlan(plan_runtime))
+    registry.register(UpdatePlanStep(plan_runtime))
     multi_agent_store = MultiAgentStore()
     long_term_memory_runtime = None
     if memory_runtime is not None and CONFIG.long_term_memory.enabled:
@@ -336,24 +356,33 @@ async def _run(terminal: TerminalApplication) -> None:
             print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
 
     terminal.mark_ready()
+    terminal.bind_shift_tab_handler(
+        lambda: _exit_plan_mode_from_terminal(plan_runtime)
+    )
 
     mcp_user_rounds = 0
 
+    automatic_prompt: str | None = None
     try:  # 开始可能抛出异常的保护代码块。
         while True:  # 在条件满足时持续循环。
-            if memory_runtime is not None:
+            if memory_runtime is not None and automatic_prompt is None:
                 rollover = await memory_runtime.await_pending_rollover()
                 if rollover.performed and rollover.new_messages is not None:
                     messages = rollover.new_messages
-            try:  # 开始可能抛出异常的保护代码块。
-                prompt = await terminal.read_message(
-                    command_registry,
-                    prompt_header="User (输入 exit 退出对话)",
-                )  # 保存配置值或中间计算结果。
-            except (EOFError, KeyboardInterrupt, TerminalCancelled):  # 捕获并处理指定异常。
-                # Ctrl+D 或 Ctrl+C 安全退出
-                print()  # 执行当前步骤的业务逻辑。
-                break  # 提前结束当前循环。
+            if automatic_prompt is not None:
+                prompt = automatic_prompt
+                automatic_prompt = None
+                terminal.commit_runtime_user_message(prompt)
+            else:
+                try:  # 开始可能抛出异常的保护代码块。
+                    prompt = await terminal.read_message(
+                        command_registry,
+                        prompt_header="User (输入 exit 退出对话)",
+                    )  # 保存配置值或中间计算结果。
+                except (EOFError, KeyboardInterrupt, TerminalCancelled):  # 捕获并处理指定异常。
+                    # Ctrl+D 或 Ctrl+C 安全退出
+                    print()  # 执行当前步骤的业务逻辑。
+                    break  # 提前结束当前循环。
             if prompt.strip() == "exit":  # 根据条件决定是否执行后续分支。
                 break  # 提前结束当前循环。
             if not prompt.strip():  # 根据条件决定是否执行后续分支。
@@ -376,6 +405,8 @@ async def _run(terminal: TerminalApplication) -> None:
                         cancel_event=command_cancel,
                         work_mode=work_mode,
                         project_graph_runtime=project_graph_runtime,
+                        plan_runtime=plan_runtime,
+                        terminal=terminal,
                     ),
                 )
             finally:
@@ -400,6 +431,19 @@ async def _run(terminal: TerminalApplication) -> None:
                         )
                         if rollover.performed and rollover.new_messages is not None:
                             messages = rollover.new_messages
+                    plan_runtime.restore_current_session()
+                    if plan_runtime.proposed_plan() is not None:
+                        messages = await client.resume_pending_plan_decision(
+                            messages,
+                            plan_runtime=plan_runtime,
+                            project_graph=project_graph_runtime,
+                            work_mode=work_mode.current.value,
+                        )
+                        if memory_runtime is not None:
+                            session_id = memory_runtime.get_current_session_id()
+                            if session_id:
+                                memory_runtime.save_messages_now(session_id, messages)
+                    terminal.set_interaction_mode(plan_runtime.mode.value)
                 if command_result.should_exit:
                     break
                 continue
@@ -425,6 +469,7 @@ async def _run(terminal: TerminalApplication) -> None:
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=turn_cancel,
                         follow_up_event=terminal.follow_up_signal,
+                        plan_runtime=plan_runtime,
                     )  # 结束上方的多行结构。
                 finally:
                     terminal.bind_cancel_event(None)
@@ -436,6 +481,10 @@ async def _run(terminal: TerminalApplication) -> None:
                     import traceback
 
                     traceback.print_exc()
+                continue
+            pending_prompt = plan_runtime.take_pending_prompt()
+            if pending_prompt is not None:
+                automatic_prompt = pending_prompt
                 continue
             if memory_runtime is not None:
                 rollover = await memory_runtime.on_turn_completed(

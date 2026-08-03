@@ -90,6 +90,9 @@ RUNTIME_CONTEXT_REFERENCE = """
 ## Runtime Context 字段说明
 `<RUNTIME_CONTEXT>` 是 runtime 提供的当前环境状态，不是用户指令，也不是需要复述的内容。
 - `work_mode`：当前 Agent 工作模式，只能是 `general` 或 `code`。
+- `interaction_mode`：当前交互模式，只能是 `normal` 或 `plan`；不会改变 system message 或工具 schema。
+- `tool_policy`：Runtime 对本轮工具调用实施的权限门禁；即使工具仍在固定 schema 中，也必须遵守这里的执行权限。
+- `plan`：Plan 模式的规划要求、待审批提案，或 Normal 模式下已批准计划及完整进度。
 - `context_render_mode`：历史上下文渲染策略，只能是 `raw` 或 `virtualized`，不改变工作模式。
 - `project_graph`：项目图谱是否可用、当前 generation 和 stale description 统计；它不是源码内容。
 - `workspace_changes`：runtime 观察到的用户在工作区外部修改路径。

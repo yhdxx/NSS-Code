@@ -275,6 +275,9 @@ class TerminalStatus:
         return self
 
     async def __aexit__(self, _exc_type, _exc, _traceback) -> None:
+        await self.stop()
+
+    async def stop(self) -> None:
         if self._task is not None:
             self._task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
