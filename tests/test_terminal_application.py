@@ -9,6 +9,11 @@ import termios
 
 from mycodingagent.terminal_ui.application import TerminalApplication
 from mycodingagent.terminal_ui.theme import ACTIVE_USER_ANSI
+from mycodingagent.commands import CommandRegistry, CommandSpec
+
+
+async def _noop_command(_context, _arguments):
+    raise AssertionError("completion tests do not execute commands")
 
 
 def test_background_output_does_not_corrupt_active_prompt() -> None:
@@ -31,6 +36,195 @@ def test_background_output_does_not_corrupt_active_prompt() -> None:
             assert await asyncio.wait_for(prompt_task, timeout=2.0) == "hello"
             assert "[project graph] background refresh" in terminal._output
             assert "User:\nhello" in terminal._output
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_slash_opens_command_palette_and_enter_accepts_before_submit() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        registry = CommandRegistry()
+        registry.register(CommandSpec(name="/plan", description="进入 Plan 模式", handler=_noop_command))
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            task = asyncio.create_task(terminal.read_message(registry))
+            os.write(master_fd, b"/")
+            await asyncio.sleep(0.1)
+
+            assert terminal._input_buffer is not None
+            assert terminal._input_buffer.complete_state is not None
+            assert terminal._input_buffer.complete_state.current_completion is not None
+
+            os.write(master_fd, b"\r")
+            await asyncio.sleep(0.05)
+            assert not task.done()
+            assert terminal._input_buffer.text == "/plan"
+            assert terminal._input_buffer.complete_state is None
+
+            os.write(master_fd, b"\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "/plan"
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_slash_palette_is_rendered_above_input_at_terminal_bottom() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        fcntl.ioctl(slave_fd, termios.TIOCSWINSZ, struct.pack("HHHH", 6, 60, 0, 0))
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        registry = CommandRegistry()
+        registry.register(CommandSpec(name="/model", description="切换模型", handler=_noop_command))
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            task = asyncio.create_task(terminal.read_message(registry))
+            await asyncio.sleep(0.05)
+            os.write(master_fd, b"/")
+            await asyncio.sleep(0.15)
+
+            os.set_blocking(master_fd, False)
+            chunks: list[bytes] = []
+            while True:
+                try:
+                    chunks.append(os.read(master_fd, 65536))
+                except BlockingIOError:
+                    break
+            rendered = b"".join(chunks).decode("utf-8", errors="ignore")
+            assert "/model" in rendered
+            assert "切换模型" in rendered
+
+            os.set_blocking(master_fd, True)
+            os.write(master_fd, b"\r\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "/model"
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_escape_closes_slash_palette_without_interrupting_agent() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        registry = CommandRegistry()
+        registry.register(CommandSpec(name="/plan", description="进入 Plan 模式", handler=_noop_command))
+        cancel_event = asyncio.Event()
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            terminal.bind_cancel_event(cancel_event)
+            task = asyncio.create_task(terminal.read_message(registry))
+            os.write(master_fd, b"/")
+            await asyncio.sleep(0.1)
+            assert terminal._input_buffer is not None
+            assert terminal._input_buffer.complete_state is not None
+
+            os.write(master_fd, b"\x1b")
+            await asyncio.sleep(0.75)
+
+            assert terminal._input_buffer.complete_state is None
+            assert not cancel_event.is_set()
+            os.write(master_fd, b"plan\r\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "/plan"
+        finally:
+            terminal.bind_cancel_event(None)
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_backspace_edits_original_slash_command_after_completion_navigation() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        registry = CommandRegistry()
+        registry.register(CommandSpec(name="/mode", description="切换模式", handler=_noop_command))
+        registry.register(CommandSpec(name="/model", description="切换模型", handler=_noop_command))
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            task = asyncio.create_task(terminal.read_message(registry))
+            os.write(master_fd, b"/")
+            await asyncio.sleep(0.1)
+            os.write(master_fd, b"\x1b[B")
+            await asyncio.sleep(0.05)
+
+            assert terminal._input_buffer is not None
+            assert terminal._input_buffer.complete_state is not None
+
+            os.write(master_fd, b"\x7f")
+            await asyncio.sleep(0.1)
+
+            assert terminal._input_buffer.text == ""
+            assert terminal._input_buffer.complete_state is None
+            os.write(master_fd, b"hello\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "hello"
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_delete_at_end_closes_slash_completion_instead_of_reopening_it() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        registry = CommandRegistry()
+        registry.register(CommandSpec(name="/model", description="切换模型", handler=_noop_command))
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            task = asyncio.create_task(terminal.read_message(registry))
+            os.write(master_fd, b"/")
+            await asyncio.sleep(0.1)
+            os.write(master_fd, b"\x1b[B")
+            await asyncio.sleep(0.05)
+            assert terminal._input_buffer is not None
+            assert terminal._input_buffer.complete_state is not None
+
+            os.write(master_fd, b"\x1b[3~")
+            await asyncio.sleep(0.1)
+
+            assert terminal._input_buffer.text == "/"
+            assert terminal._input_buffer.complete_state is None
+            os.write(master_fd, b"\x7fhello\r")
+            assert await asyncio.wait_for(task, timeout=2.0) == "hello"
         finally:
             await terminal.close()
             input_stream.close()

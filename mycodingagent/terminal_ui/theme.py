@@ -10,6 +10,9 @@ PRIMARY_TEXT = "#D7D7D7"
 SECONDARY_TEXT = "#8F8F8F"
 MUTED_BORDER = "#282828"
 TOOL_ACTION_TEAL = "#5FD7C4"
+RISK_LOW_GREEN = "#5FD75F"
+RISK_APPROVAL_YELLOW = "#FFD75F"
+RISK_HIGH_RED = "#FF5F5F"
 
 
 PROMPT_TOOLKIT_STYLES: dict[str, str] = {
@@ -45,9 +48,12 @@ RICH_THEME_STYLES: dict[str, str] = {
     "tool.read": f"{TOOL_ACTION_TEAL} on {MAIN_BACKGROUND}",
     "tool.write": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
     "bash.command": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
-    "bash.low": f"{SECONDARY_TEXT} on {MAIN_BACKGROUND}",
-    "bash.approval": f"bold {PRIMARY_TEXT} on {MAIN_BACKGROUND}",
-    "bash.high": f"bold {PRIMARY_TEXT} on {MAIN_BACKGROUND}",
+    "bash.low": f"{RISK_LOW_GREEN} on {MAIN_BACKGROUND}",
+    "bash.approval": f"bold {RISK_APPROVAL_YELLOW} on {MAIN_BACKGROUND}",
+    "bash.high": f"bold {RISK_HIGH_RED} on {MAIN_BACKGROUND}",
+    "mcp.low": f"{RISK_LOW_GREEN} on {MAIN_BACKGROUND}",
+    "mcp.approval": f"bold {RISK_APPROVAL_YELLOW} on {MAIN_BACKGROUND}",
+    "mcp.high": f"bold {RISK_HIGH_RED} on {MAIN_BACKGROUND}",
     "edit.old": f"{SECONDARY_TEXT} on {MAIN_BACKGROUND}",
     "edit.new": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",
     "markdown.base": f"{PRIMARY_TEXT} on {MAIN_BACKGROUND}",

@@ -265,24 +265,6 @@ def user_turn_starts(
     ]
 
 
-def format_hot_context_notice(snapshot: HotContextBudgetSnapshot) -> str:
-    if snapshot.pending_commit:
-        action = "已有待处理提交，将在当前轮次结束后应用。"
-    elif snapshot.force_commit:
-        action = "Runtime 已强制轮换工作上下文。不要因为本通知再次调用 CommitWorkingContext。"
-    else:
-        action = "当前任务或主题完成时调用 CommitWorkingContext。"
-    return (
-        "热工作上下文通知\n"
-        f"epoch_id: {snapshot.epoch_id}\n"
-        f"hot_context_tokens: {snapshot.token_count}\n"
-        f"context_window: {snapshot.context_window}\n"
-        f"hot_context_ratio: {snapshot.usage_ratio:.2%}\n"
-        f"force_commit: {str(snapshot.force_commit).lower()}\n"
-        f"{action}"
-    )
-
-
 def format_context_epoch_commit_report(
     committed: ContextEpochState,
     next_state: ContextEpochState,

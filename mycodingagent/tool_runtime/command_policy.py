@@ -89,7 +89,7 @@ DEFAULT_LOW_EVENTS = {"redirect_read"}
 @dataclass(frozen=True)
 class CommandApprovalRequest:
     command: str
-    risk: CommandRisk
+    risk: PolicyLevel
     reason: str
     intent: str = ""
 
@@ -161,7 +161,7 @@ class SubmitBashApproval(_BashClassificationSubmission):
 
 
 class SubmitBashHighRisk(_BashClassificationSubmission):
-    description = "将当前待分类的 Bash 命令名或规范化策略事件提交到高危表并拒绝执行。无参数。"
+    description = "将当前待分类的 Bash 命令名或规范化策略事件提交到高危表；执行时必须由用户批准。无参数。"
 
     def __init__(self, sink: Callable[[PolicyLevel], None]) -> None:
         super().__init__("SubmitBashHighRisk", "high", sink)
@@ -434,6 +434,23 @@ class BashPolicyEvaluator:
             reason=reason,
         )
 
+    async def resolve_for_execution(self, command: str) -> BashPolicyDecision:
+        """Resolve all AST evidence, then return one aggregate decision for the full command."""
+        decision = self.evaluate(command)
+        if not decision.unknown_keys:
+            return decision
+        await self.resolve_unknowns(decision.evidence, persist=True)
+        resolved = self.evaluate(command)
+        if resolved.level != "unknown":
+            return resolved
+        return BashPolicyDecision(
+            level="approval",
+            evidence=resolved.evidence,
+            matched_keys=resolved.matched_keys,
+            unknown_keys=resolved.unknown_keys,
+            reason=resolved.reason or "存在未分类命令或策略事件",
+        )
+
     async def resolve_unknowns(self, evidence: tuple[BashPolicyEvidence, ...], *, persist: bool = True) -> dict[str, PolicyLevel]:
         if self.classifier is None:
             return {}
@@ -468,34 +485,6 @@ class BashPolicyEvaluator:
             return resolved
         finally:
             self._classification_tasks.pop(item.policy_key, None)
-
-    def persist_classification(
-        self,
-        evidence: tuple[BashPolicyEvidence, ...],
-        classifications: dict[str, PolicyLevel],
-        *,
-        user_allowed: bool,
-    ) -> None:
-        for item in evidence:
-            level = classifications.get(item.policy_key)
-            if level is None:
-                continue
-            if user_allowed:
-                target: PolicyLevel = "low" if level == "low" else "approval"
-            else:
-                target = "high" if level == "high" else "approval"
-            self.store.put(
-                item.policy_key,
-                target,
-                entry_type=item.entry_type,
-                name=item.name,
-                source="classifier_agent",
-                reason=item.reason,
-            )
-
-    def has_pending(self, policy_keys: tuple[str, ...]) -> bool:
-        return any(key in self._classification_tasks for key in policy_keys)
-
 
 def extract_policy_evidence(command: str) -> tuple[BashPolicyEvidence, ...]:
     """Extract command names and normalized AST policy events."""
@@ -649,7 +638,7 @@ class CLICommandApprovalHook(CommandApprovalHook):
             command=command_text,
             reason=request.reason,
             intent=request.intent,
-            dangerous=request.risk == "dangerous",
+            dangerous=request.risk == "high",
         )
         try:
             answer = await self.coordinator.read_choice(

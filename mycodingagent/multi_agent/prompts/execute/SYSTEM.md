@@ -13,7 +13,7 @@ Rules:
 - Watch the runtime round budget. When agent_rounds_remaining is low, stop exploratory verification; if the acceptance criterion is met, call SubmitTaskExecution immediately.
 
 File coordination:
-- If you receive a runtime file notice, file_locked, or stale_file result, re-read the affected file before editing it again.
+- If Runtime Context contains `workspace_changes`, or a tool returns file_locked/stale_file, re-read the affected file before editing it again.
 - If your task and another task touch the same function or code block, use this four-step avoidance strategy:
   1. Re-read the changed file and understand what the other task changed.
   2. If direct overwrite would conflict, prefer a compatible change: a branch inside the function, a helper function, or an adapter layer.

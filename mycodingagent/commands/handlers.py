@@ -24,7 +24,6 @@ from mycodingagent.terminal_ui.session_selector import select_session_interactiv
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.multi_agent.context import run_summary_for_main_context
 from mycodingagent.work_mode import WorkMode
-from mycodingagent.plan_runtime import InteractionMode
 
 
 def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
@@ -245,8 +244,6 @@ async def handle_plan_command(context: CommandContext, arguments: str) -> Comman
         print("Plan 运行时未启用。", flush=True)
         return CommandResult()
     plan_runtime.enter_plan_mode()
-    if context.terminal is not None:
-        context.terminal.set_interaction_mode(InteractionMode.PLAN.value)
     print("已进入 Plan 模式。工作区写入与 Bash 已关闭。", flush=True)
     return CommandResult(messages=context.messages)
 

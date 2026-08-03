@@ -26,6 +26,7 @@ from mycodingagent.llm_runtime.context import (
     PromptRenderer,
     RenderedPrompt,
     RuntimeContextBuilder,
+    freeze_model_visible_user_message,
     render_current_turn_for_model,
 )
 from mycodingagent.llm_runtime.streaming import stream_one_round
@@ -82,6 +83,9 @@ class PromptDebugSnapshot:
     message_count: int
     tool_count: int
     rendered_prompt_format_version: str
+    message_hashes: tuple[str, ...]
+    message_tokens: tuple[int, ...]
+    message_roles: tuple[str, ...]
 
 
 _LAST_PROMPT_DEBUG_SNAPSHOT: PromptDebugSnapshot | None = None
@@ -210,6 +214,9 @@ def build_prompt_debug_snapshot(
         message_count=len(model_messages),
         tool_count=len(tools),
         rendered_prompt_format_version=rendered_prompt_format_version,
+        message_hashes=tuple(stable_json_hash(message) for message in model_messages),
+        message_tokens=tuple(estimated_json_tokens(message) for message in model_messages),
+        message_roles=tuple(str(message.get("role") or "") for message in model_messages),
     )
 
 
@@ -237,6 +244,9 @@ def print_prompt_debug(
     *,
     snapshot: PromptDebugSnapshot,
     first_changed_section: str,
+    common_prefix_messages: int = 0,
+    common_prefix_tokens: int = 0,
+    first_changed_message: str = "none",
 ) -> None:
     if not DEBUG:
         return
@@ -252,15 +262,49 @@ def print_prompt_debug(
         f"stored_user_prompt_tokens≈{snapshot.stored_user_prompt_tokens} | "
         f"current_turn_tokens≈{snapshot.current_turn_tokens} hash={snapshot.current_turn_hash} | "
         f"tools_tokens≈{snapshot.tools_tokens} tools={snapshot.tool_count} hash={snapshot.tools_hash} | "
-        f"messages={snapshot.message_count} first_changed_section={first_changed_section}",
+        f"messages={snapshot.message_count} first_changed_section={first_changed_section} | "
+        f"common_prefix_messages={common_prefix_messages} common_prefix_tokens≈{common_prefix_tokens} "
+        f"first_changed_message={first_changed_message}",
     )
 
 
 def print_prompt_debug_with_previous(snapshot: PromptDebugSnapshot) -> None:
     global _LAST_PROMPT_DEBUG_SNAPSHOT
     first_changed_section = first_changed_prompt_debug_section(_LAST_PROMPT_DEBUG_SNAPSHOT, snapshot)
-    print_prompt_debug(snapshot=snapshot, first_changed_section=first_changed_section)
+    common_prefix_messages, common_prefix_tokens, first_changed_message = prompt_message_prefix_debug(
+        _LAST_PROMPT_DEBUG_SNAPSHOT,
+        snapshot,
+    )
+    print_prompt_debug(
+        snapshot=snapshot,
+        first_changed_section=first_changed_section,
+        common_prefix_messages=common_prefix_messages,
+        common_prefix_tokens=common_prefix_tokens,
+        first_changed_message=first_changed_message,
+    )
     _LAST_PROMPT_DEBUG_SNAPSHOT = snapshot
+
+
+def prompt_message_prefix_debug(
+    previous: PromptDebugSnapshot | None,
+    current: PromptDebugSnapshot,
+) -> tuple[int, int, str]:
+    if previous is None:
+        role = current.message_roles[0] if current.message_roles else "none"
+        return 0, 0, f"0:{role}(first_request)"
+    common = 0
+    for previous_hash, current_hash in zip(previous.message_hashes, current.message_hashes):
+        if previous_hash != current_hash:
+            break
+        common += 1
+    common_tokens = sum(current.message_tokens[:common])
+    if common < len(current.message_roles):
+        changed = f"{common}:{current.message_roles[common]}"
+    elif len(previous.message_roles) != len(current.message_roles):
+        changed = f"{common}:removed"
+    else:
+        changed = "none"
+    return common, common_tokens, changed
 
 
 def print_token_block(*lines: str) -> None:
@@ -278,12 +322,21 @@ def bash_display_classifier_from_registry(registry: Any):
     return classifier if callable(classifier) else None
 
 
-def context_budget_state_from_snapshot(snapshot: Any) -> ContextBudgetState:
+def context_budget_state_from_hot_snapshot(snapshot: Any) -> ContextBudgetState:
+    ratio = float(getattr(snapshot, "usage_ratio", 0.0) or 0.0)
+    if ratio >= CONFIG.memory.budget_emergency_ratio:
+        stage = "emergency"
+    elif ratio >= CONFIG.memory.budget_working_ratio:
+        stage = "working"
+    elif ratio >= CONFIG.memory.budget_soft_ratio:
+        stage = "soft"
+    else:
+        stage = "normal"
     return ContextBudgetState(
-        usage_ratio=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0),
-        stage=str(getattr(getattr(snapshot, "stage", ""), "value", getattr(snapshot, "stage", ""))),
-        budget_is_tight=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0) >= CONFIG.memory.budget_working_ratio,
-        emergency=float(getattr(snapshot, "usage_ratio", 0.0) or 0.0) >= CONFIG.memory.budget_emergency_ratio,
+        usage_ratio=ratio,
+        stage=stage,
+        budget_is_tight=ratio >= CONFIG.memory.budget_working_ratio,
+        emergency=ratio >= CONFIG.memory.budget_emergency_ratio,
     )
 
 
@@ -631,6 +684,15 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             recent_messages=messages[:turn_start],
         )
         print("[Runtime] 长期记忆查询完成。", flush=True)
+    initial_budget_state = None
+    if memory_runtime is not None and session_id:
+        initial_hot_snapshot = memory_runtime.hot_context_budget_snapshot(
+            session_id=session_id,
+            messages=messages,
+            current_turn_start=turn_start,
+        )
+        if initial_hot_snapshot.warning:
+            initial_budget_state = context_budget_state_from_hot_snapshot(initial_hot_snapshot)
     tool_policy = TurnToolPolicy(
         interaction_mode=plan_runtime.mode if plan_runtime is not None else InteractionMode.NORMAL,
         has_active_plan=plan_runtime.active_plan() is not None if plan_runtime is not None else False,
@@ -642,6 +704,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         capabilities=capability_result,
         project_graph=project_graph,
         long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else None,
+        context_budget=initial_budget_state,
         interaction_mode=plan_runtime.mode.value if plan_runtime is not None else InteractionMode.NORMAL.value,
         tool_policy=tool_policy.runtime_payload() if plan_runtime is not None else None,
         plan=_plan_runtime_context(plan_runtime),
@@ -650,7 +713,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     current_tools = await build_round_tools(tools, core_tool_schemas)  # 本轮工具列表在整轮内保持稳定，利于 prompt 缓存命中。
     failure_tracker = RepeatedFailureTracker()
     code_query_ledger = CodeQueryLedger()
-    previous_budget_state: ContextBudgetState | None = None
+    frozen_rendered_prompt: RenderedPrompt | None = None
 
     for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
         prepared_messages = round_messages
@@ -671,29 +734,28 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 current_turn_start=turn_start,
                 project_graph=project_graph if str(work_mode) == "code" else None,
             )
-        runtime_context = replace(
-            base_runtime_context,
-            context_render_mode=current_context_mode(),
-            task_snapshot=summary_text or None,
-            context_budget=previous_budget_state,
-        )
-        rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
+        if frozen_rendered_prompt is None:
+            runtime_context = replace(
+                base_runtime_context,
+                context_render_mode=current_context_mode(),
+                task_snapshot=summary_text or None,
+            )
+            rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
+        else:
+            rendered_prompt = frozen_rendered_prompt
         model_messages = render_current_turn_for_model(
             prepared_messages,
             current_turn_start=turn_start,
             rendered_prompt=rendered_prompt,
         )
-        if memory_runtime is not None and session_id:
-            budget_snapshot = memory_runtime.prompt_budget_snapshot(
-                model_messages,
-                tools=current_tools,
-                current_prompt=prompt,
-            )
-            previous_budget_state = (
-                context_budget_state_from_snapshot(budget_snapshot)
-                if budget_snapshot.usage_ratio >= CONFIG.memory.budget_soft_ratio
-                else None
-            )
+        if frozen_rendered_prompt is None:
+            frozen_rendered_prompt = rendered_prompt
+            if freeze_model_visible_user_message(
+                round_messages,
+                current_turn_start=turn_start,
+                content=rendered_prompt.content,
+            ):
+                save_session_state()
         prompt_debug_snapshot = build_prompt_debug_snapshot(
             model_messages=model_messages,
             temporary_system_messages=temporary_system_messages,
@@ -718,6 +780,8 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 )
             )
         )
+        if plan_runtime is not None and plan_runtime.should_inject_planning_instruction():
+            plan_runtime.mark_planning_instruction_delivered()
         assistant_text = stream_result.text
         tool_calls = stream_result.tool_calls
         usage = stream_result.usage
@@ -1097,8 +1161,8 @@ def _plan_runtime_context(plan_runtime: PlanRuntime | None) -> dict[str, Any] | 
         return None
     if plan_runtime.is_planning:
         proposal = plan_runtime.proposed_plan()
-        return {
-            "instruction": "你需要基于用户需求给出一个完善、可直接实施的计划。只调查和设计，不修改工作区；计划完成后单独调用 create_plan 并等待用户审批。",
+        payload: dict[str, Any] = {
+            "mode": "只读规划；禁止修改工作区、Bash 和 MCP；允许只读工具、Skill、上下文提交/恢复和项目图谱描述更新。",
             "proposal": (
                 {
                     "id": proposal.id,
@@ -1110,6 +1174,15 @@ def _plan_runtime_context(plan_runtime: PlanRuntime | None) -> dict[str, Any] | 
                 else None
             ),
         }
+        if plan_runtime.should_inject_planning_instruction():
+            payload["instruction"] = (
+                "当前是一次新的 Plan epoch。请先通过只读调查确认真实代码、现状和问题根因，再形成决策完整、可直接实施的软件开发计划。"
+                "计划必须包含：目标与范围、明确不处理的内容、约束与假设、受影响模块/接口/状态/数据流、按依赖顺序的实施步骤、"
+                "权限与安全影响、失败处理和恢复策略、与风险匹配的测试策略（单元/集成/协议/持久化/TUI 等）、验证命令、"
+                "可观测的验收标准以及剩余未决问题。不要臆造兼容层或无关重构；信息不足时先询问用户。"
+                "只能在计划已经足够具体且没有关键未知项时，单独调用 create_plan，并等待用户选择；不要在同一轮混用其他工具。"
+            )
+        return payload
     payload = plan_runtime.context_payload()
     if payload is None:
         return None

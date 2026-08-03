@@ -99,6 +99,43 @@ def test_bash_display_classifier_from_registry_uses_registered_bash(tmp_path):
     assert classifier("ls -la")[0] == "low"
 
 
+def test_prompt_debug_reports_append_only_common_message_prefix():
+    previous = client.build_prompt_debug_snapshot(
+        model_messages=[
+            {"role": "system", "content": "stable"},
+            {"role": "user", "content": "frozen runtime query"},
+        ],
+        temporary_system_messages=[],
+        tools=[],
+    )
+    current = client.build_prompt_debug_snapshot(
+        model_messages=[
+            {"role": "system", "content": "stable"},
+            {"role": "user", "content": "frozen runtime query"},
+            {"role": "assistant", "content": "", "tool_calls": []},
+            {"role": "tool", "tool_call_id": "call-1", "content": "result"},
+        ],
+        temporary_system_messages=[],
+        tools=[],
+    )
+
+    common_messages, common_tokens, changed = client.prompt_message_prefix_debug(previous, current)
+
+    assert common_messages == 2
+    assert common_tokens > 0
+    assert changed == "2:assistant"
+
+
+def test_hot_budget_snapshot_maps_to_explicit_runtime_stage():
+    snapshot = type("HotSnapshot", (), {"usage_ratio": 0.95})()
+
+    state = client.context_budget_state_from_hot_snapshot(snapshot)
+
+    assert state.stage == "emergency"
+    assert state.budget_is_tight
+    assert state.emergency
+
+
 def _status_error(status_code: int) -> APIStatusError:
     response = httpx.Response(status_code, request=_request())
     return APIStatusError("boom", response=response, body=None)

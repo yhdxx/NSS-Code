@@ -101,44 +101,12 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         if image_error:  # 镜像不存在或无法检查时，给出可执行的修复提示。
             return ToolResult(output=image_error, is_error=True)  # 返回工具错误，让模型或用户先处理镜像配置。
         if self._approval_hook is not None:
-            policy = self._policy_evaluator.evaluate(params.command)
+            policy = await self._policy_evaluator.resolve_for_execution(params.command)
             policy_level = policy.level
             policy_reason = policy.reason
-            unknown_keys = policy.unknown_keys
-            if policy_level == "high":
-                return ToolResult(
-                    output=f"{USER_DENIED_COMMAND_MESSAGE}：{policy_reason or '命令命中高危策略'}",
-                    is_error=True,
-                )
-            pending_unknown = bool(
-                unknown_keys and self._policy_evaluator.has_pending(unknown_keys)
-            )
-            pending_classifications = {}
-            if pending_unknown:
-                pending_classifications = await self._policy_evaluator.resolve_unknowns(policy.evidence, persist=False)
-                ranks = {"low": 0, "approval": 1, "high": 2}
-                pending_level = max(
-                    (pending_classifications.get(key, "approval") for key in unknown_keys),
-                    key=lambda value: ranks[value],
-                )
-                if pending_level == "high":
-                    return ToolResult(
-                        output=f"{USER_DENIED_COMMAND_MESSAGE}：未知命令分类为高危",
-                        is_error=True,
-                    )
-                if pending_level == "low":
-                    return await self._execute_docker(params, image, timeout)
-                policy_level = "approval"
-                policy_reason = "未知命令分类为审批级别"
-                unknown_keys = ()
-            if policy_level in {"approval", "unknown"}:
-                risk = "dangerous" if policy_level == "unknown" else "normal"
+            if policy_level in {"approval", "high"}:
+                risk = "high" if policy_level == "high" else "approval"
                 reason = policy_reason or "命令包含未分类或需要审批的策略事件。"
-                classification_task = None
-                if unknown_keys:
-                    classification_task = asyncio.create_task(
-                        self._policy_evaluator.resolve_unknowns(policy.evidence, persist=False)
-                    )
                 decision = await self._approval_hook.approve(
                     CommandApprovalRequest(
                         command=params.command,
@@ -147,16 +115,6 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                         intent=str(getattr(params, "intent", "") or ""),
                     )
                 )
-                if classification_task is not None:
-                    try:
-                        classifications = await classification_task
-                    except Exception:
-                        classifications = {}
-                    self._policy_evaluator.persist_classification(
-                        tuple(item for item in policy.evidence if item.policy_key in unknown_keys),
-                        classifications,
-                        user_allowed=decision.allowed,
-                    )
                 if not decision.allowed:
                     return ToolResult(
                         output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or '用户拒绝'}",

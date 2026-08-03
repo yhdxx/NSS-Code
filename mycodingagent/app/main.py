@@ -155,6 +155,9 @@ async def _run(terminal: TerminalApplication) -> None:
         store=memory_runtime.store if memory_runtime is not None else None,
         session_id=current_plan_session_id,
     )
+    plan_runtime.bind_mode_listener(
+        lambda mode: terminal.set_interaction_mode(mode.value)
+    )
     code_index = WorkspaceCodeIndex(
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
@@ -443,7 +446,6 @@ async def _run(terminal: TerminalApplication) -> None:
                             session_id = memory_runtime.get_current_session_id()
                             if session_id:
                                 memory_runtime.save_messages_now(session_id, messages)
-                    terminal.set_interaction_mode(plan_runtime.mode.value)
                 if command_result.should_exit:
                     break
                 continue

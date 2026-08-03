@@ -178,20 +178,17 @@ def test_ask_model_reuses_turn_tools_and_omits_temporary_system_from_history(mon
         )
 
         assert build_calls == 1
-        assert render_calls == len(messages_seen)
+        assert render_calls == 1
         assert len(tools_seen) == 2
         assert tools_seen[0] is tools_seen[1]
         assert messages_seen[0][1]["role"] == "user"
         assert is_rendered_runtime_prompt(messages_seen[0][1]["content"])
         assert extract_user_request_from_rendered_prompt(messages_seen[0][1]["content"]) == "do work"
-        assert "changed.py" not in messages_seen[0][1]["content"]
-        assert messages_seen[0][-1]["role"] == "user"
-        assert "<RUNTIME_NOTICE>" in messages_seen[0][-1]["content"]
-        assert "changed.py" in messages_seen[0][-1]["content"]
-        assert messages_seen[1][-2]["role"] == "tool"
-        assert messages_seen[1][-1]["role"] == "user"
+        assert "changed.py" in messages_seen[0][1]["content"]
+        assert "<RUNTIME_NOTICE>" not in messages_seen[0][1]["content"]
+        assert messages_seen[1][-1]["role"] == "tool"
         assert messages_seen[1][1]["content"] == messages_seen[0][1]["content"]
-        assert "changed.py" in messages_seen[1][-1]["content"]
+        assert messages_seen[1][:2] == messages_seen[0][:2]
         assert not any(
             message.get("role") == "system"
             and (
@@ -2587,8 +2584,7 @@ def test_hot_context_threshold_schedules_runtime_commit(tmp_path):
         current_turn_start=1,
     )
 
-    hot_notice = next(str(message.get("content", "")) for message in rendered if "热工作上下文通知" in str(message.get("content", "")))
-    assert "当前任务或主题完成时调用 CommitWorkingContext" not in hot_notice
+    assert not any("热工作上下文通知" in str(message.get("content", "")) for message in rendered)
     pending = runtime.get_active_context_epoch(session_id)
     assert pending is not None
     assert pending.status == ContextEpochStatus.PENDING_COMMIT
@@ -2615,7 +2611,7 @@ def test_hot_context_warning_does_not_schedule_commit(tmp_path):
         current_turn_start=1,
     )
 
-    assert any("热工作上下文通知" in str(message.get("content", "")) for message in rendered)
+    assert not any("热工作上下文通知" in str(message.get("content", "")) for message in rendered)
     state = runtime.get_active_context_epoch(session_id)
     assert state is not None
     assert state.status == ContextEpochStatus.ACTIVE

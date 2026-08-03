@@ -40,7 +40,7 @@ class RuntimeContext:
     plan: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
-        return {**self.stable_payload(), **self.notice_payload()}
+        return self.stable_payload()
 
     def stable_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
@@ -58,19 +58,14 @@ class RuntimeContext:
             payload["project_graph"] = self.project_graph
         if self.long_term_memory:
             payload["long_term_memory"] = self.long_term_memory
-        return payload
-
-    def notice_payload(self) -> dict[str, Any]:
-        payload: dict[str, Any] = {}
-        workspace_changes = workspace_changes_payload(self.workspace_changes)
-        if workspace_changes:
-            payload["workspace_changes"] = workspace_changes
         if self.context_budget is not None:
             payload["context_budget"] = asdict(self.context_budget)
         if self.task_snapshot:
             payload["task_snapshot"] = self.task_snapshot
+        workspace_changes = workspace_changes_payload(self.workspace_changes)
+        if workspace_changes:
+            payload["workspace_changes"] = workspace_changes
         return payload
-
 
 def workspace_changes_payload(changes: WorkspaceChanges) -> dict[str, Any]:
     payload: dict[str, Any] = {}
@@ -90,8 +85,6 @@ class RenderedPrompt:
     runtime_context_json: str
     runtime_context_hash: str
     runtime_context_tokens: int
-    runtime_notice_json: str
-    runtime_notice_tokens: int
     user_prompt_tokens: int
     total_tokens: int
     format_version: str = FORMAT_VERSION
@@ -110,6 +103,7 @@ class RuntimeContextBuilder:
         interaction_mode: str = "normal",
         tool_policy: dict[str, Any] | None = None,
         plan: dict[str, Any] | None = None,
+        context_budget: ContextBudgetState | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
@@ -120,6 +114,7 @@ class RuntimeContextBuilder:
         self.interaction_mode = interaction_mode
         self.tool_policy = tool_policy
         self.plan = plan
+        self.context_budget = context_budget
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
@@ -132,6 +127,7 @@ class RuntimeContextBuilder:
             long_term_memory=self.long_term_memory,
             tool_policy=self.tool_policy,
             plan=self.plan,
+            context_budget=self.context_budget,
         )
 
     def _workspace_changes(self) -> WorkspaceChanges:
@@ -164,7 +160,7 @@ class PromptRenderer:
     @staticmethod
     def render_current_user_message(runtime_context: RuntimeContext, user_prompt: str) -> RenderedPrompt:
         runtime_context_json = json.dumps(
-            runtime_context.stable_payload(),
+            runtime_context.to_payload(),
             ensure_ascii=False,
             sort_keys=True,
             indent=2,
@@ -179,12 +175,6 @@ class PromptRenderer:
         )
         runtime_context_hash = hashlib.sha256(runtime_context_json.encode("utf-8")).hexdigest()[:12]
         runtime_context_tokens = estimate_tokens(runtime_context_json)
-        notice_payload = runtime_context.notice_payload()
-        runtime_notice_json = (
-            json.dumps(notice_payload, ensure_ascii=False, sort_keys=True, indent=2)
-            if notice_payload
-            else ""
-        )
         user_prompt_tokens = estimate_tokens(user_prompt)
         return RenderedPrompt(
             role="user",
@@ -194,10 +184,8 @@ class PromptRenderer:
             runtime_context_json=runtime_context_json,
             runtime_context_hash=runtime_context_hash,
             runtime_context_tokens=runtime_context_tokens,
-            runtime_notice_json=runtime_notice_json,
-            runtime_notice_tokens=estimate_tokens(runtime_notice_json),
             user_prompt_tokens=user_prompt_tokens,
-            total_tokens=estimate_tokens(content) + estimate_tokens(runtime_notice_json),
+            total_tokens=estimate_tokens(content),
         )
 
 
@@ -207,25 +195,45 @@ def render_current_turn_for_model(
     current_turn_start: int,
     rendered_prompt: RenderedPrompt,
 ) -> list[dict[str, Any]]:
-    model_messages = [dict(message) for message in messages]
+    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
+    model_messages: list[dict[str, Any]] = []
+    for message in messages:
+        copied = {key: value for key, value in message.items() if key in allowed_keys}
+        metadata = message.get("metadata")
+        if message.get("role") == "user" and isinstance(metadata, dict) and metadata.get("model_content"):
+            copied["content"] = str(metadata["model_content"])
+        model_messages.append(copied)
     if not model_messages:
         return model_messages
     for index in range(current_turn_start, len(model_messages)):
         if model_messages[index].get("role") == "user":
-            model_messages[index]["content"] = rendered_prompt.content
-            if rendered_prompt.runtime_notice_json:
-                model_messages.append(
-                    {
-                        "role": "user",
-                        "content": (
-                            "<RUNTIME_NOTICE>\n"
-                            f"{rendered_prompt.runtime_notice_json}\n"
-                            "</RUNTIME_NOTICE>"
-                        ),
-                    }
-                )
+            existing_content = str(model_messages[index].get("content") or "")
+            if not is_rendered_runtime_prompt(existing_content):
+                model_messages[index]["content"] = rendered_prompt.content
             return model_messages
     return model_messages
+
+
+def freeze_model_visible_user_message(
+    messages: list[dict[str, Any]],
+    *,
+    current_turn_start: int,
+    content: str,
+) -> bool:
+    """Persist the exact user message sent to the model without changing UI text."""
+    for index in range(current_turn_start, len(messages)):
+        message = messages[index]
+        if message.get("role") != "user":
+            continue
+        metadata = dict(message.get("metadata") or {})
+        if metadata.get("model_content") == content:
+            return False
+        if metadata.get("model_content"):
+            return False
+        metadata["model_content"] = content
+        message["metadata"] = metadata
+        return True
+    return False
 
 
 def is_rendered_runtime_prompt(content: str) -> bool:

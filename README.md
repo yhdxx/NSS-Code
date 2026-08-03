@@ -179,7 +179,7 @@ Code 中的后续文件变化会去抖并异步刷新，刷新过程默认静默
 
 ### 4.1 工作区状态
 
-`WorkspaceChangeTracker` 会把模型已读过、但后来被用户外部修改的文件作为 runtime notice 注入，提醒模型重新读取文件。Runtime 只通知相关文件变化，不直接替模型决定如何处理。
+`WorkspaceChangeTracker` 会把模型已读过、但后来被用户外部修改的文件放入当前用户轮次的 Runtime Context，提醒模型重新读取文件。该上下文首次发送后保持不变，后续工具调用只追加消息，以维持模型前缀缓存。Runtime 只通知相关文件变化，不直接替模型决定如何处理。
 
 ### 4.2 能力路由结果
 
@@ -604,7 +604,7 @@ COMPLETED / FAILED
 - stale file 拒绝
 - Bash `declared_write_files` 监督
 - 未声明写入回滚
-- runtime file notice
+- Runtime Context 中的 `workspace_changes`
 - 等待通知队列
 
 `execute` 工具调用必须携带正确 `task_id`。Bash 在 execute 中必须声明潜在写入文件，Runtime 会在命令前后做快照，拒绝未声明源文件变更。

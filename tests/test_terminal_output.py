@@ -8,6 +8,7 @@ from mycodingagent.terminal_ui.output import (
     clear_terminal,
     default_bash_display_level,
     mark_terminal_region_start,
+    mcp_display_level,
     render_assistant_markdown,
     render_tool_calls,
 )
@@ -19,6 +20,9 @@ from mycodingagent.terminal_ui.theme import (
     RICH_THEME_STYLES,
     SECONDARY_TEXT,
     TOOL_ACTION_TEAL,
+    RISK_APPROVAL_YELLOW,
+    RISK_HIGH_RED,
+    RISK_LOW_GREEN,
 )
 from mycodingagent.tool_runtime.command_policy import analyze_command
 
@@ -81,6 +85,15 @@ def test_bash_tool_call_labels_risk_levels(capsys):
     assert "Bash [高危]" in output
 
 
+def test_mcp_risks_map_to_semantic_display_levels():
+    assert mcp_display_level("read") == "low"
+    assert mcp_display_level("write") == "approval"
+    assert mcp_display_level("network") == "approval"
+    assert mcp_display_level("unknown") == "approval"
+    assert mcp_display_level("destructive") == "high"
+    assert mcp_display_level("admin") == "high"
+
+
 def test_tool_calls_are_grouped_not_mixed_raw_json(capsys):
     render_tool_calls(
         [
@@ -118,6 +131,12 @@ def test_rendering_does_not_mutate_tool_calls():
 def test_terminal_theme_uses_the_configured_semantic_palette():
     assert MAIN_BACKGROUND == "#380C2A"
     assert COMPOSER_BACKGROUND == "#4F2943"
+    assert RISK_LOW_GREEN == "#5FD75F"
+    assert RISK_APPROVAL_YELLOW == "#FFD75F"
+    assert RISK_HIGH_RED == "#FF5F5F"
+    assert RISK_LOW_GREEN in RICH_THEME_STYLES["bash.low"]
+    assert RISK_APPROVAL_YELLOW in RICH_THEME_STYLES["bash.approval"]
+    assert RISK_HIGH_RED in RICH_THEME_STYLES["bash.high"]
     assert PRIMARY_TEXT == "#D7D7D7"
     assert SECONDARY_TEXT == "#8F8F8F"
     assert MUTED_BORDER == "#282828"

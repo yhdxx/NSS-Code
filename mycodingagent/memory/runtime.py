@@ -25,7 +25,6 @@ from mycodingagent.memory.context_epoch import (
     automatic_context_epoch_summary,
     collect_context_epoch_files,
     format_context_epoch_commit_report,
-    format_hot_context_notice,
     last_user_message_index,
     retained_hot_start_index,
 )
@@ -879,13 +878,6 @@ class MemoryRuntime:
             current_prompt=current_prompt,
         )
         rendered = virtualized_rendered if decision.mode == ContextMode.VIRTUALIZED else raw_rendered
-        hot_snapshot = self.hot_context_budget_snapshot(
-            session_id=session_id,
-            messages=messages,
-            current_turn_start=current_turn_start,
-        )
-        if hot_snapshot.warning:
-            rendered = insert_budget_notice(rendered, format_hot_context_notice(hot_snapshot))
         snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
         if (
             CONFIG.memory.output_context_compression
@@ -1377,13 +1369,6 @@ def split_historical_and_current(
     return messages[:start], messages[start:]
 
 
-def insert_budget_notice(messages: list[dict[str, Any]], notice: str) -> list[dict[str, Any]]:
-    if not notice:
-        return messages
-    insert_at = 1 if messages and messages[0].get("role") == "system" else 0
-    return [*messages[:insert_at], {"role": "system", "content": notice}, *messages[insert_at:]]
-
-
 def format_budget_notice(snapshot: PromptBudgetSnapshot) -> str:
     lines = [
         "上下文预算通知",
@@ -1658,10 +1643,14 @@ def apply_current_summaries(
 
 def sanitize_messages_for_model(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
     allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
-    return [
-        {key: value for key, value in message.items() if key in allowed_keys}
-        for message in messages
-    ]
+    sanitized: list[dict[str, Any]] = []
+    for message in messages:
+        copied = {key: value for key, value in message.items() if key in allowed_keys}
+        metadata = message.get("metadata")
+        if message.get("role") == "user" and isinstance(metadata, dict) and metadata.get("model_content"):
+            copied["content"] = str(metadata["model_content"])
+        sanitized.append(copied)
+    return sanitized
 
 
 def build_historical_turns(session_id: str, messages: list[dict[str, Any]]) -> list[HistoricalTurn]:

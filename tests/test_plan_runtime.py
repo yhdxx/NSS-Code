@@ -112,7 +112,36 @@ def test_plan_instruction_is_in_runtime_context_without_changing_system_message(
 
     assert messages == [{"role": "system", "content": "stable-system"}]
     assert payload is not None
-    assert payload["instruction"].startswith("你需要基于用户需求给出一个完善")
+    assert "测试策略" in payload["instruction"]
+    assert "验收标准" in payload["instruction"]
+    runtime.mark_planning_instruction_delivered()
+    later_payload = client._plan_runtime_context(runtime)
+    assert later_payload is not None
+    assert "instruction" not in later_payload
+
+
+def test_plan_mode_listener_tracks_activation_and_exit() -> None:
+    runtime = PlanRuntime(session_id=lambda: "session")
+    modes: list[InteractionMode] = []
+    runtime.bind_mode_listener(modes.append)
+
+    runtime.enter_plan_mode()
+    proposal = runtime.create_proposal("完成需求", ["分析", "测试"])
+    runtime.activate_proposal(proposal.id)
+
+    assert modes == [InteractionMode.PLAN, InteractionMode.NORMAL]
+
+
+def test_restoring_same_plan_epoch_does_not_reinject_instruction(tmp_path) -> None:
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+    runtime = PlanRuntime(store=store, session_id=lambda: "session")
+    runtime.enter_plan_mode()
+    runtime.mark_planning_instruction_delivered()
+
+    runtime.restore_current_session()
+
+    assert runtime.is_planning
+    assert not runtime.should_inject_planning_instruction()
 
 
 def test_create_plan_rejection_keeps_protocol_complete_messages(monkeypatch) -> None:

@@ -53,6 +53,7 @@ MAX_INLINE_TEXT = 180
 MAX_BLOCK_TEXT = 1200
 BashDisplayLevel = Literal["low", "approval", "high"]
 BashDisplayClassifier = Callable[[str], tuple[BashDisplayLevel, str]]
+MCPDisplayLevel = Literal["low", "approval", "high"]
 
 def render_assistant_markdown(text: str, *, label: str = "模型", file: TextIO | None = None) -> None:
     """Render a completed assistant answer as Markdown in the terminal."""
@@ -207,6 +208,7 @@ def render_command_approval_request(
     dangerous: bool = False,
     file: TextIO | None = None,
 ) -> None:
+    _notify_agent_output(file)
     output = _resolve_file(file)
     console = _console(output)
     style = "bash.high" if dangerous else "bash.approval"
@@ -218,6 +220,64 @@ def render_command_approval_request(
         _print_text(console, f"  目的：{intent}", style="text")
     _print_text(console, "  命令：", style=style)
     _print_block(console, command, prefix="    ", style="bash.command", max_chars=2000)
+
+
+def render_mcp_approval_request(
+    *,
+    server: str,
+    tool: str,
+    risk: str,
+    intent: str = "",
+    arguments: str = "",
+    file: TextIO | None = None,
+) -> None:
+    _notify_agent_output(file)
+    output = _resolve_file(file)
+    console = _console(output)
+    level = mcp_display_level(risk)
+    style = f"mcp.{level}"
+    label = "高危 MCP 调用需要批准" if level == "high" else "MCP 调用需要批准"
+    _print_text(console, f"• {label}", style=style)
+    _print_text(console, f"  Server：{server}", style=style)
+    _print_text(console, f"  工具：{tool}", style=style)
+    _print_text(console, f"  风险：{risk}", style=style)
+    if intent:
+        _print_text(console, f"  目的：{intent}", style="text")
+    if arguments:
+        _print_text(console, "  参数：", style=style)
+        _print_block(console, arguments, prefix="    ", style="tool.output", max_chars=2000)
+
+
+def render_mcp_launch_approval_request(
+    *,
+    server: str,
+    transport: str,
+    target: str,
+    sandboxed: bool,
+    workspace_access: str,
+    network: bool,
+    file: TextIO | None = None,
+) -> None:
+    _notify_agent_output(file)
+    output = _resolve_file(file)
+    console = _console(output)
+    _print_text(console, "• MCP Server 启动需要批准", style="mcp.approval")
+    _print_text(console, f"  Server：{server}", style="mcp.approval")
+    _print_text(console, f"  传输方式：{transport}", style="text")
+    _print_text(console, f"  目标：{target}", style="text")
+    _print_text(
+        console,
+        f"  沙箱：{sandboxed} | 工作区权限：{workspace_access} | 网络：{network}",
+        style="text",
+    )
+
+
+def mcp_display_level(risk: str) -> MCPDisplayLevel:
+    if risk in {"destructive", "admin"}:
+        return "high"
+    if risk == "read":
+        return "low"
+    return "approval"
 
 
 def render_write_approval_request(
