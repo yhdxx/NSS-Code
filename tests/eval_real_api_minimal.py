@@ -24,9 +24,9 @@ pytestmark = [
 
 
 if REAL_API_EVAL_ENABLED:
-    os.environ.setdefault("STEP_TOKEN", "0")
-    os.environ.setdefault("ROUND_TOKEN", "0")
-    os.environ.setdefault("CONVERSATION_TOKEN", "0")
+    os.environ.setdefault("MYCODINGAGENT_STEP_TOKEN", "0")
+    os.environ.setdefault("MYCODINGAGENT_ROUND_TOKEN", "0")
+    os.environ.setdefault("MYCODINGAGENT_CONVERSATION_TOKEN", "0")
     os.environ.setdefault("MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED", "0")
 
 pytest.importorskip("openai")
@@ -43,8 +43,10 @@ from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
 from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
+from tests.model_manager_stub import RawClientModelManager, ask_model_with_raw_client
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.bash import Bash, get_docker_image
+from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
 from mycodingagent.tool_runtime.edit_file import EditFile
 from mycodingagent.tool_runtime.file_state_cache import FileStateCache
 from mycodingagent.tool_runtime.glob import Glob
@@ -170,12 +172,14 @@ async def _case_runtime_development_loop(tmp_path: Path) -> dict[str, Any]:
             "当前 /workspace 下有一个最小 Python 项目。请修复 pytest 失败，只做必要修改，"
             "完成后运行 `python -m pytest -q` 验证，并在最终回答中说明测试是否通过。"
         )
-        text, messages = await agent_client.ask_deepseek(
+        text, messages = await ask_model_with_raw_client(
             harness.api_client,
             prompt,
             harness.registry,
             harness.tools,
-            messages=None,
+            messages=agent_client.create_initial_messages(
+                harness.registry, memory_runtime=harness.memory_runtime
+            ),
             memory_runtime=harness.memory_runtime,
             core_tool_schemas=harness.registry.get_all_schemas("openai"),
         )
@@ -214,12 +218,16 @@ async def _case_capability_routing_skill(tmp_path: Path) -> dict[str, Any]:
     harness.registry.register(InvokeSkillTool(skill_source))
     capability_router = CapabilityRouter(skill_runtime=skill_source)
     try:
-        text, messages = await agent_client.ask_deepseek(
+        text, messages = await ask_model_with_raw_client(
             harness.api_client,
             "帮我把 Coding Agent 项目经历改成简历责任描述。",
             harness.registry,
             harness.tools,
-            messages=None,
+            messages=agent_client.create_initial_messages(
+                harness.registry,
+                capability_router=capability_router,
+                memory_runtime=harness.memory_runtime,
+            ),
             memory_runtime=harness.memory_runtime,
             capability_router=capability_router,
             core_tool_schemas=harness.registry.get_all_schemas("openai"),
@@ -247,8 +255,10 @@ async def _case_context_virtualization_recovery(tmp_path: Path) -> dict[str, Any
     try:
         secret = "MIDDLE_SECRET_CODE=ZX-9142"
         _write_large_context_file(harness.workspace / "big_context.txt", secret)
-        messages: list[dict[str, Any]] | None = None
-        first_text, messages = await agent_client.ask_deepseek(
+        messages = agent_client.create_initial_messages(
+            harness.registry, memory_runtime=harness.memory_runtime
+        )
+        first_text, messages = await ask_model_with_raw_client(
             harness.api_client,
             "请读取 /workspace/big_context.txt。只确认已经读取，不要总结文件内容。",
             harness.registry,
@@ -258,7 +268,7 @@ async def _case_context_virtualization_recovery(tmp_path: Path) -> dict[str, Any
             core_tool_schemas=harness.registry.get_all_schemas("openai"),
         )
         preview_seen = any("[Tool output preview]" in str(message.get("content", "")) for message in messages)
-        second_text, messages = await agent_client.ask_deepseek(
+        second_text, messages = await ask_model_with_raw_client(
             harness.api_client,
             "刚才读取的文件中 MIDDLE_SECRET_CODE 的完整值是什么？如果当前上下文不可见，请使用恢复工具读取后回答。",
             harness.registry,
@@ -403,7 +413,14 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
             sandbox_root=workspace,
         )
     )
-    registry.register(Bash(sandbox_root=workspace))
+    registry.register(
+        Bash(
+            sandbox_root=workspace,
+            policy_evaluator=BashPolicyEvaluator(
+                BashPolicyStore(memory_runtime.store.db_path)
+            ),
+        )
+    )
     registry.register(Glob(sandbox_root=workspace))
     registry.register(Grep(sandbox_root=workspace))
 

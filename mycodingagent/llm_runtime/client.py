@@ -509,7 +509,7 @@ async def execute_local_tool(
     )
 
 
-def append_project_graph_bootstrap_if_needed(
+async def append_project_graph_bootstrap_if_needed(
     messages: list[dict[str, Any]],
     project_graph: Any | None,
     *,
@@ -517,23 +517,18 @@ def append_project_graph_bootstrap_if_needed(
 ) -> bool:
     if project_graph is None or str(work_mode) != "code":
         return False
-    bootstrap_messages = getattr(project_graph, "bootstrap_messages", None)
-    if not callable(bootstrap_messages):
+    prepare_bootstrap = getattr(project_graph, "prepare_bootstrap", None)
+    if not callable(prepare_bootstrap):
         return False
     try:
-        pair = bootstrap_messages()
+        update = await prepare_bootstrap(messages)
     except Exception as exc:
         print(f"[项目图谱] Bootstrap 生成失败：{type(exc).__name__}: {exc}", flush=True)
         return False
-    if len(pair) != 2:
+    if update is None:
         return False
-    new_hash = _project_graph_bootstrap_hash(pair[-1])
-    if not new_hash or new_hash == _latest_project_graph_bootstrap_hash(messages):
-        return False
-    messages.extend(pair)
-    payload = _project_graph_payload_from_message(pair[-1])
-    if payload:
-        render_project_graph_bootstrap_tree(payload)
+    messages.extend(update.messages)
+    render_project_graph_bootstrap_tree(update.payload)
     return True
 
 
@@ -566,18 +561,41 @@ def _project_graph_payload_from_message(message: dict[str, Any]) -> dict[str, An
     return payload if isinstance(payload, dict) else {}
 
 
+def create_initial_messages(
+    registry: ToolRegistry,
+    *,
+    skill_runtime: Any | None = None,
+    capability_router: Any | None = None,
+    memory_runtime: MemoryRuntime | None = None,
+) -> list[dict[str, Any]]:
+    skill_hint = skill_runtime.system_hint() if skill_runtime is not None else ""
+    return [
+        {
+            "role": "system",
+            "content": build_system_prompt(
+                PromptFeatures(
+                    skills_enabled=skill_runtime is not None,
+                    mcp_enabled=capability_router is not None,
+                    memory_enabled=memory_runtime is not None,
+                    project_graph_enabled=registry.get("ProjectArchitecture") is not None,
+                ),
+                skill_hint=skill_hint,
+            ),
+        }
+    ]
+
+
 async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模型、执行工具、再问模型，直到停止。
     model_manager: ModelManager,  # 统一推理模型管理器，负责当前 profile 和 provider。
     prompt: str,  # 当前用户输入的自然语言需求。
     registry: ToolRegistry,  # 本地工具注册表，用于根据模型 tool_call 名称找到实际工具对象。
     tools: list[dict[str, Any]],  # 已格式化好的 OpenAI tools schema，每轮请求都要传给模型。
-    messages: list[dict[str, Any]] | None = None,  # 可选历史消息；为 None 时说明这是本轮会话的第一次请求。
+    messages: list[dict[str, Any]],  # 显式初始化的系统消息和历史消息。
     skill_runtime: Any | None = None,  # 可选 SKILL 运行时；存在时每轮动态生成 tools schema。
     core_tool_schemas: list[dict[str, Any]] | None = None,  # 六大核心工具的原始 schema，避免大量 SKILL 全量进入上下文。
     workspace_tracker: Any | None = None,
     memory_runtime: MemoryRuntime | None = None,
     capability_router: Any | None = None,
-    code_intelligence: Any | None = None,
     project_graph: Any | None = None,
     work_mode: str = "general",
     long_term_memory_runtime: Any | None = None,
@@ -591,142 +609,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     #   {"role": "tool", "tool_call_id": "...", "content": "Successfully wrote ..."},  # 本地工具执行结果。
     #   {"role": "assistant", "content": "已完成"}  # 模型最终回答。
     # ]  # 这些消息会被下一轮用户输入继续复用，实现跨轮记忆。
-    if messages is None:  # 首次调用时没有历史消息，需要初始化系统提示。
-        skill_hint = skill_runtime.system_hint() if skill_runtime is not None else ""  # 大量 SKILL 时追加 search_tool 使用说明。
-        messages = [  # 创建新的消息列表；后续会原地 append 用户、assistant 和 tool 消息。
-            {  # 单条 system 消息对象。
-                "role": "system",  # system role 用于定义模型行为规则。
-                "content": build_system_prompt(
-                    PromptFeatures(
-                        skills_enabled=skill_runtime is not None,
-                        mcp_enabled=capability_router is not None,
-                        memory_enabled=memory_runtime is not None,
-                        project_graph_enabled=registry.get("ProjectArchitecture") is not None
-                        if hasattr(registry, "get")
-                        else True,
-                    ),
-                    skill_hint=skill_hint,
-                ) if not CONFIG.client.legacy_system_prompt else (  # 临时保留一个版本的兼容回退。
-                    """
-                    ***角色定义***
-                    你是一个名为 H-Agent 的智能体助手，你的基础功能是帮助用户编写、修改、审查和测试代码。
-                    当需要本地文件信息时，请使用工具，请勿猜测文件内容。
-                    除非用户需要，否则不要私自创建文件。
-                    文件工具仅限在沙盒工作区内使用。
-                    Shell 命令在 Docker 容器内运行，工作区挂载在 /workspace 目录下。
-                    文件工具也接受 /workspace 作为沙盒工作区根目录的别名；例如 /workspace/a.py 等价于沙盒根目录下的 a.py。
-                    由于沙箱的存在，你无法安全任何工具，当你需要某个工具时，可以告知用户下载该工具的方式，并由用户自由决定是否安装。
-                    你运行在隔离的 Linux Docker 沙箱中，沙箱已经预装了常见的软件开发环境和命令行工具，如果不确定某个命令是否存在，应先判断该工具是否存在，若存在，才可以调用。
-                    
-                    不要因为不知道工具是否存在，就直接放弃任务。
-                    重要：你绝对不能为用户生成或猜测 URL，除非你确信这些 URL是为了帮助用户完成编程任务。你可以使用用户在消息或本地文件中提供的 URL。
-                    重要：允许协助已授权的安全测试、防御性安全研究、CTF 挑战赛和教育场景。拒绝涉及破坏性技术、DoS 攻击、大规模目标扫描、供应链攻击或用于恶意目的的检测规避请求。
-
-                    ***行为准则***
-                    1. 一般来说，不要对你没有阅读过的代码提出修改建议。如果用户要求你查看或修改某个文件，先读一遍它。在提出修改建议之前，先理解现有代码。
-                    2. 不要在用户要求之外添加功能、重构代码或进行"改进"。修一个 bug不需要顺手清理周围的代码。一个简单功能不需要额外的可配置性。
-                    3. 不要为一次性操作创建辅助函数、工具类或抽象层。
-                    4. 三行相似的代码比一个过早的抽象更好。
-                    5. 如果某个方案失败了，先诊断原因再决定是否换方案——读报错信息、检查你的假设、尝试有针对性的修复。不要盲目重试完全相同的操作，但也不要因为一次失败就放弃一个可行的方案。
-                    6. 不要基于名称和结构做推断，而是逐行跟踪实际执行逻辑。
-                    7.你必须为你编写的代码设计单元测试，并在代码修改结束后进行测试。
-
-                    ***操作安全***
-                    仔细考虑操作的可逆性（reversibility）和影响范围（blast radius）。
-                    一般来说，你可以自由执行本地的、可逆的操作，比如编辑文件或运行测试。但对于难以撤销、影响共享系统或有风险的操作，请先和用户确认后再执行。
-                    需要用户确认的高风险操作示例：
-                    -破坏性操作：删除文件/分支、删表、rm -rf
-                    -难以逆转的操作：force-push、git reset --hard、修改已发布的 commit
-                    -对他人可见的操作：推送代码、创建/关闭 PR、发送消息
-                    -上传到第三方工具：内容可能被缓存或索引，即使删除也无法撤回
-
-                    ***工具使用指南***
-                    能力选择策略：
-                    -Model 自身能力只用于常识问答、推理、总结、翻译、文本生成。
-                    -Business Skill 是开发者定义的专家工作流，负责领域流程、约束、标准和最佳实践。
-                    -Core Tool 只负责执行读写文件、搜索、运行命令等基础操作，不负责替代专家工作流。
-                    -如果当前工具列表中已经存在与用户请求高度匹配的 Business Skill，必须优先调用该 Skill；不得因为你自己知道如何完成而跳过。
-                    -如果当前工具列表没有匹配 Skill，但任务可能有相关 Skill，先调用 search_tool 查询；search_tool 的 query 必须使用中文能力描述。
-                    -最多调用 search_tool 三次，但三次检索必须逐步放宽：具体任务 → 同义词/能力类别 → 上位领域；不要越搜越窄。
-                    -你可以连续调用skill解决用户需求。
-                    -只有当 SKILL 兜底能力摘要明确覆盖你需要的能力，即你认为有 80% 可能存在你需要的skill，且三次中文 search_tool 都未命中时，才允许调用 Get_all_tool；若不确定摘要是否覆盖，禁止调用 Get_all_tool。
-                    -Get_all_tool 主要用于用户询问“有哪些 skill/能力”或上述严格兜底场景；不要为了普通任务随意列出全部 skill。
-                    -只有不存在相关 Business Skill、Skill 明显无法完成任务，或 Skill 指令明确要求执行时，才直接调用 Core Tool。
-                    -前端页面/组件/Web App/UI/UX 需求优先调用 invoke_skill 且 skill_name=skill_frontend_design；
-                     代码 Review 优先调用 invoke_skill 且 skill_name=skill_review；
-                     后端面试优先调用 invoke_skill 且 skill_name=skill_backend_interview。
-
-                    当有专用工具可用时，不要用 Bash 来执行命令。使用专用工具可以
-                    让用户更好地理解和审查你的工作。这一点至关重要：
-                    -读取文件用 Read 工具，而不是 cat、head、tail 或 sed
-                    -编辑文件用 Edit 工具，而不是 sed 或 awk
-                    -创建文件用 Write 工具，而不是 echo 重定向
-                    -搜索文件用 Glob 工具，而不是 find 或 ls
-                    -了解项目功能、架构或入口时，先使用窄范围 Glob（如 "*.py"、"backend/*.py"）和 ReadFile 读取 README、入口文件、配置文件；
-                     不要一开始对 /workspace 使用 "**/*" 这类全仓库递归扫描。
-                    -需要项目结构时优先使用 ProjectArchitecture；需要某个模块的单位、描述和调用关系时使用 UnitDependencyGraph。
-                    -Grep 用于补充查找 import、字符串、配置、文档和 AST 索引未覆盖的动态引用；其他文本内容搜索也使用 Grep，而不是 grep 或 rg。
-                    -不得使用 Bash 执行 grep、rg、find、ls、cat、head、tail 或 sed 来替代已有的 Grep、Glob、ReadFile、EditFile 专用工具。
-                    -查询、列举或确认当前可用 SKILL/技能/能力时，必须使用 Get_all_tool、search_tool 或 Get_tool_by_name；
-                     不要用 Bash、Glob、ReadFile 直接查看 skills 目录、SQLite 数据库或 .skill_runtime
-                    -每一次工具调用都必须提供简短 intent 字段，用一句话说明本次调用意图；intent 应短小稳定，用于历史工具输出虚拟化后的 metadata，而不是长篇推理。
-                    -当缺少用户账号、用户名、仓库名、组织名、权限范围等无法从工具可靠确定的信息时，必须调用 ask_user 询问；可以用 choice 给出可选项；禁止从本地路径、Linux 用户名、项目名或历史猜测推断用户身份。
-                    -MCP discovery 工具统一使用 offset/limit 分页；call_mcp_tool 的 read 风险工具默认放行，write/destructive/network/admin/unknown 风险工具经 hook 请求用户确认，若用户拒绝则按工具结果继续处理。
-
-                    ***Work Context Sufficiency Protocol***
-                    Before producing the final answer, evaluate whether the current Working Context is sufficient to answer correctly.
-                    Only recover additional context when unavailable historical information may influence correctness. Do not perform recovery as a formality for simple questions, general reasoning, translation, summarization, or answers that are already fully supported by the visible context.
-                    If a user asks for a tool result or fact that is already visible in the current conversation, answer from the visible context directly; do not call BatchRecoverContext, SearchRecoverableContext, SearchSessionHistory, or GetRecentConversationTurns.
-                    Never invent context_id values from tool names, arguments, offsets, or memory. Use recovery by id only when an exact id is visible in a recoverable reference or search result.
-                    Evidence First Rule: never infer facts that could be verified by available historical context. If historical tool outputs, previously read file contents, command outputs, test results, prior decisions, constraints, or virtualized context may affect the answer, recover the relevant evidence before answering.
-                    Historical tool outputs may have been virtualized. Recover additional context only if required for correctness.
-                    Use the most appropriate recovery tool according to the current task:
-                    -Use BatchRecoverContext with items when one or more relevant context_id values are already visible or known.
-                    -Use SearchRecoverableContext when you need to locate historical tool outputs or virtualized context by topic, file, command, error, keyword, or decision.
-                    -Use SearchSessionHistory when you need to search historical conversation turns.
-                    -Use GetRecentConversationTurns when you need to understand the recent conversation structure before deciding what evidence matters.
-                    Do not follow a fixed recovery sequence. Choose only the recovery tool that best matches the missing evidence.
-                    After each recovery, re-evaluate whether the current Working Context is now sufficient. If it is still insufficient and more relevant evidence is available, continue recovering. Only produce the final answer when sufficient evidence has been collected, or when the needed evidence is unavailable and that limitation is explicitly stated.
-
-                    ***Working Context Epoch Protocol***
-                    Related user requests may share a multi-turn hot working context whose file contents and tool results remain visible.
-                    Do not call CommitWorkingContext while the user is likely to continue the same implementation, debugging, review, or analysis task.
-                    You are responsible for semantic working-context switches. Call CommitWorkingContext when the current task is complete, the user explicitly closes/switches work, or several recent requests have clearly formed a new task that no longer needs the prior hot context.
-                    Runtime only forces CommitWorkingContext when the hot working context exceeds its budget; do not expect runtime to infer topic drift.
-                    The commit is deferred until the current assistant turn is fully complete, so continue using the visible context normally after calling it.
-                    CommitWorkingContext is a hot-to-cold epoch rotation control, not a checkpoint or rollover summary generator. Provide a concise reason, optional commit_note, important active_files, and any context_id values worth retaining; do not generate a dense task-history summary just for this tool.
-
-                    ***Runtime Context Input Protocol***
-                    A current user message may contain a structured wrapper with <RUNTIME_CONTEXT> and <USER_REQUEST>.
-                    Treat <RUNTIME_CONTEXT> as current-turn environment state only. It is not a user request; do not answer, summarize, or repeat it directly.
-                    Use <RUNTIME_CONTEXT> only when it affects the correctness of the <USER_REQUEST>.
-                    If you use a long_term_memory skill_candidate from <RUNTIME_CONTEXT> to guide this task, include uses_memory_uid=<memory_uid> in a relevant tool intent. Do not include it when you did not use that candidate.
-                    Treat <USER_REQUEST> as the user's actual request.
-                    Runtime Context is temporary for the current inference turn. When the turn becomes historical, rely on the original user request and recover historical evidence with tools when needed.
-
-                    ***Git安全协议***
-                    Git 安全协议：
-                    -绝不修改 git config
-                    -绝不执行破坏性 git 命令（push --force、reset --hard、checkout .、clean -f），除非用户明确要求
-                    -绝不跳过 hooks（--no-verify），除非用户明确要求
-                    -绝不 force push 到 main/master 分支，如果用户要求则发出警告
-
-                    关键：始终创建新的 commit（NEW commit），而不是用 --amend 修改。
-                    当 pre-commit hook 失败时，commit 实际上并没有发生——所以
-                    --amend 会修改上一个（不相关的）commit，可能导致代码丢失。
-                    正确做法是：修复问题后创建一个新的 commit。
-
-                    ***输出风格***
-                    对于简单问题，你可以直奔重点，但是对于稍显复杂的问题，你必须先列一个计划，然后按照计划执行，并根据计划的执行结果选择优化计划继续执行或直接回答。
-                    工具调用之间的文字不超过 25 个词。默认最终回复不超过 100 个词。
-                    当用户明确要求查看文件内容、代码、日志或命令输出时，可以完整展示必要内容，不受 100 个词限制。
-                    先给出答案或行动，而不是推理过程。跳过填充词、开场白和不必要的过渡句。不要复述用户说过的话——直接做就行。
-                    """
-                    + ("\n***SKILL 工具检索***\n" + skill_hint if skill_hint else "")
-                ),  # 结束 system content 字符串拼接。
-            },  # 结束 system 消息对象。
-        ]  # 完成初始消息列表。
-
     # A cancelled previous turn may have persisted an assistant tool request
     # without all matching tool results. Remove it before the next API call.
     if remove_trailing_incomplete_tool_call(messages):
@@ -782,17 +664,17 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         if lines:
             print_token_block(*lines)
 
-    def record_long_term_turn_usage(success: bool) -> None:
+    async def record_long_term_turn_usage(success: bool) -> None:
         if long_term_memory_runtime is None or not session_id:
             return
-        long_term_memory_runtime.record_turn_usage_and_maybe_prompt_skill_promotion(
+        await long_term_memory_runtime.record_turn_usage_and_maybe_prompt_skill_promotion(
             session_id=session_id,
             messages=messages,
             turn_start_index=turn_start,
             success=success,
         )
 
-    if append_project_graph_bootstrap_if_needed(messages, project_graph, work_mode=work_mode):
+    if await append_project_graph_bootstrap_if_needed(messages, project_graph, work_mode=work_mode):
         save_session_state(sync=True)
 
     turn_start = len(messages)
@@ -823,7 +705,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         work_mode=work_mode,
         capabilities=capability_result,
         project_graph=project_graph,
-        code_intelligence=code_intelligence,
         long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else None,
     ).build()
     round_messages = list(messages)
@@ -948,7 +829,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             round_messages.append(interrupted_message)
             save_session_state(sync=True)
             print_turn_token_summary()
-            record_long_term_turn_usage(False)
+            await record_long_term_turn_usage(False)
             end_skill_turn()
             return interruption_text, messages
         if assistant_text.startswith("Error: API ") and not tool_calls:
@@ -970,7 +851,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 del messages[turn_start:]  # 本轮除用户消息外没有任何进展，回滚到干净状态。
             save_session_state(sync=True)
             print_turn_token_summary()
-            record_long_term_turn_usage(False)
+            await record_long_term_turn_usage(False)
             end_skill_turn()
             return assistant_text, messages
 
@@ -1002,7 +883,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
 
         if not tool_calls:  # 如果模型没有请求工具，说明本轮任务已经完成。
             print_turn_token_summary()
-            record_long_term_turn_usage(True)
+            await record_long_term_turn_usage(True)
             end_skill_turn()
             return assistant_text, messages  # 返回最终文本和完整消息历史给调用方。
 
@@ -1106,69 +987,14 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             round_messages.append(interrupted_message)
             save_session_state(sync=True)
             print_turn_token_summary()
-            record_long_term_turn_usage(False)
+            await record_long_term_turn_usage(False)
             end_skill_turn()
             return interruption_text, messages
 
     print_turn_token_summary()
-    record_long_term_turn_usage(False)
+    await record_long_term_turn_usage(False)
     end_skill_turn()
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。
-
-
-class _LegacyClientProvider:
-    """Compatibility shim for older tests/callers that still pass a raw client."""
-
-    def __init__(self, raw_client: Any, model: str = "legacy-model") -> None:
-        self.raw_client = raw_client
-        self.model = model
-
-    async def stream_chat(self, request: ChatRequest) -> Any:
-        kwargs: dict[str, Any] = {}
-        if request.display is not True:
-            kwargs["display"] = request.display
-        if request.output_label != "模型":
-            kwargs["output_label"] = request.output_label
-        if request.cancel_event is not None:
-            kwargs["cancel_event"] = request.cancel_event
-        if request.bash_classifier is not None:
-            kwargs["bash_classifier"] = request.bash_classifier
-        if request.extra_body is not None:
-            kwargs["extra_body"] = request.extra_body
-        return await stream_one_round(
-            self.raw_client,
-            self.model,
-            request.messages,
-            request.tools,
-            **kwargs,
-        )
-
-
-class _LegacyClientModelManager:
-    def __init__(self, raw_client: Any, model: str = "legacy-model") -> None:
-        self.active_model = model
-        self._provider = _LegacyClientProvider(raw_client, model)
-
-    def active_provider(self) -> _LegacyClientProvider:
-        return self._provider
-
-
-async def ask_deepseek(
-    client: Any,
-    prompt: str,
-    registry: ToolRegistry,
-    tools: list[dict[str, Any]],
-    messages: list[dict[str, Any]] | None = None,
-    **kwargs: Any,
-) -> tuple[str, list[dict[str, Any]]]:
-    return await ask_model(
-        _LegacyClientModelManager(client),
-        prompt,
-        registry,
-        tools,
-        messages,
-        **kwargs,
-    )
 
 
 def should_generate_summary(
@@ -1239,14 +1065,19 @@ async def main() -> None:  # 提供一个直接运行 `client.py` 时使用的�
         "读取目录下全部文件内容，并用中文总结这个项目，最后写入README.md文件中。"  # 测试需求文本。
     )  # 结束 prompt 字符串。
 
-    registry = create_default_registry()  # 创建默认工具注册表，包含文件读写、搜索和 Docker Bash。
+    from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
+
+    registry = create_default_registry(
+        bash_policy_evaluator=BashPolicyEvaluator(BashPolicyStore(CONFIG.memory.db_path))
+    )  # 创建默认工具注册表，包含文件读写、搜索和 Docker Bash。
     raw_tools = registry.get_all_schemas("openai")  # 从注册表拿到 OpenAI 协议方向的原始工具 schema。
     tools = format_openai_tools(raw_tools)  # 确保工具 schema 满足 Chat Completions 的 tools 参数格式。
 
     model_manager = ModelManager()
 
     print(f"提问：{prompt}", flush=True)  # 在终端显示测试 prompt。
-    result, messages = await ask_model(model_manager, prompt, registry, tools)  # 执行完整 agent 循环，得到最终回答和历史消息。
+    messages = create_initial_messages(registry)
+    result, messages = await ask_model(model_manager, prompt, registry, tools, messages)  # 执行完整 agent 循环，得到最终回答和历史消息。
     print(f"结果：{result}", flush=True)  # 打印模型最终回答。
 
     await model_manager.close()  # 关闭异步 HTTP 客户端连接，释放网络资源。

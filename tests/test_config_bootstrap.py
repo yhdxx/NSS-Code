@@ -66,56 +66,6 @@ def test_bootstrap_creates_user_config_and_readme(tmp_path):
     assert readme_path.read_text(encoding="utf-8") == "# 配置教程\n"
 
 
-def test_bootstrap_migrates_legacy_state_resources_to_user_root(tmp_path):
-    home = tmp_path / "home"
-    repo = _fake_repo(tmp_path)
-    legacy_state = home / ".local" / "state" / "myCodingAgent"
-    legacy_state.mkdir(parents=True)
-    (legacy_state / "sessions.sqlite3").write_text("session-db", encoding="utf-8")
-    (legacy_state / "code_index.sqlite3").write_text("index-db", encoding="utf-8")
-
-    result = bootstrap_user_config(home=home, repo_root=repo)
-
-    new_state = home / ".mycodingagent" / "state"
-    assert (new_state / "sessions.sqlite3").read_text(encoding="utf-8") == "session-db"
-    assert (new_state / "code_index.sqlite3").read_text(encoding="utf-8") == "index-db"
-    assert not (legacy_state / "sessions.sqlite3").exists()
-    assert not (legacy_state / "code_index.sqlite3").exists()
-    assert any("已迁移旧 state 资源" in message for message in result.messages)
-
-
-def test_bootstrap_migrates_legacy_mcp_config_to_user_root(tmp_path):
-    home = tmp_path / "home"
-    repo = _fake_repo(tmp_path)
-    legacy_mcp = home / ".config" / "myCodingAgent" / "mcp.json"
-    legacy_mcp.parent.mkdir(parents=True)
-    legacy_mcp.write_text('{"servers": {}}', encoding="utf-8")
-
-    result = bootstrap_user_config(home=home, repo_root=repo)
-
-    new_mcp = home / ".mycodingagent" / "mcp.json"
-    assert new_mcp.read_text(encoding="utf-8") == '{"servers": {}}'
-    assert not legacy_mcp.exists()
-    assert any("已迁移旧用户级 MCP 配置" in message for message in result.messages)
-
-
-def test_bootstrap_keeps_legacy_resource_when_new_target_exists(tmp_path):
-    home = tmp_path / "home"
-    repo = _fake_repo(tmp_path)
-    legacy_state = home / ".local" / "state" / "myCodingAgent"
-    legacy_state.mkdir(parents=True)
-    (legacy_state / "sessions.sqlite3").write_text("old", encoding="utf-8")
-    new_state = home / ".mycodingagent" / "state"
-    new_state.mkdir(parents=True)
-    (new_state / "sessions.sqlite3").write_text("new", encoding="utf-8")
-
-    result = bootstrap_user_config(home=home, repo_root=repo)
-
-    assert (new_state / "sessions.sqlite3").read_text(encoding="utf-8") == "new"
-    assert (legacy_state / "sessions.sqlite3").read_text(encoding="utf-8") == "old"
-    assert any("新 state 已存在同名资源" in warning for warning in result.warnings)
-
-
 def test_bootstrap_preserves_existing_valid_config(tmp_path):
     home = tmp_path / "home"
     repo = _fake_repo(tmp_path)
@@ -144,7 +94,7 @@ def test_bootstrap_preserves_existing_valid_config(tmp_path):
     assert result.recreated_invalid_config is False
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["model"]["providers"]["qwen"]["api"] == "keep"
-    assert config["client"]["max_tool_rounds"] == 50
+    assert "client" not in config
 
 
 def test_bootstrap_backs_up_and_recreates_invalid_config(tmp_path):

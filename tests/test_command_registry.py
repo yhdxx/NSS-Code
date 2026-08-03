@@ -4,6 +4,8 @@ import asyncio
 import json
 
 from mycodingagent.commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
+from mycodingagent.code_intelligence.project_graph_runtime import BootstrapUpdate
+from mycodingagent.work_mode import WorkMode, WorkModeManager
 from mycodingagent.commands import handlers
 from mycodingagent.terminal_ui.history import format_history_message
 
@@ -124,15 +126,17 @@ def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, 
         def set_work_mode(self, value: str) -> None:
             self.work_mode = value
 
-    class FakeGraphService:
+    class FakeGraphRuntime:
         def __init__(self) -> None:
-            self.status_called = False
+            self.activate_called = False
 
-        def status(self) -> dict[str, int]:
-            self.status_called = True
+        async def activate(self, progress) -> dict[str, int]:
+            self.activate_called = True
+            progress("正在刷新静态代码索引...")
+            work_mode.commit(WorkMode.CODE)
             return {"modules": 2, "units": 3}
 
-        def bootstrap_messages(self) -> list[dict]:
+        async def prepare_bootstrap(self, messages, *, force=False):
             payload = {
                 "bootstrap": True,
                 "generation": 7,
@@ -162,7 +166,7 @@ def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, 
                 "generation": 7,
                 "navigation_hash": "nav-1",
             }
-            return [
+            pair = [
                 {
                     "role": "assistant",
                     "tool_calls": [
@@ -187,35 +191,60 @@ def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, 
                     "metadata": metadata,
                 },
             ]
-
-    class FakeTool:
-        def __init__(self, service: FakeGraphService) -> None:
-            self._service = service
-
-    class FakeRegistry:
-        def __init__(self, service: FakeGraphService) -> None:
-            self._tool = FakeTool(service)
-
-        def get(self, name: str) -> FakeTool | None:
-            return self._tool if name == "ProjectArchitecture" else None
+            return BootstrapUpdate(tuple(pair), payload, "nav-1")
 
     memory_runtime = FakeMemoryRuntime()
-    graph_service = FakeGraphService()
+    work_mode = WorkModeManager(WorkMode.GENERAL, persist=memory_runtime.set_work_mode)
+    graph_runtime = FakeGraphRuntime()
     messages = [{"role": "system", "content": "system"}]
-    context = CommandContext(memory_runtime, None, messages, registry=FakeRegistry(graph_service))
-    monkeypatch.setattr(handlers, "coordinated_input", lambda prompt: "code")
+    context = CommandContext(
+        memory_runtime,
+        None,
+        messages,
+        work_mode=work_mode,
+        project_graph_runtime=graph_runtime,
+    )
+    async def choose_code(prompt):
+        return "code"
+
+    monkeypatch.setattr(handlers, "request_text", choose_code)
 
     result = asyncio.run(handlers.handle_mode_command(context, ""))
 
     assert result.messages is messages
     assert memory_runtime.work_mode == "code"
-    assert graph_service.status_called
+    assert graph_runtime.activate_called
     assert len(messages) == 3
     assert messages[-1]["metadata"]["project_graph_bootstrap"] is True
     output = capsys.readouterr().out
     assert "[项目图谱] Code 模式已就绪：2 个模块，3 个单位。" in output
     assert "[项目图谱] Bootstrap" in output
     assert "pkg" in output
+
+
+def test_mode_code_does_not_repeat_initialization_when_already_active(monkeypatch, capsys):
+    class FakeGraphRuntime:
+        async def activate(self, progress):
+            raise AssertionError("active Code mode must not initialize again")
+
+    async def choose_code(prompt):
+        return "code"
+
+    work_mode = WorkModeManager(WorkMode.CODE)
+    context = CommandContext(
+        None,
+        None,
+        [{"role": "system", "content": "system"}],
+        work_mode=work_mode,
+        project_graph_runtime=FakeGraphRuntime(),
+    )
+    monkeypatch.setattr(handlers, "request_text", choose_code)
+
+    asyncio.run(handlers.handle_mode_command(context, ""))
+
+    output = capsys.readouterr().out
+    assert "当前已处于 Code 模式" in output
+    assert "Code 模式初始化开始" not in output
 
 
 def test_history_message_formatting_skips_system_and_folds_tool_output():

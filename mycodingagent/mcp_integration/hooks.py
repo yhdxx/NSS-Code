@@ -4,7 +4,7 @@ import json
 from dataclasses import dataclass, field
 
 from mycodingagent.mcp_integration.policy import MCPApprovalDecision, MCPApprovalRequest
-from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
+from mycodingagent.terminal_ui.application import SharedTerminalInput, TerminalCancelled, TerminalInput
 
 USER_DENIED_MESSAGE = "用户拒绝你的工具调用"
 
@@ -30,7 +30,7 @@ class MCPServerLaunchHook:
 
 
 class CLILaunchApprovalHook(MCPServerLaunchHook):
-    def __init__(self, coordinator: TerminalInputCoordinator) -> None:
+    def __init__(self, coordinator: TerminalInput) -> None:
         self.coordinator = coordinator
         self._approved: set[str] = set()
 
@@ -47,7 +47,7 @@ class CLILaunchApprovalHook(MCPServerLaunchHook):
         )
         try:
             answer = await self.coordinator.read_choice("启动该 MCP Server 吗？[y/N]：", allowed={"y", "yes"})
-        except PromptCancelled:
+        except TerminalCancelled:
             return MCPApprovalDecision(allowed=False, reason="用户取消")
         if answer in {"y", "yes"}:
             self._approved.add(request.server)
@@ -57,7 +57,7 @@ class CLILaunchApprovalHook(MCPServerLaunchHook):
 
 @dataclass
 class CLIApprovalHook(MCPToolApprovalHook):
-    coordinator: TerminalInputCoordinator = field(default_factory=TerminalInputCoordinator)
+    coordinator: TerminalInput = field(default_factory=SharedTerminalInput)
     max_argument_chars: int = 2000
     _always_allowed: set[tuple[str, str, str]] = field(default_factory=set)
 
@@ -79,7 +79,7 @@ class CLIApprovalHook(MCPToolApprovalHook):
             answer = await self.coordinator.read_choice(
                 "允许本次 MCP 工具调用吗？[y/N/a]：", allowed={"y", "yes", "a", "always"}
             )
-        except PromptCancelled:
+        except TerminalCancelled:
             answer = ""
         if answer in {"a", "always"}:
             self._always_allowed.add(approval_key)

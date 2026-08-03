@@ -41,7 +41,7 @@ METRIC_SPECS: dict[str, dict[str, Any]] = {
     },
     "runtime_context_virtualization": {
         "title": "真实 Runtime 上下文虚拟化评测",
-        "definition": "通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw 质量参考、Claude-style 压缩基线、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。",
+        "definition": "通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_model 调用链，对比 raw 质量参考、Claude-style 压缩基线、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。",
         "formulas": [
             "任务成功率 = 正确回答隐藏历史证据锚点的运行数 / 总运行数",
             "Raw 仅作为无压缩质量参考，不作为降本基线",

@@ -34,8 +34,7 @@
     "debug": false,
     "step_token": true,
     "round_token": true,
-    "conversation_token": true,
-    "legacy_system_prompt": false
+    "conversation_token": true
   },
   "multi_agent": {
     "max_agent_rounds": 50,
@@ -144,7 +143,7 @@
     "vector_sync_max_retries": 3
   },
   "embedding": {
-    "provider": "bge_http",
+    "provider": "http",
     "model": "bge-m3",
     "endpoint": "http://127.0.0.1:11434/api/embed",
     "api_format": "ollama",

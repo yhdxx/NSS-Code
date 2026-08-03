@@ -1,21 +1,12 @@
 from __future__ import annotations
 
-import asyncio
 import json
-from typing import Any
 
 from pydantic import BaseModel, Field
 
-from mycodingagent.code_intelligence.project_graph import ProjectGraphService
+from mycodingagent.code_intelligence.project_graph_runtime import ProjectGraphRuntime
 from mycodingagent.tool_runtime.base import Tool, ToolResult
-
-
-class UnavailableProjectGraphService:
-    """Schema-only backend used when an embedding does not configure project graphs."""
-
-    @staticmethod
-    def work_mode_provider() -> str:
-        return "general"
+from mycodingagent.work_mode import WorkMode
 
 
 class ProjectGraphParams(BaseModel):
@@ -44,8 +35,8 @@ class _ProjectGraphTool(Tool):
     category = "read"
     is_concurrency_safe = True
 
-    def __init__(self, service: ProjectGraphService) -> None:
-        self._service = service
+    def __init__(self, runtime: ProjectGraphRuntime) -> None:
+        self._runtime = runtime
 
     def _mode_error(self) -> ToolResult:
         return ToolResult(
@@ -60,7 +51,7 @@ class _ProjectGraphTool(Tool):
         )
 
     def _allowed(self) -> bool:
-        return self._service.work_mode_provider() == "code"
+        return self._runtime.current_mode is WorkMode.CODE
 
 
 class ProjectArchitectureTool(_ProjectGraphTool):
@@ -71,8 +62,7 @@ class ProjectArchitectureTool(_ProjectGraphTool):
     async def execute(self, params: ProjectGraphParams) -> ToolResult:
         if not self._allowed():
             return self._mode_error()
-        payload = await asyncio.to_thread(
-            self._service.architecture,
+        payload = await self._runtime.architecture(
             params.module,
             depth=params.depth,
             bootstrap=params.bootstrap,
@@ -90,7 +80,7 @@ class UnitDependencyGraphTool(_ProjectGraphTool):
             return self._mode_error()
         if not params.module.strip():
             return ToolResult(json.dumps({"error_code": "module_required", "error": "必须指定模块名称或 ID"}, ensure_ascii=False), is_error=True)
-        payload = await asyncio.to_thread(self._service.dependency_graph, params.module)
+        payload = await self._runtime.dependency_graph(params.module)
         return ToolResult(json.dumps(payload, ensure_ascii=False, indent=2), is_error="error_code" in payload)
 
 
@@ -103,16 +93,11 @@ class UpdateProjectDescriptionTool(_ProjectGraphTool):
         if not self._allowed():
             return self._mode_error()
         if params.updates:
-            payload = await asyncio.to_thread(
-                self._service.update_descriptions,
-                [
-                    item.model_dump() if hasattr(item, "model_dump") else item.dict()
-                    for item in params.updates
-                ],
+            payload = await self._runtime.update_descriptions(
+                [item.model_dump() for item in params.updates],
             )
         else:
-            payload = await asyncio.to_thread(
-                self._service.update_description,
+            payload = await self._runtime.update_description(
                 params.target,
                 params.description,
                 params.content_hash,

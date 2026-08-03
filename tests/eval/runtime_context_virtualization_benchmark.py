@@ -8,6 +8,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tests.model_manager_stub import ask_model_with_raw_client
+
 from tests.eval.artifacts import write_jsonl
 from tests.eval.metrics import (
     bootstrap_mean_ci,
@@ -142,7 +144,12 @@ async def _run_one_case(
             await memory.drain()
         if strategy == "forced_virtualized":
             memory.force_context_virtualized(session_id)
-        registry = create_default_registry(memory_runtime=memory)
+        from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
+
+        registry = create_default_registry(
+            memory_runtime=memory,
+            bash_policy_evaluator=BashPolicyEvaluator(BashPolicyStore(db_path)),
+        )
         raw_tool_schemas = [] if strategy == COST_BASELINE_STRATEGY else registry.get_all_schemas("openai")
         tools = agent_client.format_openai_tools(raw_tool_schemas)
         api_client = AsyncOpenAI(
@@ -177,7 +184,7 @@ async def _run_one_case(
                     + "If the evidence is virtualized or hidden behind a context_id, recover it first."
                     + f"\nBenchmark run salt: {benchmark_salt}."
                 )
-            text, output_messages = await agent_client.ask_deepseek(
+            text, output_messages = await ask_model_with_raw_client(
                 api_client,
                 prompt,
                 registry,

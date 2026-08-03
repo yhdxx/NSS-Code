@@ -183,13 +183,13 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
             storage=_raw_env_str(
                 ltm_raw,
                 "storage",
-                ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE", "MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_PROFILE"),
+                ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE",),
                 active,
             ) or active,
             search=_raw_env_str(
                 ltm_raw,
                 "search",
-                ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH", "MYCODINGAGENT_LONG_TERM_MEMORY_SEARCH_PROFILE"),
+                ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH",),
                 "memory_search",
             ) or "memory_search",
         ),

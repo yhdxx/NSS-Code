@@ -3,7 +3,7 @@ from __future__ import annotations
 from dataclasses import dataclass, field
 from difflib import unified_diff
 
-from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
+from mycodingagent.terminal_ui.application import TerminalCancelled, TerminalInput
 from mycodingagent.terminal_ui.output import render_write_approval_request
 
 USER_DENIED_WRITE_MESSAGE = "用户拒绝执行该文件写入"
@@ -32,7 +32,7 @@ class WriteApprovalHook:
 
 @dataclass
 class CLIWriteApprovalHook(WriteApprovalHook):
-    coordinator: TerminalInputCoordinator
+    coordinator: TerminalInput
     max_preview_chars: int = 4000
     _always_allowed: set[str] = field(default_factory=set)
 
@@ -50,7 +50,7 @@ class CLIWriteApprovalHook(WriteApprovalHook):
             answer = await self.coordinator.read_choice(
                 "允许本次写入吗？[y/N/a]：", allowed={"y", "yes", "a", "always"}
             )
-        except PromptCancelled:
+        except TerminalCancelled:
             return WriteApprovalDecision(allowed=False, reason="用户取消")
         if answer in {"a", "always"}:
             self._always_allowed.add(request.path)

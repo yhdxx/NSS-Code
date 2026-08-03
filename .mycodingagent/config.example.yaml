@@ -30,11 +30,10 @@
 #   max_tool_output_chars: 20000
 #   api_max_retries: 3             # 环境变量：MYCODINGAGENT_API_MAX_RETRIES
 #   api_retry_base_delay: 1.0
-#   debug: false                   # 环境变量：DEBUG / MYCODINGAGENT_DEBUG
-#   step_token: true               # 环境变量：STEP_TOKEN
-#   round_token: true              # 环境变量：ROUND_TOKEN
-#   conversation_token: true       # 环境变量：CONVERSATION_TOKEN
-#   legacy_system_prompt: false    # 环境变量：MYCODINGAGENT_LEGACY_SYSTEM_PROMPT
+#   debug: false                   # 环境变量：MYCODINGAGENT_DEBUG
+#   step_token: true               # 环境变量：MYCODINGAGENT_STEP_TOKEN
+#   round_token: true              # 环境变量：MYCODINGAGENT_ROUND_TOKEN
+#   conversation_token: true       # 环境变量：MYCODINGAGENT_CONVERSATION_TOKEN
 
 # multi_agent:
 #   max_agent_rounds: 50           # 环境变量：MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS
@@ -136,7 +135,7 @@
 
 # embedding:
 #   # 隐私密钥请配置在 ~/.mycodingagent/config.json 中或通过环境变量
-#   provider: "bge_http"          # 环境变量：MYCODINGAGENT_EMBEDDING_PROVIDER
+#   provider: "http"              # 环境变量：MYCODINGAGENT_EMBEDDING_PROVIDER
 #   model: "bge-m3"              # 环境变量：MYCODINGAGENT_EMBEDDING_MODEL
 #   endpoint: "http://127.0.0.1:11434/api/embed"
 #   api_format: "ollama"

@@ -5,7 +5,7 @@
 
 ## 指标定义
 
-通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_deepseek 调用链，对比 raw 质量参考、Claude-style 压缩基线、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。
+通过真实 MemoryRuntime、工具 schema、可恢复工具输出和 ask_model 调用链，对比 raw 质量参考、Claude-style 压缩基线、forced_virtualized 与 natural 策略的质量、token 成本、缓存命中和恢复行为。
 
 ## 计算公式
 

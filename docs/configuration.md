@@ -117,11 +117,10 @@ myAgent
 | `client.max_tool_rounds` | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `50` | 单次请求最多工具调用轮数 |
 | `client.api_max_retries` | `MYCODINGAGENT_API_MAX_RETRIES` | `3` | API 调用失败重试次数 |
 | `client.api_retry_base_delay` | `MYCODINGAGENT_API_RETRY_BASE_DELAY` | `1.0` | 重试退避基础延迟（秒） |
-| `client.debug` | `DEBUG` / `MYCODINGAGENT_DEBUG` | `false` | 调试模式 |
-| `client.legacy_system_prompt` | `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT` | `false` | 使用旧版系统提示词 |
-| `client.step_token` | `STEP_TOKEN` | `true` | 显示步骤 token 计数 |
-| `client.round_token` | `ROUND_TOKEN` | `true` | 显示轮次 token 计数 |
-| `client.conversation_token` | `CONVERSATION_TOKEN` | `true` | 显示会话 token 计数 |
+| `client.debug` | `MYCODINGAGENT_DEBUG` | `false` | 调试模式 |
+| `client.step_token` | `MYCODINGAGENT_STEP_TOKEN` | `true` | 显示步骤 token 计数 |
+| `client.round_token` | `MYCODINGAGENT_ROUND_TOKEN` | `true` | 显示轮次 token 计数 |
+| `client.conversation_token` | `MYCODINGAGENT_CONVERSATION_TOKEN` | `true` | 显示会话 token 计数 |
 
 ### 4.3 `multi_agent` — 多智能体
 
@@ -205,14 +204,14 @@ myAgent
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `embedding.provider` | `MYCODINGAGENT_EMBEDDING_PROVIDER` | `"bge_http"` | 嵌入服务类型（`bge_http` / `openai` / `dashscope`） |
+| `embedding.provider` | `MYCODINGAGENT_EMBEDDING_PROVIDER` | `"http"` | 嵌入服务类型（`http` / `local` / `hash`） |
 | `embedding.model` | `MYCODINGAGENT_EMBEDDING_MODEL` | `"bge-m3"` | 嵌入模型名称 |
 | `embedding.endpoint` | `MYCODINGAGENT_EMBEDDING_ENDPOINT` | `"http://127.0.0.1:11434/api/embed"` | 嵌入服务端点 |
-| `embedding.api_format` | `MYCODINGAGENT_EMBEDDING_API_FORMAT` | `"ollama"` | API 格式（自动根据 provider 推断） |
+| `embedding.api_format` | `MYCODINGAGENT_EMBEDDING_API_FORMAT` | `"ollama"` | HTTP API 格式（`ollama` / `openai` / `dashscope`） |
 | **`embedding.api_key`** | **`MYCODINGAGENT_EMBEDDING_API_KEY`** | `""` | **嵌入服务 API 密钥（隐私字段）** |
 | `embedding.dimension` | `MYCODINGAGENT_EMBEDDING_DIMENSION` | `1024` | 向量维度 |
 | `embedding.batch_size` | `MYCODINGAGENT_EMBEDDING_BATCH_SIZE` | `16` | 嵌入批大小 |
-| `embedding.fallback_to_hash` | `MYCODINGAGENT_BGE_FALLBACK_TO_HASH` | `false` | 嵌入不可用时回退到哈希 |
+| `embedding.fallback_to_hash` | `MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH` | `false` | 本地嵌入不可用时回退到哈希 |
 
 ### 4.10 `milvus` — Milvus 向量库
 
@@ -262,8 +261,7 @@ myAgent
 | `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_API` / `DEEPSEEK_API_KEY` | `model.providers.deepseek.api` | string |
 | `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_BASE_URL` / `DEEPSEEK_BASE_URL` | `model.providers.deepseek.base_url` | string |
 | `MYCODINGAGENT_MODEL_ACTIVE` | `model.active` | string |
-| `DEBUG` | `client.debug` | bool |
-| `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT` | `client.legacy_system_prompt` | bool |
+| `MYCODINGAGENT_DEBUG` | `client.debug` | bool |
 | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | int |
 | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | int |
 | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `long_term_memory.enabled` | bool |
@@ -293,7 +291,7 @@ myAgent
 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
 | `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | path |
 
-首次启动会尝试把旧默认目录中的已有资源迁移到 `~/.mycodingagent`：`~/.local/state/myCodingAgent/*` 会移动到 `~/.mycodingagent/state/`，`~/.config/myCodingAgent/mcp.json` 会移动到 `~/.mycodingagent/mcp.json`。如果新路径已有同名文件，旧文件会保留并在启动输出中提示。
+启动过程不会迁移旧目录或修补旧 SQLite schema。会话、长期记忆和 Bash 策略数据库版本不兼容时会直接报出数据库路径；请先备份并删除旧库，由当前版本创建新状态。代码索引和项目图谱是可重建缓存，仅在 Code 模式初始化时按当前 schema 创建或重建。
 
 ---
 
@@ -328,7 +326,7 @@ myAgent
     }
   },
   "embedding": {
-    "provider": "bge_http",
+    "provider": "http",
     "model": "bge-m3",
     "endpoint": "http://127.0.0.1:11434/api/embed",
     "api_format": "ollama",

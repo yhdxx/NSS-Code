@@ -14,9 +14,9 @@ from typing import Awaitable, Callable, Literal
 from tree_sitter_language_pack import get_parser
 
 from mycodingagent.configuration import CONFIG
-from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
+from mycodingagent.terminal_ui.application import SharedTerminalInput, TerminalCancelled, TerminalInput
 from mycodingagent.terminal_ui.output import render_command_approval_request
-from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY, require_component_schema
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from pydantic import BaseModel
 
@@ -25,6 +25,7 @@ ExecutionRisk = Literal["read", "write", "network", "process", "dangerous", "unk
 PolicyLevel = Literal["low", "approval", "high"]
 LOCK_KEY = "bash_policy:global"
 DEFAULT_LOCK_TTL_SECONDS = 120
+BASH_POLICY_SCHEMA_VERSION = 1
 
 USER_DENIED_COMMAND_MESSAGE = "用户拒绝执行该命令"
 
@@ -230,6 +231,13 @@ class BashPolicyStore:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            require_component_schema(
+                conn,
+                db_path=self.db_path,
+                component="bash_policy",
+                version=BASH_POLICY_SCHEMA_VERSION,
+                owned_tables=tuple(self.TABLES.values()),
+            )
             for table in self.TABLES.values():
                 conn.execute(
                     f"CREATE TABLE IF NOT EXISTS {table} ("
@@ -237,9 +245,6 @@ class BashPolicyStore:
                     "source TEXT NOT NULL, reason TEXT NOT NULL DEFAULT '', confidence REAL NOT NULL DEFAULT 1.0, "
                     "created_at REAL NOT NULL, updated_at REAL NOT NULL, version_id TEXT NOT NULL DEFAULT '')"
                 )
-                columns = {row[1] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-                if "version_id" not in columns:
-                    conn.execute(f"ALTER TABLE {table} ADD COLUMN version_id TEXT NOT NULL DEFAULT ''")
             conn.execute(
                 "CREATE TABLE IF NOT EXISTS bash_policy_versions ("
                 "version_id TEXT PRIMARY KEY, parent_version_id TEXT NOT NULL, status TEXT NOT NULL, "
@@ -633,7 +638,7 @@ class CommandApprovalHook:
 
 @dataclass
 class CLICommandApprovalHook(CommandApprovalHook):
-    coordinator: TerminalInputCoordinator = field(default_factory=TerminalInputCoordinator)
+    coordinator: TerminalInput = field(default_factory=SharedTerminalInput)
     max_command_chars: int = 2000
 
     async def approve(self, request: CommandApprovalRequest) -> CommandApprovalDecision:
@@ -650,7 +655,7 @@ class CLICommandApprovalHook(CommandApprovalHook):
             answer = await self.coordinator.read_choice(
                 "允许执行该命令吗？[y/N]：", allowed={"y", "yes"}
             )
-        except PromptCancelled:
+        except TerminalCancelled:
             return CommandApprovalDecision(allowed=False, reason="用户取消")
         if answer in {"y", "yes"}:
             return CommandApprovalDecision(allowed=True, reason="用户批准")

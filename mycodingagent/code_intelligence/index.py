@@ -106,16 +106,28 @@ class WorkspaceCodeIndex:
         self.workspace_root = workspace_root.resolve(strict=False)
         self.agent_ignore = AgentIgnore(self.workspace_root)
         self.db_path = Path(db_path).expanduser()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.max_files = max_files
         self._lock = RLock()
         self._dirty_paths: set[str] = set()
         self._ready = False
+        self._initialized = False
         self._generation = 0
-        self._init_db()
 
     def status(self) -> dict[str, Any]:
-        with self._lock, self._connect() as conn:
+        with self._lock:
+            if not self._initialized:
+                return {
+                    "available": False,
+                    "schema_version": CODE_INDEX_SCHEMA_VERSION,
+                    "generation": 0,
+                    "indexed_files": 0,
+                    "languages": sorted(set(LANGUAGE_BY_SUFFIX.values())),
+                    "ready": False,
+                }
+            return self._status_payload()
+
+    def _status_payload(self) -> dict[str, Any]:
+        with self._connect() as conn:
             count = int(conn.execute("SELECT COUNT(*) FROM code_files").fetchone()[0])
             return {
                 "available": True,
@@ -135,6 +147,7 @@ class WorkspaceCodeIndex:
 
     def query(self, operation: str, **kwargs: Any) -> dict[str, Any]:
         with self._lock:
+            self._ensure_storage()
             if self._ready:
                 self._reconcile_indexed_paths()
             refresh = self.refresh()
@@ -147,6 +160,7 @@ class WorkspaceCodeIndex:
     def static_graph_snapshot(self) -> dict[str, Any]:
         """Return parser facts for internal graph builders after one index refresh."""
         with self._lock:
+            self._ensure_storage()
             if self._ready:
                 self._reconcile_indexed_paths()
             self.refresh()
@@ -201,6 +215,7 @@ class WorkspaceCodeIndex:
 
     def refresh(self, *, force_full: bool = False) -> dict[str, int]:
         with self._lock:
+            self._ensure_storage()
             full = force_full or not self._ready
             if full:
                 result = self._refresh_full()
@@ -679,6 +694,13 @@ class WorkspaceCodeIndex:
             )
             generation = conn.execute("SELECT value FROM code_index_meta WHERE key = 'generation'").fetchone()
             self._generation = int(generation[0]) if generation else 0
+
+    def _ensure_storage(self) -> None:
+        if self._initialized:
+            return
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+        self._initialized = True
 
     def _set_meta(self, key: str, value: str) -> None:
         with self._connect() as conn:

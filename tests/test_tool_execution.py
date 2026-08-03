@@ -8,6 +8,7 @@ from pydantic import BaseModel
 from mycodingagent.llm_runtime.client import execute_local_tool
 from mycodingagent.multi_agent.models import AgentRole, MultiAgentRun
 from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
+from tests.model_manager_stub import RawClientModelManager
 from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
@@ -58,7 +59,10 @@ def test_subagent_does_not_sniff_error_text(tmp_path):
     run = MultiAgentRun.create(task="test shared execution")
     store.save_run(run)
     orchestrator = MultiAgentOrchestrator(
-        store=store, registry=registry, api_client=object(), memory_runtime=None
+        store=store,
+        registry=registry,
+        model_manager=RawClientModelManager(object()),
+        memory_runtime=None,
     )
 
     result = asyncio.run(

@@ -7,6 +7,7 @@ from pathlib import Path
 import sqlite3
 import sys
 import types
+import pytest
 from types import SimpleNamespace
 from time import time
 
@@ -25,6 +26,7 @@ except ModuleNotFoundError:
     sys.modules["openai"] = openai_stub
 
 from mycodingagent.llm_runtime import client as agent_client
+from mycodingagent.code_intelligence.project_graph_runtime import BootstrapUpdate
 from mycodingagent.configuration import CONFIG
 from mycodingagent.memory import (
     ContextEpochStatus,
@@ -46,6 +48,7 @@ from mycodingagent.memory.stores import session_preview
 from mycodingagent.memory.message_filters import is_skill_related_tool, persistent_assistant_tool_message
 from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
 from mycodingagent.skill_runtime.session_skill_cache import SessionSkillCache
+from mycodingagent.sqlite_utils import IncompatibleSchemaError
 from mycodingagent.llm_runtime.context import (
     PromptRenderer,
     RuntimeContextBuilder,
@@ -54,6 +57,8 @@ from mycodingagent.llm_runtime.context import (
 )
 from mycodingagent.tool_runtime import create_default_registry
 from mycodingagent.tool_runtime.execution import ToolExecution
+from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
+from tests.model_manager_stub import ask_model_with_raw_client
 from mycodingagent.tool_runtime.memory_lookup import (
     CommitWorkingContext,
     CommitWorkingContextParams,
@@ -107,17 +112,17 @@ class WorkspaceTrackerStub:
         return [], 0
 
 
-def test_runtime_context_exposes_code_intelligence_availability():
+def test_runtime_context_exposes_project_graph_availability():
     payload = {
         "index": {"available": True, "generation": 3},
         "lsp": {"languages": {"python": {"available": False}}},
     }
 
     rendered = PromptRenderer.render_current_user_message(
-        RuntimeContextBuilder(code_intelligence=payload).build(), "inspect code"
+        RuntimeContextBuilder(project_graph=payload).build(), "inspect code"
     )
 
-    assert json.loads(rendered.runtime_context_json)["code_intelligence"] == payload
+    assert json.loads(rendered.runtime_context_json)["project_graph"] == payload
 
 
 def test_build_round_tools_falls_back_to_default_tools():
@@ -128,7 +133,7 @@ def test_build_round_tools_falls_back_to_default_tools():
     assert resolved is default_tools
 
 
-def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch):
+def test_ask_model_reuses_turn_tools_and_omits_temporary_system_from_history(monkeypatch):
     async def scenario():
         tools_seen = []
         messages_seen = []
@@ -163,8 +168,8 @@ def test_ask_deepseek_reuses_turn_tools_and_omits_temporary_system_from_history(
 
         history = [{"role": "system", "content": "fixed system"}]
         tracker = WorkspaceTrackerStub(["changed.py"])
-        _text, updated = await agent_client.ask_deepseek(
-            client=object(),
+        _text, updated = await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="do work",
             registry=object(),
             tools=[],
@@ -249,12 +254,13 @@ def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypa
 
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
 
-        _text, updated = await agent_client.ask_deepseek(
-            client=object(),
+        registry = SimpleNamespace(get=lambda _name: None)
+        _text, updated = await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="hello",
-            registry=object(),
+            registry=registry,
             tools=[],
-            messages=None,
+            messages=agent_client.create_initial_messages(registry),
         )
 
         system_prompt = seen_messages[0][0]["content"]
@@ -303,13 +309,13 @@ def test_recovery_protocol_forbids_recovering_visible_context(monkeypatch):
 
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
 
-        history = [{"role": "user", "content": "visible tool result"}]
-        await agent_client.ask_deepseek(
-            client=object(),
+        registry = SimpleNamespace(get=lambda _name: None)
+        await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="repeat visible result",
-            registry=object(),
+            registry=registry,
             tools=[],
-            messages=None,
+            messages=agent_client.create_initial_messages(registry),
         )
 
         system_prompt = seen_messages[0][0]["content"]
@@ -320,7 +326,7 @@ def test_recovery_protocol_forbids_recovering_visible_context(monkeypatch):
     asyncio.run(scenario())
 
 
-def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
+def test_ask_model_allows_multi_step_recovery_loop(monkeypatch):
     async def scenario():
         tool_calls_seen = []
 
@@ -352,8 +358,8 @@ def test_ask_deepseek_allows_multi_step_recovery_loop(monkeypatch):
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
         monkeypatch.setattr(agent_client, "execute_local_tool", fake_execute_local_tool)
 
-        text, _updated = await agent_client.ask_deepseek(
-            client=object(),
+        text, _updated = await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="why did the build fail?",
             registry=object(),
             tools=[],
@@ -419,7 +425,7 @@ def test_token_usage_persists_and_loads_with_session(tmp_path):
     assert restored.token_usage.total_tokens == 130
 
 
-def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_path, capsys):
+def test_ask_model_records_token_usage_and_prints_summaries(monkeypatch, tmp_path, capsys):
     async def scenario():
         runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
 
@@ -439,8 +445,8 @@ def test_ask_deepseek_records_token_usage_and_prints_summaries(monkeypatch, tmp_
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
         monkeypatch.setattr(agent_client, "DEBUG", False)
 
-        text, _updated = await agent_client.ask_deepseek(
-            client=object(),
+        text, _updated = await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="hello",
             registry=object(),
             tools=[],
@@ -491,8 +497,8 @@ def test_token_output_flags_control_terminal_lines(monkeypatch, tmp_path, capsys
         monkeypatch.setattr(agent_client, "ROUND_TOKEN", round_token)
         monkeypatch.setattr(agent_client, "CONVERSATION_TOKEN", conversation_token)
 
-        text, _updated = await agent_client.ask_deepseek(
-            client=object(),
+        text, _updated = await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="hello",
             registry=object(),
             tools=[],
@@ -543,8 +549,8 @@ def test_debug_true_prints_prompt_debug(monkeypatch, capsys):
         monkeypatch.setattr(agent_client, "stream_one_round", fake_stream_one_round)
         monkeypatch.setattr(agent_client, "DEBUG", True)
 
-        return await agent_client.ask_deepseek(
-            client=object(),
+        return await ask_model_with_raw_client(
+            raw_client=object(),
             prompt="hello",
             registry=object(),
             tools=[],
@@ -627,7 +633,7 @@ def test_load_session_refreshes_expiry_clock(tmp_path):
     assert runtime.load_session(session_id) is not None
 
 
-def test_legacy_database_backfills_last_accessed_at(tmp_path):
+def test_unversioned_memory_database_is_rejected(tmp_path):
     db_path = tmp_path / "memory.sqlite3"
     updated_at = time() - 123
     with sqlite3.connect(db_path) as conn:
@@ -659,11 +665,8 @@ def test_legacy_database_backfills_last_accessed_at(tmp_path):
             ("legacy", updated_at - 1, updated_at, "test", "active", "", "", ""),
         )
 
-    store = SQLiteMemoryStore(db_path)
-    state = store.load_session("legacy")
-
-    assert state is not None
-    assert state.last_accessed_at == updated_at
+    with pytest.raises(IncompatibleSchemaError, match="Back up the database and remove it"):
+        SQLiteMemoryStore(db_path)
 
 
 def test_async_writer_persists_after_drain(tmp_path):
@@ -1126,7 +1129,12 @@ def test_search_session_history_finds_virtualized_turns(tmp_path):
 
 def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
-    registry = create_default_registry(memory_runtime=runtime)
+    registry = create_default_registry(
+        memory_runtime=runtime,
+        bash_policy_evaluator=BashPolicyEvaluator(
+            BashPolicyStore(tmp_path / "memory.sqlite3")
+        ),
+    )
 
     schemas = registry.get_all_schemas("openai")
     names = {schema["name"] for schema in schemas}
@@ -2690,7 +2698,7 @@ def test_virtualized_context_uses_live_project_graph_bootstrap():
     assert "old" not in rendered_text
 
 
-def test_project_graph_bootstrap_appends_only_when_navigation_changes(capsys):
+def test_project_graph_bootstrap_appends_runtime_update(capsys):
     def bootstrap_pair(value: str) -> list[dict]:
         payload = {
             "graph": "project_architecture",
@@ -2723,19 +2731,17 @@ def test_project_graph_bootstrap_appends_only_when_navigation_changes(capsys):
             },
         ]
 
-    class FakeGraph:
-        def __init__(self, value: str) -> None:
-            self.value = value
-
-        def bootstrap_messages(self) -> list[dict]:
-            return bootstrap_pair(self.value)
+    class FakeGraphRuntime:
+        async def prepare_bootstrap(self, messages):
+            pair = bootstrap_pair("h1")
+            return BootstrapUpdate(tuple(pair), json.loads(pair[-1]["content"]), "h1")
 
     messages = [{"role": "system", "content": "system"}]
 
-    assert agent_client.append_project_graph_bootstrap_if_needed(messages, FakeGraph("h1"), work_mode="code")
+    assert asyncio.run(
+        agent_client.append_project_graph_bootstrap_if_needed(
+            messages, FakeGraphRuntime(), work_mode="code"
+        )
+    )
     assert len(messages) == 3
-    assert not agent_client.append_project_graph_bootstrap_if_needed(messages, FakeGraph("h1"), work_mode="code")
-    assert len(messages) == 3
-    assert agent_client.append_project_graph_bootstrap_if_needed(messages, FakeGraph("h2"), work_mode="code")
-    assert len(messages) == 5
     assert "Bootstrap" in capsys.readouterr().out

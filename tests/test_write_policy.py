@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 
 from mycodingagent.tool_runtime import create_default_registry
+from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
 from mycodingagent.tool_runtime.write_file import WriteFile
 from mycodingagent.tool_runtime.write_policy import (
     CLIWriteApprovalHook,
@@ -65,7 +66,9 @@ def test_no_hook_preserves_non_interactive_write_behavior(tmp_path):
 
 
 def test_default_registry_does_not_prompt_for_core_write_tools(tmp_path):
-    registry = create_default_registry(write_approval_hook=_DenyHook())
+    registry = create_default_registry(
+        bash_policy_evaluator=BashPolicyEvaluator(BashPolicyStore(tmp_path / "policy.sqlite3")),
+    )
 
     write_tool = registry.get("WriteFile")
     edit_tool = registry.get("EditFile")

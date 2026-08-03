@@ -6,6 +6,7 @@ from pathlib import Path
 
 from mycodingagent.configuration.settings import _default_builtin_skills_root
 from mycodingagent.tool_runtime.bash import Bash
+from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
 
 
 ROOT = Path(__file__).resolve().parents[1]
@@ -129,4 +130,5 @@ def test_capability_discovery_does_not_import_mcp_implementation():
 
 def test_moved_modules_resolve_project_resources_from_repository_root(tmp_path):
     assert _default_builtin_skills_root() == ROOT / "skills"
-    assert Bash(sandbox_root=tmp_path)._find_sandbox_dockerfile() == ROOT / "Dockerfile.sandbox"
+    evaluator = BashPolicyEvaluator(BashPolicyStore(tmp_path / "policy.sqlite3"))
+    assert Bash(sandbox_root=tmp_path, policy_evaluator=evaluator)._find_sandbox_dockerfile() == ROOT / "Dockerfile.sandbox"

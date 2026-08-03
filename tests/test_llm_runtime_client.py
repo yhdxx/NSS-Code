@@ -13,6 +13,8 @@ from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_runtime.bash import Bash
+from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
+from tests.model_manager_stub import ask_model_with_raw_client
 
 
 class _Delta:
@@ -81,7 +83,12 @@ def _request() -> httpx.Request:
 
 def test_bash_display_classifier_from_registry_uses_registered_bash(tmp_path):
     registry = ToolRegistry()
-    registry.register(Bash(sandbox_root=tmp_path))
+    registry.register(
+        Bash(
+            sandbox_root=tmp_path,
+            policy_evaluator=BashPolicyEvaluator(BashPolicyStore(tmp_path / "policy.sqlite3")),
+        )
+    )
 
     classifier = client.bash_display_classifier_from_registry(registry)
 
@@ -362,8 +369,8 @@ def test_successful_output_containing_error_word_is_not_a_failure():
 # --- API failure must not discard completed work ---------------------------
 
 
-def _run_ask_deepseek(monkeypatch, stream_outcomes: list, tool_output: tuple[str, bool] = ("tool ok", False)):
-    """Drive ask_deepseek with scripted stream_one_round results, bypassing memory/skill runtimes."""
+def _run_ask_model(monkeypatch, stream_outcomes: list, tool_output: tuple[str, bool] = ("tool ok", False)):
+    """Drive ask_model with scripted stream results, bypassing memory/skill runtimes."""
     executed: list[str] = []
 
     async def fake_build_round_tools(default_tools, core_tool_schemas):
@@ -384,8 +391,8 @@ def _run_ask_deepseek(monkeypatch, stream_outcomes: list, tool_output: tuple[str
 
     history = [{"role": "system", "content": "fixed system"}]
     text, updated = asyncio.run(
-        client.ask_deepseek(
-            client=object(),
+        ask_model_with_raw_client(
+            raw_client=object(),
             prompt="do work",
             registry=object(),
             tools=[],
@@ -404,7 +411,7 @@ def test_api_failure_preserves_completed_tool_rounds(monkeypatch):
         api_error,
     ]
 
-    text, updated, executed = _run_ask_deepseek(monkeypatch, outcomes)
+    text, updated, executed = _run_ask_model(monkeypatch, outcomes)
 
     assert text.startswith("Error: API ")
     assert executed == ["FakeTool", "FakeTool"], "both tool rounds should have run"
@@ -422,7 +429,7 @@ def test_api_failure_with_no_progress_rolls_back_cleanly(monkeypatch):
     """When nothing was accomplished, the turn should roll back rather than leave a stray user message."""
     outcomes = [("Error: API connection failed: boom", [], None)]
 
-    text, updated, executed = _run_ask_deepseek(monkeypatch, outcomes)
+    text, updated, executed = _run_ask_model(monkeypatch, outcomes)
 
     assert text.startswith("Error: API ")
     assert executed == []

@@ -4,6 +4,7 @@ import asyncio
 import sqlite3
 from time import time
 
+import pytest
 from pydantic import BaseModel
 
 from mycodingagent.memory.models import ExecutionRecord, WorkspaceCheckpoint
@@ -11,6 +12,7 @@ from mycodingagent.memory.runtime import MemoryRuntime
 from mycodingagent.memory.stores import SQLiteMemoryStore
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands import handlers
+from mycodingagent.sqlite_utils import IncompatibleSchemaError
 from mycodingagent.terminal_ui.checkpoint_selector import format_checkpoint_option
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_runtime.execution import execute_tool
@@ -86,8 +88,14 @@ def test_conversation_only_rewind_keeps_workspace_snapshot(tmp_path, monkeypatch
     runtime.capture_before(path)
     path.write_text("after", encoding="utf-8")
     runtime.capture_after(path)
-    monkeypatch.setattr(handlers, "select_checkpoint_interactively", lambda checkpoints: checkpoint.checkpoint_id)
-    monkeypatch.setattr(handlers, "select_rewind_scope_interactively", lambda: "conversation")
+    async def select_checkpoint(checkpoints):
+        return checkpoint.checkpoint_id
+
+    async def select_scope():
+        return "conversation"
+
+    monkeypatch.setattr(handlers, "select_checkpoint_interactively", select_checkpoint)
+    monkeypatch.setattr(handlers, "select_rewind_scope_interactively", select_scope)
 
     result = asyncio.run(
         handlers.handle_rewind_command(
@@ -147,7 +155,7 @@ def test_expired_blob_shared_by_live_checkpoint_is_retained(tmp_path):
     assert runtime.list_workspace_checkpoints() == [second]
 
 
-def test_legacy_workspace_blobs_receive_retention_timestamp(tmp_path):
+def test_unversioned_workspace_blob_database_is_rejected(tmp_path):
     db_path = tmp_path / "legacy.sqlite3"
     with sqlite3.connect(db_path) as conn:
         conn.execute(
@@ -158,15 +166,8 @@ def test_legacy_workspace_blobs_receive_retention_timestamp(tmp_path):
             ("hash", b"content"),
         )
 
-    store = SQLiteMemoryStore(db_path)
-
-    with store._connect() as conn:
-        row = conn.execute(
-            "SELECT created_at FROM workspace_snapshot_blobs WHERE content_hash = ?",
-            ("hash",),
-        ).fetchone()
-    assert row is not None
-    assert row["created_at"] > 0
+    with pytest.raises(IncompatibleSchemaError, match=str(db_path)):
+        SQLiteMemoryStore(db_path)
 
 
 def checkpoint_file_hash(store: SQLiteMemoryStore, checkpoint_id: str) -> str:

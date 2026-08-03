@@ -1,6 +1,5 @@
 from __future__ import annotations
 
-import asyncio
 import sys
 
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
@@ -18,11 +17,13 @@ from mycodingagent.terminal_ui.checkpoint_selector import (
     select_rewind_scope_interactively,
 )
 from mycodingagent.terminal_ui.history import render_conversation_history
-from mycodingagent.terminal_ui.interrupt import PromptCancelled, coordinated_input
+from mycodingagent.terminal_ui.application import TerminalCancelled, request_selection, request_text
 from mycodingagent.terminal_ui.output import clear_terminal
+from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.multi_agent.context import run_summary_for_main_context
+from mycodingagent.work_mode import WorkMode
 
 
 def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
@@ -44,28 +45,11 @@ def _current_model_name(context: CommandContext) -> str:
         return ""
 
 
-def _choose_from_list(prompt: str, options: list[str]) -> int | None:
-    if not options:
-        return None
-    print(prompt, flush=True)
-    for index, option in enumerate(options, start=1):
-        print(f"  {index}. {option}", flush=True)
-    try:
-        answer = coordinated_input("请输入序号，或直接回车取消：").strip()
-    except (PromptCancelled, EOFError, KeyboardInterrupt):
-        return None
-    if not answer:
-        return None
-    try:
-        selected = int(answer)
-    except ValueError:
-        return None
-    if selected < 1 or selected > len(options):
-        return None
-    return selected - 1
+async def _choose_from_list(prompt: str, options: list[str]) -> int | None:
+    return await request_selection(prompt, options)
 
 
-def _select_model_profile(context: CommandContext) -> tuple[str, str | None] | None:
+async def _select_model_profile(context: CommandContext) -> tuple[str, str | None] | None:
     model_manager = context.model_manager
     if model_manager is None:
         print("模型管理器未启用，无法切换模型。", flush=True)
@@ -80,14 +64,14 @@ def _select_model_profile(context: CommandContext) -> tuple[str, str | None] | N
         print("没有找到已配置 API 的推理模型 profile。请先编辑 ~/.mycodingagent/config.json。", flush=True)
         return None
     providers = sorted(grouped)
-    provider_index = _choose_from_list("请选择厂商：", providers)
+    provider_index = await _choose_from_list("请选择厂商：", providers)
     if provider_index is None:
         print("已取消模型切换。", flush=True)
         return None
     provider_name = providers[provider_index]
     profiles = sorted(grouped[provider_name], key=lambda item: (item.model, item.key))
     profile_labels = [f"{profile.model}  ({profile.key})" for profile in profiles]
-    profile_index = _choose_from_list(f"请选择 {provider_name} 模型：", profile_labels)
+    profile_index = await _choose_from_list(f"请选择 {provider_name} 模型：", profile_labels)
     if profile_index is None:
         print("已取消模型切换。", flush=True)
         return None
@@ -104,7 +88,7 @@ def _select_model_profile(context: CommandContext) -> tuple[str, str | None] | N
             f"{option.label} ({option.name})" + (f" - {option.description}" if option.description else "")
             for option in reasoning_options
         ]
-        reasoning_index = _choose_from_list("请选择思考强度：", labels)
+        reasoning_index = await _choose_from_list("请选择思考强度：", labels)
         if reasoning_index is None:
             print("已取消模型切换。", flush=True)
             return None
@@ -113,7 +97,7 @@ def _select_model_profile(context: CommandContext) -> tuple[str, str | None] | N
 
 
 async def handle_model_command(context: CommandContext, arguments: str) -> CommandResult:
-    selected = _select_model_profile(context)
+    selected = await _select_model_profile(context)
     if selected is None:
         return CommandResult(messages=context.messages)
     profile_key, reasoning = selected
@@ -139,7 +123,7 @@ async def handle_long_mem_model_search_command(context: CommandContext, argument
 
 
 async def _handle_long_mem_model_command(context: CommandContext, *, target: str, label: str) -> CommandResult:
-    selected = _select_model_profile(context)
+    selected = await _select_model_profile(context)
     if selected is None:
         return CommandResult(messages=context.messages)
     profile_key, reasoning = selected
@@ -244,41 +228,62 @@ def build_command_registry() -> CommandRegistry:
 
 
 async def handle_mode_command(context: CommandContext, arguments: str) -> CommandResult:
-    memory_runtime = context.memory_runtime
-    if memory_runtime is None:
-        print("记忆模块未启用，无法持久化工作模式。", flush=True)
+    work_mode = context.work_mode
+    graph_runtime = context.project_graph_runtime
+    if work_mode is None or graph_runtime is None:
+        print("工作模式运行时未启用。", flush=True)
         return CommandResult()
     try:
-        answer = coordinated_input(
-            f"当前工作模式：{memory_runtime.work_mode}。请选择 General 或 Code [general/code]："
-        ).strip().lower()
-    except (PromptCancelled, EOFError, KeyboardInterrupt):
+        answer = (await request_text(
+            f"当前工作模式：{work_mode.current.value}。请选择 General 或 Code [general/code]："
+        )).strip().lower()
+    except (TerminalCancelled, EOFError, KeyboardInterrupt):
         print("已取消模式切换。", flush=True)
         return CommandResult()
     if answer not in {"general", "code"}:
         print("已取消模式切换；请输入 general 或 code。", flush=True)
         return CommandResult()
-    memory_runtime.set_work_mode(answer)
-    print(f"工作模式已切换为 {answer.title()}。", flush=True)
-    if answer == "code" and context.registry is not None:
-        graph_tool = context.registry.get("ProjectArchitecture")
-        graph_service = getattr(graph_tool, "_service", None)
-        build_graph = getattr(graph_service, "status", None)
-        if callable(build_graph):
-            print("[项目图谱] Code 模式初始化开始。", flush=True)
-            try:
-                status = await asyncio.to_thread(build_graph)
-                print(
-                    "[项目图谱] Code 模式已就绪："
-                    f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
-                    flush=True,
-                )
-                from mycodingagent.llm_runtime.client import append_project_graph_bootstrap_if_needed
-
-                append_project_graph_bootstrap_if_needed(context.messages, graph_service, work_mode="code")
-            except Exception as exc:
-                print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
+    selected = WorkMode.parse(answer)
+    if selected is WorkMode.GENERAL:
+        await graph_runtime.deactivate()
+        print("工作模式已切换为 General。", flush=True)
+        return CommandResult(messages=context.messages)
+    if work_mode.current is WorkMode.CODE:
+        print("当前已处于 Code 模式。", flush=True)
+        return CommandResult(messages=context.messages)
+    await _activate_code_mode(context, context.messages, force=work_mode.current is WorkMode.GENERAL)
     return CommandResult(messages=context.messages)
+
+
+async def _activate_code_mode(
+    context: CommandContext,
+    messages: list[dict],
+    *,
+    force: bool,
+) -> bool:
+    graph_runtime = context.project_graph_runtime
+    if graph_runtime is None:
+        return False
+    print("[项目图谱] Code 模式初始化开始。", flush=True)
+    try:
+        status = await graph_runtime.activate(
+            lambda message: print(f"[项目图谱] {message}", flush=True)
+        )
+        print(
+            "[项目图谱] Code 模式已就绪："
+            f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
+            flush=True,
+        )
+        update = await graph_runtime.prepare_bootstrap(messages, force=force)
+        if update is not None:
+            messages.extend(update.messages)
+            render_project_graph_bootstrap_tree(update.payload)
+        return True
+    except Exception as exc:
+        if context.work_mode is not None and context.work_mode.current is not WorkMode.GENERAL:
+            await graph_runtime.deactivate()
+        print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
+        return False
 
 
 async def handle_rewind_command(context: CommandContext, arguments: str) -> CommandResult:
@@ -290,11 +295,11 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
     if not checkpoints:
         print("当前会话没有可用的工作区 checkpoint。", flush=True)
         return CommandResult()
-    checkpoint_id = select_checkpoint_interactively(checkpoints)
+    checkpoint_id = await select_checkpoint_interactively(checkpoints)
     if not checkpoint_id:
         print("已取消回退。", flush=True)
         return CommandResult()
-    scope = select_rewind_scope_interactively()
+    scope = await select_rewind_scope_interactively()
     if not scope:
         print("已取消回退。", flush=True)
         return CommandResult()
@@ -307,7 +312,7 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
     if scope in {"code", "both"}:
         result = memory_runtime.rewind_workspace(checkpoint_id)
         if result.conflicts:
-            if not confirm_force_rewind(result.conflicts):
+            if not await confirm_force_rewind(result.conflicts):
                 print("已取消回退，未覆盖外部修改。", flush=True)
                 return CommandResult()
             result = memory_runtime.rewind_workspace(checkpoint_id, force=True)
@@ -334,10 +339,10 @@ async def handle_multi_agent_command(context: CommandContext, arguments: str) ->
             print("当前终端不支持交互输入多智能体任务。", flush=True)
             return CommandResult()
         try:
-            argument = coordinated_input(
+            argument = (await request_text(
                 "请输入多智能体任务，或 status / resume <run_id> / inspect <run_id>："
-            ).strip()
-        except (PromptCancelled, EOFError, KeyboardInterrupt):
+            )).strip()
+        except (TerminalCancelled, EOFError, KeyboardInterrupt):
             print("已取消多智能体操作。", flush=True)
             return CommandResult()
     use_worktree = argument.startswith("--worktree ")
@@ -456,7 +461,7 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
     include_all = arguments.strip() == "--all"
     resume_session_id = "" if include_all else arguments.strip()
     if not resume_session_id:
-        resume_session_id = select_session_interactively(memory_runtime, include_all=include_all)
+        resume_session_id = await select_session_interactively(memory_runtime, include_all=include_all)
         if not resume_session_id:
             return CommandResult()
     if resume_session_id == current_session_id and has_conversation_content(context.messages):
@@ -472,7 +477,7 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         print(f"未找到会话：{resume_session_id}", flush=True)
         return CommandResult()
     if state.workspace_root and state.workspace_root != memory_runtime.workspace_root:
-        if not confirm_cross_workspace_restore(state.workspace_root, memory_runtime.workspace_root):
+        if not await confirm_cross_workspace_restore(state.workspace_root, memory_runtime.workspace_root):
             print("已取消跨工作目录恢复。", flush=True)
             return CommandResult()
     if remove_trailing_incomplete_tool_call(state.messages):
@@ -483,6 +488,12 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         context.file_state_cache,
         context.workspace_tracker,
     )
+    if context.work_mode is not None and context.project_graph_runtime is not None:
+        requested_mode = WorkMode.parse(state.work_mode)
+        if requested_mode is WorkMode.CODE:
+            await _activate_code_mode(context, state.messages, force=context.work_mode.current is WorkMode.GENERAL)
+        elif context.work_mode.current is WorkMode.CODE:
+            await context.project_graph_runtime.deactivate()
     clear_terminal()
     render_conversation_history(state.messages)
     print(f"已恢复会话：{resume_session_id}（{len(state.messages)} 条消息）", flush=True)
@@ -517,7 +528,7 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
     include_all = argument == "--all"
     source_session_id = "" if include_all else argument
     if not source_session_id:
-        source_session_id = select_session_interactively(memory_runtime, include_all=include_all, action="分叉")
+        source_session_id = await select_session_interactively(memory_runtime, include_all=include_all, action="分叉")
         if not source_session_id:
             return CommandResult()
 
@@ -526,7 +537,7 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         print(f"未找到会话：{source_session_id}", flush=True)
         return CommandResult()
     if source_state.workspace_root and source_state.workspace_root != memory_runtime.workspace_root:
-        if not confirm_cross_workspace_action("分叉", source_state.workspace_root, memory_runtime.workspace_root):
+        if not await confirm_cross_workspace_action("分叉", source_state.workspace_root, memory_runtime.workspace_root):
             print("已取消跨工作目录分叉。", flush=True)
             return CommandResult()
 
@@ -550,6 +561,12 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         context.file_state_cache,
         context.workspace_tracker,
     )
+    if context.work_mode is not None and context.project_graph_runtime is not None:
+        requested_mode = WorkMode.parse(source_state.work_mode)
+        if requested_mode is WorkMode.CODE:
+            await _activate_code_mode(context, fork_messages, force=context.work_mode.current is WorkMode.GENERAL)
+        elif context.work_mode.current is WorkMode.CODE:
+            await context.project_graph_runtime.deactivate()
     clear_terminal()
     render_conversation_history(fork_messages)
     print(
@@ -632,7 +649,7 @@ async def handle_delete_command(context: CommandContext, arguments: str) -> Comm
             scope = "全部工作目录" if include_all else "当前工作目录"
             print(f"{scope}下没有可删除会话。", flush=True)
             return CommandResult()
-        if not confirm_delete_sessions(sessions, include_all=include_all):
+        if not await confirm_delete_sessions(sessions, include_all=include_all):
             print("已取消批量删除。", flush=True)
             return CommandResult()
         session_ids = [session.session_id for session in sessions]
@@ -646,7 +663,12 @@ async def handle_delete_command(context: CommandContext, arguments: str) -> Comm
     include_all = argument == "--all"
     delete_session_id = "" if include_all else argument
     if not delete_session_id:
-        delete_session_id = select_session_interactively(memory_runtime, limit=20, include_all=include_all, action="删除")
+        delete_session_id = await select_session_interactively(
+            memory_runtime,
+            limit=20,
+            include_all=include_all,
+            action="删除",
+        )
         if not delete_session_id:
             return CommandResult()
 
@@ -655,7 +677,7 @@ async def handle_delete_command(context: CommandContext, arguments: str) -> Comm
         print(f"未找到会话：{delete_session_id}", flush=True)
         return CommandResult()
     if state.workspace_root and state.workspace_root != memory_runtime.workspace_root:
-        if not confirm_cross_workspace_action("删除", state.workspace_root, memory_runtime.workspace_root):
+        if not await confirm_cross_workspace_action("删除", state.workspace_root, memory_runtime.workspace_root):
             print("已取消跨工作目录删除。", flush=True)
             return CommandResult()
 

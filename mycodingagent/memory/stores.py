@@ -25,7 +25,10 @@ from mycodingagent.memory.models import (
     WorkspaceCheckpoint,
     WorkspaceFileSnapshot,
 )
-from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY, require_component_schema
+
+
+MEMORY_SCHEMA_VERSION = 1
 
 
 class SQLiteMemoryStore:
@@ -41,6 +44,31 @@ class SQLiteMemoryStore:
 
     def _init_db(self) -> None:
         with self._connect() as conn:
+            require_component_schema(
+                conn,
+                db_path=self.db_path,
+                component="memory",
+                version=MEMORY_SCHEMA_VERSION,
+                owned_tables=(
+                    "sessions",
+                    "session_messages",
+                    "session_tool_outputs",
+                    "historical_turns",
+                    "tool_invocation_metadata",
+                    "recoverable_contexts",
+                    "session_context_snapshots",
+                    "context_epochs",
+                    "conversation_snapshots",
+                    "snapshot_deltas",
+                    "checkpoint_records",
+                    "workspace_checkpoints",
+                    "workspace_checkpoint_files",
+                    "workspace_snapshot_blobs",
+                    "execution_records",
+                    "historical_session_refs",
+                    "session_token_usage",
+                ),
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS sessions (
@@ -60,13 +88,6 @@ class SQLiteMemoryStore:
                 )
                 """
             )
-            self._ensure_column(conn, "sessions", "last_accessed_at", "REAL NOT NULL DEFAULT 0")
-            conn.execute("UPDATE sessions SET last_accessed_at = updated_at WHERE last_accessed_at = 0")
-            self._ensure_column(conn, "sessions", "latest_file_state_json", "TEXT NOT NULL DEFAULT '{}'")
-            self._ensure_column(conn, "sessions", "workspace_root", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "sessions", "workspace_label", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "sessions", "workspace_fingerprint", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "sessions", "work_mode", "TEXT NOT NULL DEFAULT 'general'")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS session_messages (
@@ -195,7 +216,6 @@ class SQLiteMemoryStore:
                 )
                 """
             )
-            self._ensure_column(conn, "context_epochs", "next_start_message_index", "INTEGER")
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS conversation_snapshots (
@@ -266,11 +286,6 @@ class SQLiteMemoryStore:
                     created_at REAL NOT NULL
                 )
                 """
-            )
-            self._ensure_column(conn, "workspace_snapshot_blobs", "created_at", "REAL NOT NULL DEFAULT 0")
-            conn.execute(
-                "UPDATE workspace_snapshot_blobs SET created_at = ? WHERE created_at = 0",
-                (time(),),
             )
             conn.execute(
                 """
@@ -349,13 +364,6 @@ class SQLiteMemoryStore:
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_root ON sessions(workspace_root)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_workspace_fingerprint ON sessions(workspace_fingerprint)")
             conn.execute("CREATE INDEX IF NOT EXISTS idx_sessions_last_accessed_at ON sessions(last_accessed_at)")
-            self._ensure_column(conn, "tool_invocation_metadata", "intent", "TEXT NOT NULL DEFAULT ''")
-            self._ensure_column(conn, "tool_invocation_metadata", "metadata_json", "TEXT NOT NULL DEFAULT '{}'")
-
-    def _ensure_column(self, conn: sqlite3.Connection, table: str, column: str, definition: str) -> None:
-        columns = {row["name"] for row in conn.execute(f"PRAGMA table_info({table})").fetchall()}
-        if column not in columns:
-            conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
     def ensure_session(
         self,

@@ -3,6 +3,7 @@ from __future__ import annotations  # 延迟解析类型注解，允许在运行
 import asyncio  # 使用异步子进程启动 Docker，并用事件循环等待命令完成或超时。
 import os  # 读取环境变量、获取当前用户 UID/GID，保证容器内文件权限和宿主工作区一致。
 import shutil  # 检查宿主机是否安装了 docker 可执行文件。
+import tempfile
 import uuid  # 为每次命令生成唯一容器名，避免并发或残留容器名称冲突。
 from pathlib import Path  # 表示并保存宿主机上的沙箱根目录路径。
 
@@ -16,7 +17,6 @@ from mycodingagent.tool_runtime.command_policy import (  # 高危命令分类与
     CommandApprovalRequest,
     BashPolicyEvaluator,
     BashPolicyStore,
-    analyze_command,
 )
 
 MAX_TIMEOUT = CONFIG.docker.max_timeout  # 单次命令允许的最大运行秒数；即使调用方传入更大 timeout，也会被截断到该上限。
@@ -72,29 +72,21 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         self,
         sandbox_root: Path | None = None,
         approval_hook: CommandApprovalHook | None = None,
-        policy_evaluator: BashPolicyEvaluator | None = None,
+        *,
+        policy_evaluator: BashPolicyEvaluator,
     ) -> None:  # 创建工具实例时确定要挂载进容器的宿主机工作区。
         self._sandbox_root = sandbox_root or get_sandbox_root()  # 未显式传入时，使用统一沙箱根目录解析逻辑，通常是启动 agent 的当前目录。
         self._approval_hook = approval_hook  # 为 None 时不做审批，保持非交互场景和既有测试行为不变。
-        # The CLI injects the persistent three-table evaluator. Embedded callers
-        # retain the legacy gate unless they explicitly opt into policy storage.
         self._policy_evaluator = policy_evaluator
 
     def display_policy_level(self, command: str) -> tuple[str, str]:
         """Return the same policy level used by execution for terminal previews."""
-        if self._policy_evaluator is not None:
-            decision = self._policy_evaluator.evaluate(command)
-            if decision.level == "high":
-                return "high", decision.reason
-            if decision.level == "low":
-                return "low", decision.reason
-            return "approval", decision.reason
-        risk, reason = analyze_command(command)
-        if risk == "dangerous":
-            return "high", reason
-        if risk == "read":
-            return "low", reason
-        return "approval", reason
+        decision = self._policy_evaluator.evaluate(command)
+        if decision.level == "high":
+            return "high", decision.reason
+        if decision.level == "low":
+            return "low", decision.reason
+        return "approval", decision.reason
 
     async def execute(self, params: Params) -> ToolResult:  # 执行一次 Bash 工具调用，并把 stdout/stderr 封装成 ToolResult 返回给模型。
         if shutil.which("docker") is None:  # 先检查宿主环境是否能找到 Docker，避免进入子进程后才得到不清晰的失败信息。
@@ -109,27 +101,24 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         if image_error:  # 镜像不存在或无法检查时，给出可执行的修复提示。
             return ToolResult(output=image_error, is_error=True)  # 返回工具错误，让模型或用户先处理镜像配置。
         if self._approval_hook is not None:
-            policy = self._policy_evaluator.evaluate(params.command) if self._policy_evaluator else None
-            if policy is None:
-                risk, reason = analyze_command(params.command)
-                policy_level = "low" if risk == "read" else "approval"
-                policy = type("LegacyDecision", (), {"unknown_keys": (), "level": policy_level, "reason": reason})()
-            if policy.level == "high":
+            policy = self._policy_evaluator.evaluate(params.command)
+            policy_level = policy.level
+            policy_reason = policy.reason
+            unknown_keys = policy.unknown_keys
+            if policy_level == "high":
                 return ToolResult(
-                    output=f"{USER_DENIED_COMMAND_MESSAGE}：{policy.reason or '命令命中高危策略'}",
+                    output=f"{USER_DENIED_COMMAND_MESSAGE}：{policy_reason or '命令命中高危策略'}",
                     is_error=True,
                 )
             pending_unknown = bool(
-                self._policy_evaluator
-                and policy.unknown_keys
-                and self._policy_evaluator.has_pending(policy.unknown_keys)
+                unknown_keys and self._policy_evaluator.has_pending(unknown_keys)
             )
             pending_classifications = {}
             if pending_unknown:
                 pending_classifications = await self._policy_evaluator.resolve_unknowns(policy.evidence, persist=False)
                 ranks = {"low": 0, "approval": 1, "high": 2}
                 pending_level = max(
-                    (pending_classifications.get(key, "approval") for key in policy.unknown_keys),
+                    (pending_classifications.get(key, "approval") for key in unknown_keys),
                     key=lambda value: ranks[value],
                 )
                 if pending_level == "high":
@@ -139,12 +128,14 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                     )
                 if pending_level == "low":
                     return await self._execute_docker(params, image, timeout)
-                policy = type("ResolvedDecision", (), {"unknown_keys": (), "level": "approval", "reason": "未知命令分类为审批级别"})()
-            if policy.level in {"approval", "unknown"}:
-                risk = "dangerous" if policy.level == "unknown" else "normal"
-                reason = policy.reason or "命令包含未分类或需要审批的策略事件。"
+                policy_level = "approval"
+                policy_reason = "未知命令分类为审批级别"
+                unknown_keys = ()
+            if policy_level in {"approval", "unknown"}:
+                risk = "dangerous" if policy_level == "unknown" else "normal"
+                reason = policy_reason or "命令包含未分类或需要审批的策略事件。"
                 classification_task = None
-                if self._policy_evaluator is not None and policy.unknown_keys:
+                if unknown_keys:
                     classification_task = asyncio.create_task(
                         self._policy_evaluator.resolve_unknowns(policy.evidence, persist=False)
                     )
@@ -162,7 +153,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                     except Exception:
                         classifications = {}
                     self._policy_evaluator.persist_classification(
-                        tuple(item for item in policy.evidence if item.policy_key in policy.unknown_keys),
+                        tuple(item for item in policy.evidence if item.policy_key in unknown_keys),
                         classifications,
                         user_allowed=decision.allowed,
                     )
@@ -487,4 +478,6 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
 
 
 async def ensure_docker_image(image: str | None = None) -> ToolResult:  # 对外暴露的启动预检函数，供 CLI 在注册工具前调用。
-    return await Bash().ensure_image(image)  # 复用 Bash 工具内部的 Docker daemon 检查、镜像检查和拉取逻辑。
+    with tempfile.TemporaryDirectory(prefix="mycodingagent-image-check-") as directory:
+        evaluator = BashPolicyEvaluator(BashPolicyStore(Path(directory) / "policy.sqlite3"))
+        return await Bash(policy_evaluator=evaluator).ensure_image(image)  # 复用 Bash 工具内部的 Docker daemon 检查、镜像检查和拉取逻辑。

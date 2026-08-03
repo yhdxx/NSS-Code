@@ -19,9 +19,9 @@ from pathlib import Path
 import pyfiglet  # 导入当前模块需要的依赖。
 
 from mycodingagent.capability_discovery import CapabilityRouter
-from mycodingagent.code_intelligence import ProjectGraphService, WorkspaceCodeIndex
-from mycodingagent.terminal_ui.input import read_user_prompt
-from mycodingagent.terminal_ui.interrupt import InterruptWatcher, TerminalInputCoordinator
+from mycodingagent.code_intelligence import ProjectGraphRuntime, ProjectGraphService, WorkspaceCodeIndex
+from mycodingagent.terminal_ui.application import TerminalApplication, TerminalCancelled
+from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration.bootstrap import USER_CONFIG_PATH, USER_CONFIG_README_PATH
@@ -29,6 +29,7 @@ from mycodingagent.configuration.settings import CONFIG
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.memory import MemoryRuntime
 from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的 SKILL，并按需动态暴露给模型。
+from mycodingagent.sqlite_utils import IncompatibleSchemaError
 from mycodingagent.tool_runtime import create_default_registry  # 导入当前模块需要的依赖。
 from mycodingagent.tool_runtime.bash import ensure_docker_image, get_docker_image  # 启动时确保 Bash 工具使用的 Docker 镜像已在本地可用。
 from mycodingagent.tool_runtime.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
@@ -53,12 +54,7 @@ from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.multi_agent import MultiAgentStore
-
-# 启用 readline 支持，增强命令行编辑功能（退格、方向键等自动生效）
-try:  # 开始可能抛出异常的保护代码块。
-    import readline  # noqa: F401
-except ImportError:  # 捕获并处理指定异常。
-    pass  # Windows 可能没有 readline，但不影响基本功能
+from mycodingagent.work_mode import WorkMode, WorkModeManager
 
 def _print_missing_required_config(errors: list[str]) -> None:
     print(
@@ -82,11 +78,24 @@ def _print_missing_required_config(errors: list[str]) -> None:
 
 
 async def main() -> None:  # 定义异步函数，供事件循环调用。
+    terminal = TerminalApplication()
+    await terminal.start()
+    try:
+        try:
+            await _run(terminal)
+        except IncompatibleSchemaError as exc:
+            print(f"无法启动：{exc}", flush=True)
+    finally:
+        await asyncio.sleep(0)
+        await terminal.close()
 
+
+async def _run(terminal: TerminalApplication) -> None:
     model_manager = ModelManager()
     config_errors = model_manager.validation_errors(require_long_term_memory=CONFIG.long_term_memory.enabled)
     if config_errors:
         _print_missing_required_config(config_errors)
+        await model_manager.close()
         return  # 基础配置缺失时不进入 Docker / Skill / MCP 初始化。
 
     ascii_art = pyfiglet.figlet_format("MyCodingAgent")  # 保存配置值或中间计算结果。
@@ -97,6 +106,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     image_result = await ensure_docker_image(docker_image)  # 如果镜像不存在，会在这里执行 docker pull。
     if image_result.is_error:  # Docker 不可用、权限不足或镜像拉取失败时，不继续进入对话。
         print(image_result.output)  # 打印具体错误，方便用户修复 Docker 环境或镜像配置。
+        await model_manager.close()
         return  # Bash 环境无法准备时直接退出，避免后续模型调用命令全部失败。
     print(image_result.output, flush=True)  # 镜像已就绪时打印确认信息。
 
@@ -106,6 +116,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             workspace_lease.acquire()
         except WorkspaceLeaseError as exc:
             print(f"无法启动：{exc}", flush=True)
+            await model_manager.close()
             return
     file_state_cache = FileStateCache()  # 记录模型读过的文件，用于识别已读文件的外部变更。
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
@@ -114,19 +125,20 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     code_index = WorkspaceCodeIndex(
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
-    workspace_tracker.subscribe(code_index.mark_dirty)
     project_graph = ProjectGraphService(
         get_sandbox_root(),
         CONFIG.memory.db_path.with_name("project_graph.sqlite3"),
         code_index,
     )
-    project_graph.set_work_mode_provider(
-        lambda: memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode
+    requested_work_mode = (
+        memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode
     )
-    project_graph.set_progress_callback(
-        lambda message: print(f"[项目图谱] {message}", flush=True)
+    work_mode = WorkModeManager(
+        WorkMode.GENERAL,
+        persist=memory_runtime.set_work_mode if memory_runtime is not None else None,
     )
-    workspace_tracker.subscribe(project_graph.mark_dirty)
+    project_graph_runtime = ProjectGraphRuntime(project_graph, code_index, work_mode)
+    workspace_tracker.subscribe(project_graph_runtime.mark_dirty)
     if memory_runtime is not None:
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
@@ -190,16 +202,14 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         }.get(tool_calls[0].tool_name, "approval")
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
-    terminal_input = TerminalInputCoordinator()
-    command_approval_hook = CLICommandApprovalHook(terminal_input) if sys.stdin.isatty() else None
+    command_approval_hook = CLICommandApprovalHook(terminal) if sys.stdin.isatty() else None
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
         memory_runtime=memory_runtime,
         command_approval_hook=command_approval_hook,
-        write_approval_hook=None,
-        terminal_input_coordinator=terminal_input,
-        project_graph_service=project_graph,
+        terminal_input=terminal,
+        project_graph_service=project_graph_runtime,
         bash_policy_evaluator=BashPolicyEvaluator(
             BashPolicyStore(CONFIG.memory.db_path),
             classify_bash_policy,
@@ -231,7 +241,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 user_path=CONFIG.mcp.user_config_path,
             ),
             metadata_cache=MCPMetadataCache(CONFIG.memory.db_path.with_name("mcp_cache.sqlite3")),
-            launch_hook=CLILaunchApprovalHook(terminal_input) if sys.stdin.isatty() else None,
+            launch_hook=CLILaunchApprovalHook(terminal) if sys.stdin.isatty() else None,
         )
         try:
             await mcp_manager.initialize()
@@ -243,7 +253,7 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
             registry,
             manager=mcp_manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=CLIApprovalHook(terminal_input) if sys.stdin.isatty() else MCPToolApprovalHook(),
+            approval_hook=CLIApprovalHook(terminal) if sys.stdin.isatty() else MCPToolApprovalHook(),
         )
         print(f"已配置 MCP Server：{mcp_manager.server_count()} 个", flush=True)
     else:
@@ -281,9 +291,35 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
     ]
     core_tool_schemas = base_tool_schemas + skill_management_tool_schemas + discovery_tool_schemas
     tools = client.format_openai_tools(core_tool_schemas)  # 固定核心工具 schema；动态能力推荐进入 Runtime Context。
+    messages = client.create_initial_messages(
+        registry,
+        skill_runtime=skill_runtime,
+        capability_router=capability_router,
+        memory_runtime=memory_runtime,
+    )
     command_registry = build_command_registry()
     if long_term_memory_runtime is not None:
         long_term_memory_runtime.schedule_startup_backfill()
+
+    if WorkMode.parse(requested_work_mode) is WorkMode.CODE:
+        print("[项目图谱] Code 模式初始化开始。", flush=True)
+        try:
+            status = await project_graph_runtime.activate(
+                lambda message: print(f"[项目图谱] {message}", flush=True)
+            )
+            print(
+                "[项目图谱] Code 模式已就绪："
+                f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
+                flush=True,
+            )
+            update = await project_graph_runtime.prepare_bootstrap(messages, force=True)
+            if update is not None:
+                messages.extend(update.messages)
+                render_project_graph_bootstrap_tree(update.payload)
+        except Exception as exc:
+            if memory_runtime is not None:
+                memory_runtime.set_work_mode(WorkMode.GENERAL.value)
+            print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
 
     mcp_user_rounds = 0
 
@@ -294,14 +330,11 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 if rollover.performed and rollover.new_messages is not None:
                     messages = rollover.new_messages
             try:  # 开始可能抛出异常的保护代码块。
-                print("----------------------------------------------\n\n")  # 执行当前步骤的业务逻辑。
-                prompt = read_user_prompt(
-                    "",
+                prompt = await terminal.read_prompt(
                     command_registry,
-                    prompt_header="\033[1;97m ⌨️  User(输入exit退出对话)：\033[0m",
+                    prompt_header="User (输入 exit 退出对话)",
                 )  # 保存配置值或中间计算结果。
-                print("----------------------------------------------\n\n")  # 执行当前步骤的业务逻辑。
-            except (EOFError, KeyboardInterrupt):  # 捕获并处理指定异常。
+            except (EOFError, KeyboardInterrupt, TerminalCancelled):  # 捕获并处理指定异常。
                 # Ctrl+D 或 Ctrl+C 安全退出
                 print()  # 执行当前步骤的业务逻辑。
                 break  # 提前结束当前循环。
@@ -309,7 +342,9 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                 break  # 提前结束当前循环。
             if not prompt.strip():  # 根据条件决定是否执行后续分支。
                 continue  # 空输入重新提示
-            async with InterruptWatcher(terminal_input) as command_watcher:
+            command_cancel = asyncio.Event()
+            terminal.bind_cancel_event(command_cancel)
+            try:
                 command_result = await command_registry.execute(
                     prompt,
                     CommandContext(
@@ -322,12 +357,23 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                         model_manager=model_manager,
                         multi_agent_store=multi_agent_store,
                         long_term_memory_runtime=long_term_memory_runtime,
-                        cancel_event=command_watcher.triggered,
+                        cancel_event=command_cancel,
+                        work_mode=work_mode,
+                        project_graph_runtime=project_graph_runtime,
                     ),
                 )
+            finally:
+                terminal.bind_cancel_event(None)
             if command_result.handled:
                 if command_result.messages is not None:
                     messages = command_result.messages
+                    if not messages:
+                        messages = client.create_initial_messages(
+                            registry,
+                            skill_runtime=skill_runtime,
+                            capability_router=capability_router,
+                            memory_runtime=memory_runtime,
+                        )
                     if memory_runtime is not None:
                         rollover = await memory_runtime.on_turn_completed(
                             messages=messages,
@@ -342,26 +388,29 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
                     break
                 continue
 
-            # 携带历史消息进行对话，并获取更新后的消息列表
-            # 注意：首次对话不传 messages（None），让 ask_model 自动注入系统提示词 "H-Agent"
+            # 携带已初始化的系统消息和历史消息进行对话。
             try:  # 单轮对话内部的意外异常不应该终止整个 agent 进程；会话状态已在轮内持久化。
-                async with InterruptWatcher(terminal_input) as turn_watcher:
+                turn_cancel = asyncio.Event()
+                terminal.bind_cancel_event(turn_cancel)
+                try:
                     _, messages = await client.ask_model(  # 保存配置值或中间计算结果。
                         model_manager,
                         prompt,
                         registry,
                         tools,
-                        messages or None,
+                        messages,
                         skill_runtime=skill_runtime,
                         core_tool_schemas=core_tool_schemas,
                         workspace_tracker=workspace_tracker,
                         memory_runtime=memory_runtime,
                         capability_router=capability_router,
-                        project_graph=project_graph,
-                        work_mode=memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode,
+                        project_graph=project_graph_runtime,
+                        work_mode=work_mode.current.value,
                         long_term_memory_runtime=long_term_memory_runtime,
-                        cancel_event=turn_watcher.triggered,
+                        cancel_event=turn_cancel,
                     )  # 结束上方的多行结构。
+                finally:
+                    terminal.bind_cancel_event(None)
             except (EOFError, KeyboardInterrupt):  # 用户主动中断时保持原有退出语义。
                 raise
             except Exception as exc:  # 其余异常打印后回到主循环，让用户可以继续对话或正常退出。
@@ -400,8 +449,8 @@ async def main() -> None:  # 定义异步函数，供事件循环调用。
         if mcp_manager is not None:
             await mcp_manager.close()
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
-        workspace_tracker.unsubscribe(code_index.mark_dirty)
-        workspace_tracker.unsubscribe(project_graph.mark_dirty)
+        await project_graph_runtime.close()
+        workspace_tracker.unsubscribe(project_graph_runtime.mark_dirty)
         workspace_tracker.close()  # 停止工作区文件监听线程。
         if CONFIG.sandbox.workspace_lease_enabled:
             workspace_lease.release()

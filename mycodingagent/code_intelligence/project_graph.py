@@ -4,8 +4,8 @@ import hashlib
 import json
 import sqlite3
 from pathlib import Path
-from threading import RLock, Thread
-from time import sleep, time
+from threading import RLock
+from time import time
 from typing import Any, Callable
 
 from mycodingagent.code_intelligence.agentignore import AgentIgnore
@@ -15,7 +15,7 @@ from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 UNKNOWN_DESCRIPTION = "暂未描述"
 GRAPH_SCHEMA_VERSION = 1
 BOOTSTRAP_DEPTH = 3
-BOOTSTRAP_DEBOUNCE_SECONDS = 1.0
+ProgressCallback = Callable[[str], None]
 
 
 class ProjectGraphService:
@@ -24,66 +24,27 @@ class ProjectGraphService:
     def __init__(self, workspace_root: Path, db_path: Path | str, code_index: WorkspaceCodeIndex) -> None:
         self.workspace_root = workspace_root.resolve(strict=False)
         self.db_path = Path(db_path).expanduser()
-        self.db_path.parent.mkdir(parents=True, exist_ok=True)
         self.code_index = code_index
         self.agent_ignore = AgentIgnore(self.workspace_root)
-        self._work_mode = lambda: "code"
-        self._progress_callback: Callable[[str], None] | None = None
-        self._dirty = True
-        self._dirty_at = time()
-        self._dirty_reason = "initial"
         self._last_filter_fingerprint = self._filter_fingerprint()
-        self._background_thread: Thread | None = None
+        self._initialized = False
         self._lock = RLock()
-        self._init_db()
-
-    def set_work_mode_provider(self, provider) -> None:
-        self._work_mode = provider
-
-    def set_progress_callback(self, callback: Callable[[str], None] | None) -> None:
-        self._progress_callback = callback
-
-    def mark_dirty(self, path: Path | str, _is_delete: bool = False) -> None:
-        with self._lock:
-            self._dirty = True
-            self._dirty_at = time()
-            relative = self._relative_path(path)
-            self._dirty_reason = "agentignore_changed" if relative == ".agentignore" else "workspace_changed"
-            if self._background_thread is None or not self._background_thread.is_alive():
-                self._background_thread = Thread(
-                    target=self._background_refresh,
-                    name="project-graph-refresh",
-                    daemon=True,
-                )
-                self._background_thread.start()
-
-    def work_mode_provider(self) -> str:
-        return str(self._work_mode())
-
-    def _background_refresh(self) -> None:
-        while True:
-            sleep(BOOTSTRAP_DEBOUNCE_SECONDS)
-            with self._lock:
-                if not self._dirty:
-                    self._background_thread = None
-                    return
-                if time() - self._dirty_at < BOOTSTRAP_DEBOUNCE_SECONDS:
-                    continue
-                try:
-                    self._refresh()
-                except Exception as exc:
-                    self._report_progress(f"后台刷新失败：{type(exc).__name__}: {exc}")
-                    self._background_thread = None
-                    return
 
     def status(self) -> dict[str, Any]:
         with self._lock:
-            self._refresh()
+            if not self._initialized:
+                return {
+                    "available": False,
+                    "generation": 0,
+                    "modules": 0,
+                    "units": 0,
+                    "stale_descriptions": 0,
+                    "workspace_root": "/workspace",
+                }
             return self._status_payload()
 
     def runtime_payload(self) -> dict[str, Any]:
-        with self._lock:
-            return self._status_payload()
+        return self.status()
 
     def _status_payload(self) -> dict[str, Any]:
         with self._connect() as conn:
@@ -101,7 +62,7 @@ class ProjectGraphService:
 
     def architecture(self, module: str = "", *, depth: int = BOOTSTRAP_DEPTH, bootstrap: bool = False) -> dict[str, Any]:
         with self._lock:
-            self._ensure_fresh()
+            self._require_initialized()
             with self._connect() as conn:
                 rows = conn.execute(
                     "SELECT * FROM graph_nodes WHERE kind = 'module' ORDER BY path"
@@ -187,7 +148,7 @@ class ProjectGraphService:
 
     def dependency_graph(self, module: str) -> dict[str, Any]:
         with self._lock:
-            self._ensure_fresh()
+            self._require_initialized()
             with self._connect() as conn:
                 modules = conn.execute("SELECT * FROM graph_nodes WHERE kind = 'module' ORDER BY path").fetchall()
                 resolution = self._resolve_module(module, modules)
@@ -221,7 +182,7 @@ class ProjectGraphService:
 
     def update_description(self, target: str, description: str, content_hash: str) -> dict[str, Any]:
         with self._lock:
-            self._ensure_fresh()
+            self._require_initialized()
             with self._connect() as conn:
                 row = conn.execute("SELECT * FROM graph_nodes WHERE id = ?", (target.strip(),)).fetchone()
                 if row is None:
@@ -257,11 +218,17 @@ class ProjectGraphService:
             "results": results,
         }
 
-    def _refresh(self) -> None:
+    def refresh(self, progress: ProgressCallback | None = None) -> dict[str, Any]:
+        with self._lock:
+            self._ensure_storage()
+            return self._refresh(progress)
+
+    def _refresh(self, progress: ProgressCallback | None) -> dict[str, Any]:
         started_at = time()
-        self._report_progress("正在刷新静态代码索引...")
+        self._report_progress(progress, "正在刷新静态代码索引...")
         static_graph = self.code_index.static_graph_snapshot()
         self._report_progress(
+            progress,
             f"静态索引完成：{len(static_graph['symbols'])} 个符号，{len(static_graph['calls'])} 条调用。"
         )
         self.agent_ignore.reload()
@@ -269,7 +236,7 @@ class ProjectGraphService:
             str(item["path"]): str(item["content_hash"])
             for item in static_graph.get("files", [])
         }
-        self._report_progress(f"文件扫描完成：{len(files)} 个文件进入项目图谱。")
+        self._report_progress(progress, f"文件扫描完成：{len(files)} 个文件进入项目图谱。")
         with self._connect() as conn:
             old = {str(row["id"]): str(row["content_hash"]) for row in conn.execute("SELECT id, content_hash FROM graph_nodes")}
             nodes: list[dict[str, Any]] = []
@@ -331,7 +298,7 @@ class ProjectGraphService:
                     nodes.append(unit)
             conn.execute("DELETE FROM graph_nodes")
             conn.execute("DELETE FROM graph_edges")
-            self._report_progress(f"正在写入图谱：{len(nodes)} 个节点...")
+            self._report_progress(progress, f"正在写入图谱：{len(nodes)} 个节点...")
             conn.executemany(
                 "INSERT INTO graph_nodes(id, path, name, kind, parent_id, module_id, content_hash, start_line) VALUES (?, ?, ?, ?, ?, ?, ?, ?)",
                 [(item["id"], item["path"], item["name"], item["kind"], item["parent_id"], self._module_for(item, module_ids), item["content_hash"], item.get("start_line", 0)) for item in nodes],
@@ -370,13 +337,10 @@ class ProjectGraphService:
             )
             self._last_filter_fingerprint = filter_stats["agentignore_fingerprint"]
         self._report_progress(
+            progress,
             f"项目图谱完成：generation={generation}，耗时 {time() - started_at:.1f} 秒。"
         )
-        self._dirty = False
-
-    def _ensure_fresh(self) -> None:
-        if self._dirty or self._generation() == 0:
-            self._refresh()
+        return self._status_payload()
 
     def _insert_static_edges(
         self,
@@ -413,9 +377,33 @@ class ProjectGraphService:
     def _init_db(self) -> None:
         with self._connect() as conn:
             conn.execute("CREATE TABLE IF NOT EXISTS graph_meta(key TEXT PRIMARY KEY, value TEXT NOT NULL)")
+            row = conn.execute("SELECT value FROM graph_meta WHERE key = 'schema_version'").fetchone()
+            try:
+                stored_version = int(row[0]) if row is not None else -1
+            except (TypeError, ValueError):
+                stored_version = -1
+            if stored_version != GRAPH_SCHEMA_VERSION:
+                for table in ("graph_nodes", "graph_edges", "graph_descriptions"):
+                    conn.execute(f"DROP TABLE IF EXISTS {table}")
+                conn.execute("DELETE FROM graph_meta")
             conn.execute("CREATE TABLE IF NOT EXISTS graph_nodes(id TEXT PRIMARY KEY, path TEXT NOT NULL, name TEXT NOT NULL, kind TEXT NOT NULL, parent_id TEXT NOT NULL, module_id TEXT NOT NULL, content_hash TEXT NOT NULL, start_line INTEGER NOT NULL DEFAULT 0)")
             conn.execute("CREATE TABLE IF NOT EXISTS graph_edges(source_id TEXT NOT NULL, target_id TEXT NOT NULL, edge_type TEXT NOT NULL, confidence TEXT NOT NULL, evidence_path TEXT NOT NULL DEFAULT '', evidence_line INTEGER NOT NULL DEFAULT 0, PRIMARY KEY(source_id, target_id, edge_type, evidence_path, evidence_line))")
             conn.execute("CREATE TABLE IF NOT EXISTS graph_descriptions(node_id TEXT PRIMARY KEY, description TEXT NOT NULL, content_hash TEXT NOT NULL, status TEXT NOT NULL, updated_at REAL NOT NULL)")
+            conn.execute(
+                "INSERT OR REPLACE INTO graph_meta(key, value) VALUES ('schema_version', ?)",
+                (str(GRAPH_SCHEMA_VERSION),),
+            )
+
+    def _ensure_storage(self) -> None:
+        if self._initialized:
+            return
+        self.db_path.parent.mkdir(parents=True, exist_ok=True)
+        self._init_db()
+        self._initialized = True
+
+    def _require_initialized(self) -> None:
+        if not self._initialized:
+            raise RuntimeError("项目图谱尚未初始化；请先进入 Code 模式")
 
     def _connect(self) -> sqlite3.Connection:
         conn = sqlite3.connect(self.db_path, factory=SQLITE_CONNECTION_FACTORY)
@@ -499,24 +487,16 @@ class ProjectGraphService:
             return 0
         return len(Path(path).parts)
 
-    def _relative_path(self, path: Path | str) -> str:
-        candidate = Path(path)
-        if not candidate.is_absolute():
-            candidate = self.workspace_root / candidate
-        try:
-            return candidate.resolve(strict=False).relative_to(self.workspace_root).as_posix()
-        except ValueError:
-            return str(path)
-
     def _filter_fingerprint(self) -> str:
         try:
             return self._hash_bytes((self.workspace_root / ".agentignore").read_bytes())
         except OSError:
             return ""
 
-    def _report_progress(self, message: str) -> None:
-        if self._progress_callback is not None:
-            self._progress_callback(message)
+    @staticmethod
+    def _report_progress(callback: ProgressCallback | None, message: str) -> None:
+        if callback is not None:
+            callback(message)
 
     def _resolve_module(self, value: str, rows: list[sqlite3.Row]) -> sqlite3.Row | dict[str, Any]:
         value = value.strip()

@@ -33,8 +33,6 @@ class RuntimeContext:
     context_budget: ContextBudgetState | None = None
     capabilities: dict[str, Any] | None = None
     project_graph: dict[str, Any] | None = None
-    # Kept only for callers using the pre-project-graph builder API.
-    legacy_code_intelligence: dict[str, Any] | None = None
     task_snapshot: str | None = None
     long_term_memory: dict[str, Any] | None = None
 
@@ -50,8 +48,6 @@ class RuntimeContext:
             payload["capabilities"] = self.capabilities
         if self.project_graph:
             payload["project_graph"] = self.project_graph
-        if self.legacy_code_intelligence:
-            payload["code_intelligence"] = self.legacy_code_intelligence
         if self.long_term_memory:
             payload["long_term_memory"] = self.long_term_memory
         return payload
@@ -102,7 +98,6 @@ class RuntimeContextBuilder:
         work_mode: str = "general",
         capabilities: Any | None = None,
         project_graph: Any | None = None,
-        code_intelligence: Any | None = None,
         long_term_memory: dict[str, Any] | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
@@ -110,7 +105,6 @@ class RuntimeContextBuilder:
         self.work_mode = work_mode
         self.capabilities = capabilities
         self.project_graph = project_graph
-        self.legacy_code_intelligence = code_intelligence
         self.long_term_memory = long_term_memory
 
     def build(self) -> RuntimeContext:
@@ -120,7 +114,6 @@ class RuntimeContextBuilder:
             workspace_changes=self._workspace_changes(),
             capabilities=self._capability_payload(),
             project_graph=self._project_graph_payload(),
-            legacy_code_intelligence=self._legacy_code_intelligence_payload(),
             long_term_memory=self.long_term_memory,
         )
 
@@ -149,13 +142,6 @@ class RuntimeContextBuilder:
         runtime_payload = getattr(self.project_graph, "runtime_payload", None)
         payload = runtime_payload() if callable(runtime_payload) else self.project_graph
         return payload if isinstance(payload, dict) else None
-
-    def _legacy_code_intelligence_payload(self) -> dict[str, Any] | None:
-        if self.legacy_code_intelligence is None:
-            return None
-        payload = self.legacy_code_intelligence
-        return payload if isinstance(payload, dict) else None
-
 
 class PromptRenderer:
     @staticmethod

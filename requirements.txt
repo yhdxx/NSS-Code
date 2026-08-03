@@ -52,6 +52,7 @@ protobuf==7.35.1
 pydantic==2.13.4
 pydantic_core==2.46.4
 pyfiglet==1.0.4
+prompt-toolkit==3.0.52
 Pygments==2.20.0
 pymilvus==3.0.0
 python-dateutil==2.9.0.post0

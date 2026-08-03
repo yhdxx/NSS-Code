@@ -64,7 +64,7 @@ class HashEmbeddingService:
         return f"hash:{self._dim}"
 
 
-class BgeEmbeddingService:
+class LocalEmbeddingService:
     def __init__(
         self,
         *,
@@ -73,14 +73,14 @@ class BgeEmbeddingService:
         batch_size: int | None = None,
         fallback_to_hash: bool | None = None,
     ) -> None:
-        self.model_name = model_name or CONFIG.embedding.bge_model
-        self.device = device if device is not None else CONFIG.embedding.bge_device
-        self.batch_size = batch_size or CONFIG.embedding.bge_batch_size
-        self.query_instruction = CONFIG.embedding.bge_query_instruction
+        self.model_name = model_name or CONFIG.embedding.model
+        self.device = device if device is not None else CONFIG.embedding.device
+        self.batch_size = batch_size or CONFIG.embedding.batch_size
+        self.query_instruction = CONFIG.embedding.query_instruction
         self.fallback_to_hash = CONFIG.embedding.fallback_to_hash if fallback_to_hash is None else fallback_to_hash
         self._fallback = HashEmbeddingService()
         self._model = None
-        self._dim = CONFIG.embedding.bge_dimension
+        self._dim = CONFIG.embedding.dimension
         self._load_error: Exception | None = None
         self._load_lock = threading.Lock()
 
@@ -111,7 +111,7 @@ class BgeEmbeddingService:
 
     def signature(self) -> str:
         return "|".join([
-            "bge",
+            "embedding_local",
             self.model_name,
             self.device or "",
             str(self.query_instruction or ""),
@@ -141,7 +141,7 @@ class BgeEmbeddingService:
                 if self.fallback_to_hash:
                     self._dim = self._fallback.dim
                     return None
-                raise RuntimeError(f"Failed to load BGE embedding model {self.model_name!r}: {exc}") from exc
+                raise RuntimeError(f"Failed to load local embedding model {self.model_name!r}: {exc}") from exc
             return self._model
 
     def _encode_with_model(self, model, texts: list[str]) -> list[list[float]]:
@@ -155,7 +155,7 @@ class BgeEmbeddingService:
         return [_to_float_list(vector) for vector in embeddings]
 
 
-class BgeHttpEmbeddingService:
+class HttpEmbeddingService:
     def __init__(
         self,
         *,
@@ -289,15 +289,15 @@ class BgeHttpEmbeddingService:
 
 def create_embedding_service() -> EmbeddingService:
     provider = CONFIG.embedding.provider.strip().lower()
-    if provider in {"bge_http", "http", "ollama", "openai", "openai_compatible", "openai-compatible", "dashscope"}:
-        return BgeHttpEmbeddingService()
-    if provider in {"bge", "local", "sentence_transformers", "sentence-transformers"}:
-        return BgeEmbeddingService()
+    if provider == "http":
+        return HttpEmbeddingService()
+    if provider == "local":
+        return LocalEmbeddingService()
     if provider == "hash":
         return HashEmbeddingService()
     raise ValueError(
         "Unsupported embedding provider: "
-        f"{CONFIG.embedding.provider}. Supported providers: bge_http/http/ollama/openai_compatible/dashscope, local/bge, hash."
+        f"{CONFIG.embedding.provider}. Supported providers: http, local, hash."
     )
 
 

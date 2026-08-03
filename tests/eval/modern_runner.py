@@ -27,6 +27,7 @@ from tests.eval.run_context import build_run_metadata
 from tests.eval.runtime_context_virtualization_benchmark import (
     run_runtime_context_virtualization_benchmark,
 )
+from tests.model_manager_stub import ask_model_with_raw_client
 
 DATASETS = Path("tests/eval/datasets")
 PROJECT_MANIFEST = Path("tests/eval/manifests/public_projects.json")
@@ -43,8 +44,12 @@ def _config() -> tuple[str, str, str]:
 def _schemas() -> list[dict[str, Any]]:
     from mycodingagent.tool_runtime import create_default_registry
     from mycodingagent.llm_runtime.client import format_openai_tools
+    from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
 
-    return format_openai_tools(create_default_registry().get_all_schemas("openai"))
+    registry = create_default_registry(
+        bash_policy_evaluator=BashPolicyEvaluator(BashPolicyStore(":memory:"))
+    )
+    return format_openai_tools(registry.get_all_schemas("openai"))
 
 
 def _run_metadata(run_id: str, dataset: Path | None, repeats: int, extra: dict[str, Any] | None = None) -> dict[str, Any]:
@@ -142,7 +147,7 @@ def run_runtime_context_virtualization(
         dataset,
         repeats,
         extra={
-            "runtime_path": "MemoryRuntime.prepare_messages_for_model -> ask_deepseek",
+            "runtime_path": "MemoryRuntime.prepare_messages_for_model -> ask_model",
             "strategies": ["raw", "claude_compression_baseline", "forced_virtualized", "natural"],
             "quality_reference_strategy": "raw",
             "cost_baseline_strategy": "claude_compression_baseline",
@@ -333,8 +338,8 @@ def run_capability_routing(*, dataset: Path, run_id: str | None) -> tuple[dict[s
     started = time.perf_counter()
     details: list[dict[str, Any]] = []
     try:
-        from mycodingagent.skill_runtime.embeddings import BgeHttpEmbeddingService
-        service = BgeHttpEmbeddingService(timeout=120)
+        from mycodingagent.skill_runtime.embeddings import HttpEmbeddingService
+        service = HttpEmbeddingService(timeout=120)
         texts = [item["description"] for item in case["capabilities"]]
         vectors: list[list[float]] = []
         batch_size = 32
@@ -464,10 +469,15 @@ async def _run_code_general_cases(
 async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int, ordinal: int) -> dict[str, Any]:
     import httpx
     from openai import AsyncOpenAI
-    from mycodingagent.code_intelligence import ProjectGraphService, WorkspaceCodeIndex
+    from mycodingagent.code_intelligence import (
+        ProjectGraphRuntime,
+        ProjectGraphService,
+        WorkspaceCodeIndex,
+    )
     from mycodingagent.configuration import CONFIG
     from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
+    from mycodingagent.work_mode import WorkMode, WorkModeManager
     from tests.eval.runner import (
         _run_eval_test, _snapshot_project_files, _tool_call_names_from_messages,
         _workspace_registry, _write_eval_project,
@@ -488,8 +498,11 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
         )
         index = WorkspaceCodeIndex(workspace, state / "code_index.sqlite3")
         graph = ProjectGraphService(workspace, state / "project_graph.sqlite3", index)
-        graph.set_work_mode_provider(lambda: mode)
-        registry = _workspace_registry(workspace, memory, graph)
+        work_mode = WorkModeManager(WorkMode.GENERAL)
+        graph_runtime = ProjectGraphRuntime(graph, index, work_mode)
+        if mode == "code":
+            await graph_runtime.activate()
+        registry = _workspace_registry(workspace, memory, graph_runtime)
         schemas = agent_client.format_openai_tools(registry.get_all_schemas("openai"))
         model, base_url, api_key = _config()
         api_client = AsyncOpenAI(
@@ -501,10 +514,16 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
                 f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
                 f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
             )
-            text, messages = await agent_client.ask_deepseek(
-                api_client, prompt, registry, schemas, messages=None, memory_runtime=memory,
+            text, messages = await ask_model_with_raw_client(
+                api_client,
+                prompt,
+                registry,
+                schemas,
+                messages=agent_client.create_initial_messages(registry, memory_runtime=memory),
+                memory_runtime=memory,
                 core_tool_schemas=registry.get_all_schemas("openai"),
-                project_graph=graph, work_mode=mode,
+                project_graph=graph_runtime,
+                work_mode=mode,
             )
             verify = _run_eval_test(workspace, case["test_command"])
             after = _snapshot_project_files(workspace)
@@ -532,6 +551,7 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
         except Exception as exc:
             return {"case_id": case["case_id"], "mode": mode, "repeat": repeat, "project_size": case.get("project_size"), "status": "failed", "passed": False, "duration_seconds": round(time.perf_counter() - started, 3), "error": f"{type(exc).__name__}: {exc}"}
         finally:
+            await graph_runtime.close()
             await memory.close()
             await api_client.close()
 

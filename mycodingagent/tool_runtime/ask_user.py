@@ -5,7 +5,7 @@ import asyncio
 from pydantic import BaseModel, Field
 
 from mycodingagent.tool_runtime.base import Tool, ToolResult
-from mycodingagent.terminal_ui.interrupt import PromptCancelled, TerminalInputCoordinator
+from mycodingagent.terminal_ui.application import SharedTerminalInput, TerminalCancelled, TerminalInput
 
 
 class AskUserParams(BaseModel):
@@ -25,8 +25,8 @@ class AskUser(Tool):
     is_concurrency_safe = False
     is_system_tool = True
 
-    def __init__(self, coordinator: TerminalInputCoordinator | None = None) -> None:
-        self._coordinator = coordinator
+    def __init__(self, coordinator: TerminalInput | None = None) -> None:
+        self._coordinator = coordinator or SharedTerminalInput()
 
     async def execute(self, params: AskUserParams) -> ToolResult:
         intent = " ".join(params.intent.split())
@@ -42,9 +42,7 @@ class AskUser(Tool):
         try:
             answer = (
                 await self._coordinator.read_text("回答：")
-                if self._coordinator is not None
-                else await asyncio.to_thread(input, "回答：")
             )
-        except PromptCancelled:
+        except TerminalCancelled:
             return ToolResult(output="用户取消了本次输入", is_error=True)
         return ToolResult(output=answer)

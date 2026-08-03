@@ -89,7 +89,6 @@ myAgent --upgrade
 - Skill 检索、Milvus、Embedding、LRFU 参数
 - MCP 配置路径和后台重连频率
 - `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS`：workspace checkpoint/blob 保留天数，默认 30 天
-- `MYCODINGAGENT_LEGACY_SYSTEM_PROMPT=1`：临时切回旧版系统提示词；默认使用按运行时能力组装的精简提示词
 - `MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND`：覆盖某语言的 LSP 启动命令，例如 `MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"`
 - 多智能体最大轮次和并发任务数
 - 长期记忆存储/查询模型、抽取超时和启动回填开关
@@ -116,16 +115,13 @@ Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和�
 
 ### 2.3 终端输入准备
 
-交互式终端使用 `terminal_ui/input.py` 的 raw TTY 输入器，支持：
+交互式终端由 `terminal_ui/application.py` 的 `prompt_toolkit` 应用统一管理：上方是滚动输出区，底部是固定的多行输入区。模型、工具和后台输出只更新上方区域，不会写进正在编辑的输入框。`Esc+Enter` 插入换行，`Ctrl+C` 取消输入或中断当前操作，方向键用于交互选择；非交互环境退化为普通行输入。
 
-- 左右方向键移动光标，上下方向键按视觉换行移动光标
-- Home/End 跳转到当前行首/行尾
-- Backspace/Delete 删除；仅折叠显示的粘贴 token 会作为整体删除
-- 复制、粘贴和终端选区交给终端模拟器默认能力处理，项目不再提供自定义快捷键映射
-- `/` 命令候选
-- bracketed paste 多行粘贴；超过 `PASTE_COLLAPSE_THRESHOLD` 时输入框显示为 `[Pasted Content N chars]`，否则显示原文且使用与用户输入完全相同的颜色；提交时展开真实内容
-- 粘贴折叠阈值由 `mycodingagent/terminal_ui/input_document.py` 的 `PASTE_COLLAPSE_THRESHOLD` 控制
-- 非交互式环境退化为普通 `input()`
+### 2.4 General / Code 与项目图谱
+
+General 是安静模式：文件、Skill 缓存和索引变化只在内存中标记图谱 dirty，不初始化静态索引、不创建图谱数据库，也不输出图谱日志。执行 `/mode` 并进入 Code 后，前台等待首次图谱构建完成，再追加并展示一次 bootstrap 摘要。
+
+Code 中的后续文件变化会去抖并异步刷新，刷新过程默认静默。只有普通对话前发现 navigation hash 变化并真正追加新 bootstrap message 时，终端才再次渲染树型摘要。
 
 ---
 
@@ -418,7 +414,7 @@ MCP server 暴露 `available` 状态：
 - 初始化时视为可用。
 - 连接、discovery 或 execution 失败后标记为不可用。
 - 用户或模型主动探测成功后恢复可用。
-- Runtime 每隔 `RECONNECT_MCP_SERVER_STEP` 个用户轮异步重连不可用 server。
+- Runtime 每隔 `MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP` 个用户轮异步重连不可用 server。
 - 连接失败进入指数 backoff，调用和启动均有独立超时。
 - stdio server 可配置 `sandbox: true` 进入 Docker，工作区读写和网络需显式开放。
 

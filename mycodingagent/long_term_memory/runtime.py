@@ -176,7 +176,7 @@ class LongTermMemoryRuntime:
             self._last_context_by_session.pop(session_id, None)
         return context
 
-    def record_turn_usage_and_maybe_prompt_skill_promotion(
+    async def record_turn_usage_and_maybe_prompt_skill_promotion(
         self,
         *,
         session_id: str,
@@ -218,7 +218,7 @@ class LongTermMemoryRuntime:
         for memory_uid in used_skill:
             if not self._should_prompt_skill_promotion(memory_uid):
                 continue
-            decision = _confirm_skill_promotion(memory_uid)
+            decision = await _confirm_skill_promotion(memory_uid)
             self.store.record_turn_usage(
                 session_id=session_id,
                 turn_start_index=turn_start_index,
@@ -498,11 +498,11 @@ def _extract_used_memory_uids(messages: list[dict[str, Any]]) -> set[str]:
     return set(USES_MEMORY_RE.findall(text))
 
 
-def _confirm_skill_promotion(memory_uid: str) -> str:
-    from mycodingagent.terminal_ui.interrupt import coordinated_input
+async def _confirm_skill_promotion(memory_uid: str) -> str:
+    from mycodingagent.terminal_ui.application import request_confirmation
 
     print(f"检测到长期流程候选已成功复用：{memory_uid}", flush=True)
-    answer = coordinated_input(
+    approved = await request_confirmation(
         "是否将该流程标记为可沉淀 Skill？输入 y 确认，其它任意键跳过："
-    ).strip().lower()
-    return "approved_for_skill" if answer in {"y", "yes"} else "declined"
+    )
+    return "approved_for_skill" if approved else "declined"

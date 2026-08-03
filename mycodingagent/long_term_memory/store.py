@@ -24,7 +24,10 @@ from mycodingagent.long_term_memory.namespaces import (
     validate_type_namespace,
     validate_type_scope,
 )
-from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
+from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY, require_component_schema
+
+
+LONG_TERM_MEMORY_SCHEMA_VERSION = 1
 
 
 class LongTermMemoryVersionConflict(RuntimeError):
@@ -47,6 +50,13 @@ class SQLiteLongTermMemoryStore:
         with self._connect() as conn:
             conn.execute("PRAGMA journal_mode = WAL")
             conn.execute("PRAGMA synchronous = NORMAL")
+            require_component_schema(
+                conn,
+                db_path=self.db_path,
+                component="long_term_memory",
+                version=LONG_TERM_MEMORY_SCHEMA_VERSION,
+                owned_tables=("long_term_memory_versions", "long_term_memory_items"),
+            )
             conn.execute(
                 """
                 CREATE TABLE IF NOT EXISTS long_term_memory_versions (
@@ -121,13 +131,6 @@ class SQLiteLongTermMemoryStore:
                 )
                 """
             )
-            for legacy_table in ("long_term_memory_locks", "long_term_memory_write_leases"):
-                exists = conn.execute(
-                    "SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = ?",
-                    (legacy_table,),
-                ).fetchone()
-                if exists is not None:
-                    conn.execute(f"DROP TABLE {legacy_table}")
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ltm_versions_lookup "
                 "ON long_term_memory_versions(user_id, workspace_fingerprint, status, committed_at)"
@@ -143,12 +146,6 @@ class SQLiteLongTermMemoryStore:
             conn.execute(
                 "CREATE INDEX IF NOT EXISTS idx_ltm_usage_session "
                 "ON long_term_memory_turn_usage(session_id, created_at)"
-            )
-            _ensure_column(
-                conn,
-                table="long_term_memory_turn_usage",
-                column="used_workflow_json",
-                definition="TEXT NOT NULL DEFAULT '[]'",
             )
 
     def latest_committed_version(self, *, user_id: str, workspace_fingerprint: str) -> LongTermMemoryVersion | None:
@@ -1093,13 +1090,6 @@ def _string_list(value: Any) -> list[str]:
     if isinstance(value, list):
         return [str(item) for item in value if str(item)]
     return []
-
-
-def _ensure_column(conn: sqlite3.Connection, *, table: str, column: str, definition: str) -> None:
-    rows = conn.execute(f"PRAGMA table_info({table})").fetchall()
-    if any(str(row["name"]) == column for row in rows):
-        return
-    conn.execute(f"ALTER TABLE {table} ADD COLUMN {column} {definition}")
 
 
 def _item_row_values(item: LongTermMemoryItem) -> tuple[Any, ...]:

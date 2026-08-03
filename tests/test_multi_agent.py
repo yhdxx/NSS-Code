@@ -11,6 +11,7 @@ from mycodingagent.multi_agent.context import (
 )
 from mycodingagent.multi_agent.models import AgentRole, MultiAgentRun, RunStatus, StepStatus
 from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
+from tests.model_manager_stub import RawClientModelManager
 from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.multi_agent.tool_policy import schemas_for_role
 from mycodingagent.multi_agent.tools import (
@@ -485,12 +486,12 @@ def test_execute_round_limit_failure_is_diagnostic(tmp_path, monkeypatch):
         )
 
     monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.agent_round_limit", lambda: 2)
-    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.stream_one_round", fake_stream_one_round)
+    monkeypatch.setattr("mycodingagent.llm_runtime.client.stream_one_round", fake_stream_one_round)
 
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=registry,
-        api_client=object(),
+        model_manager=RawClientModelManager(object()),
         memory_runtime=None,
     )
     result = asyncio.run(orchestrator.run(run_id=run.run_id, main_messages=[]))
@@ -520,7 +521,7 @@ def test_scheduled_tasks_are_processed_in_parallel_batches(tmp_path):
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=ToolRegistry(),
-        api_client=object(),
+        model_manager=RawClientModelManager(object()),
         memory_runtime=None,
     )
     running = 0
@@ -618,11 +619,11 @@ def test_task_test_no_decision_gets_one_forced_retry_then_can_pass(tmp_path, mon
             None,
         )
 
-    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.stream_one_round", fake_stream_one_round)
+    monkeypatch.setattr("mycodingagent.llm_runtime.client.stream_one_round", fake_stream_one_round)
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=registry,
-        api_client=object(),
+        model_manager=RawClientModelManager(object()),
         memory_runtime=None,
     )
 
@@ -691,11 +692,11 @@ def test_task_test_no_decision_fails_with_diagnostic_after_retry(tmp_path, monke
             )
         return ("Still no decision.", [], None)
 
-    monkeypatch.setattr("mycodingagent.multi_agent.orchestrator.stream_one_round", fake_stream_one_round)
+    monkeypatch.setattr("mycodingagent.llm_runtime.client.stream_one_round", fake_stream_one_round)
     orchestrator = MultiAgentOrchestrator(
         store=store,
         registry=registry,
-        api_client=object(),
+        model_manager=RawClientModelManager(object()),
         memory_runtime=None,
     )
 

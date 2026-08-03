@@ -128,6 +128,13 @@ def render_status_line(message: str, *, file: TextIO | None = None) -> None:
 
 def clear_terminal(*, file: TextIO | None = None) -> None:
     """Clear the visible Agent screen without erasing terminal scrollback."""
+    if file is None:
+        from mycodingagent.terminal_ui.application import current_terminal
+
+        terminal = current_terminal()
+        if terminal is not None:
+            terminal.clear_output()
+            return
     output = _resolve_file(file)
     if not _isatty(output):
         return

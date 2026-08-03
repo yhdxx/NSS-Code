@@ -10,7 +10,7 @@ from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime import client as llm_client
 from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.llm_runtime.providers import ChatRequest, normalize_stream_result
-from mycodingagent.llm_runtime.streaming import assistant_message, stream_one_round
+from mycodingagent.llm_runtime.streaming import assistant_message
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.execution import (
     RepeatedFailureTracker,
@@ -80,44 +80,20 @@ def _now() -> float:
     return time()
 
 
-class _LegacyModelManager:
-    def __init__(self, raw_client: Any, model: str = "legacy-model") -> None:
-        self.active_model = model
-        self.raw_client = raw_client
-
-    def active_provider(self) -> Any:
-        return self
-
-    async def stream_chat(self, request: ChatRequest) -> Any:
-        return await stream_one_round(
-            self.raw_client,
-            self.active_model,
-            request.messages,
-            request.tools,
-            display=request.display,
-            output_label=request.output_label,
-            cancel_event=request.cancel_event,
-            bash_classifier=request.bash_classifier,
-            extra_body=request.extra_body,
-        )
-
-
 class MultiAgentOrchestrator:
     def __init__(
         self,
         *,
         store: MultiAgentStore,
         registry: ToolRegistry,
-        model_manager: ModelManager | None = None,
-        api_client: Any | None = None,
-        model: str | None = None,
+        model_manager: ModelManager,
         memory_runtime: Any | None = None,
         cancel_event: asyncio.Event | None = None,
         workspace_root: Any | None = None,
     ) -> None:
         self.store = store
         self.registry = registry
-        self.model_manager = model_manager or _LegacyModelManager(api_client, model or "legacy-model")
+        self.model_manager = model_manager
         self.memory_runtime = memory_runtime
         self.cancel_event = cancel_event
         self.file_coordinator = FileCoordinator(sandbox_root=workspace_root)

@@ -89,10 +89,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     workspace_tracker: Any = None,
     memory_runtime: MemoryRuntime | None = None,
     command_approval_hook: Any = None,
-    write_approval_hook: Any = None,
-    terminal_input_coordinator: Any = None,
-    code_index_service: Any = None,
-    lsp_service: Any = None,
+    terminal_input: Any = None,
     project_graph_service: Any = None,
     bash_policy_evaluator: Any = None,
 ) -> ToolRegistry:
@@ -114,16 +111,12 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     from mycodingagent.tool_runtime.read_file import ReadFile  # 导入当前模块需要的依赖。
     from mycodingagent.tool_runtime.write_file import WriteFile  # 导入当前模块需要的依赖。
 
+    if bash_policy_evaluator is None:
+        raise ValueError("bash_policy_evaluator is required")
     file_state_cache = file_state_cache or FileStateCache()  # 保存配置值或中间计算结果。
     sandbox_root = get_sandbox_root()  # 保存配置值或中间计算结果。
-    if project_graph_service is None:
-        # Keep graph schemas stable for every runtime, including lightweight test/embedded callers.
-        from mycodingagent.tool_runtime.project_graph import UnavailableProjectGraphService
-
-        project_graph_service = UnavailableProjectGraphService()
-
     registry = ToolRegistry()  # 保存配置值或中间计算结果。
-    registry.register(AskUser(terminal_input_coordinator))
+    registry.register(AskUser(terminal_input))
     registry.register(  # 执行当前步骤的业务逻辑。
         ReadFile(  # 执行当前步骤的业务逻辑。
             file_cache=file_cache,  # 保存配置值或中间计算结果。

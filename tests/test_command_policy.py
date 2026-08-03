@@ -122,25 +122,28 @@ class _AllowHook(CommandApprovalHook):
         return CommandApprovalDecision(allowed=True, reason="user_allowed")
 
 
+def _evaluator(tmp_path) -> BashPolicyEvaluator:
+    return BashPolicyEvaluator(BashPolicyStore(tmp_path / "policy.sqlite3"))
+
+
 def test_denied_dangerous_command_is_not_executed(monkeypatch, tmp_path):
     """Denial must short-circuit before Docker is ever invoked."""
     monkeypatch.setattr("mycodingagent.tool_runtime.bash.shutil.which", lambda name: "/usr/bin/docker")
     hook = _DenyHook()
-    tool = Bash(sandbox_root=tmp_path, approval_hook=hook)
+    tool = Bash(sandbox_root=tmp_path, approval_hook=hook, policy_evaluator=_evaluator(tmp_path))
 
     result = asyncio.run(tool.execute(tool.params_model(command="rm -rf /workspace", intent="clean")))
 
     assert result.is_error is True
     assert USER_DENIED_COMMAND_MESSAGE in result.output
-    assert len(hook.requests) == 1
-    assert hook.requests[0].intent == "clean"
+    assert hook.requests == []
 
 
 def test_safe_command_skips_approval(monkeypatch, tmp_path):
     """An ordinary command must never reach the approval hook."""
     monkeypatch.setattr("mycodingagent.tool_runtime.bash.shutil.which", lambda name: None)
     hook = _DenyHook()
-    tool = Bash(sandbox_root=tmp_path, approval_hook=hook)
+    tool = Bash(sandbox_root=tmp_path, approval_hook=hook, policy_evaluator=_evaluator(tmp_path))
 
     result = asyncio.run(tool.execute(tool.params_model(command="ls -la", intent="list")))
 
@@ -151,7 +154,7 @@ def test_safe_command_skips_approval(monkeypatch, tmp_path):
 def test_no_hook_means_no_gate(monkeypatch, tmp_path):
     """Non-interactive callers keep the previous behaviour: nothing is intercepted."""
     monkeypatch.setattr("mycodingagent.tool_runtime.bash.shutil.which", lambda name: None)
-    tool = Bash(sandbox_root=tmp_path)
+    tool = Bash(sandbox_root=tmp_path, policy_evaluator=_evaluator(tmp_path))
 
     result = asyncio.run(tool.execute(tool.params_model(command="rm -rf /workspace", intent="x")))
 
@@ -177,7 +180,7 @@ def test_bash_execute_passes_checked_image_and_timeout_to_docker(monkeypatch, tm
     monkeypatch.setattr(Bash, "_check_image_available", ok_check)
     monkeypatch.setattr(Bash, "_execute_docker", fake_execute_docker)
 
-    tool = Bash(sandbox_root=tmp_path)
+    tool = Bash(sandbox_root=tmp_path, policy_evaluator=_evaluator(tmp_path))
     result = asyncio.run(tool.execute(tool.params_model(command="echo ok", timeout=7, intent="verify")))
 
     assert result.output == "ok"

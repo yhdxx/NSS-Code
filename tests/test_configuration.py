@@ -42,7 +42,6 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE", None)
     env.pop("MYCODINGAGENT_MILVUS_SPARSE_ALGO", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
-    env.pop("MYCODINGAGENT_BGE_MODEL", None)
     env.pop("MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD", None)
     env.pop("MYCODINGAGENT_USER_SKILL_CACHE_MAX_ENTRIES", None)
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
@@ -73,7 +72,6 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_MILVUS_SPARSE_METRIC_TYPE", None)
     env.pop("MYCODINGAGENT_MILVUS_SPARSE_ALGO", None)
     env.pop("MYCODINGAGENT_EMBEDDING_MODEL", None)
-    env.pop("MYCODINGAGENT_BGE_MODEL", None)
     env.pop("MYCODINGAGENT_SKILL_SESSION_ACTIVATION_REWARD", None)
     env.pop("MYCODINGAGENT_USER_SKILL_CACHE_MAX_ENTRIES", None)
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
@@ -135,7 +133,8 @@ def test_config_file_controls_embedding_and_milvus(tmp_path):
         json.dumps(
             {
                 "embedding": {
-                    "provider": "openai_compatible",
+                    "provider": "http",
+                    "api_format": "openai",
                     "model": "text-embedding-v4",
                     "endpoint": "https://dashscope.aliyuncs.com/compatible-mode/v1/embeddings",
                     "dimension": 1536,
@@ -160,7 +159,7 @@ def test_config_file_controls_embedding_and_milvus(tmp_path):
 
     data = _config_probe(config_path)
 
-    assert data["provider"] == "openai_compatible"
+    assert data["provider"] == "http"
     assert data["model"] == "text-embedding-v4"
     assert data["api_format"] == "openai"
     assert data["dimension"] == 1536
@@ -185,15 +184,6 @@ def test_config_file_overrides_environment_variable(tmp_path):
     data = _config_probe(config_path, extra_env={"MYCODINGAGENT_MILVUS_PORT": "19532"})
 
     assert data["milvus_uri"] == "http://127.0.0.1:19531"
-
-
-def test_config_file_overrides_legacy_bge_environment_variable(tmp_path):
-    config_path = tmp_path / "config.json"
-    config_path.write_text(json.dumps({"embedding": {"model": "configured-model"}}), encoding="utf-8")
-
-    data = _config_probe(config_path, extra_env={"MYCODINGAGENT_BGE_MODEL": "legacy-env-model"})
-
-    assert data["model"] == "configured-model"
 
 
 def test_empty_config_string_falls_back_to_environment_variable(tmp_path):

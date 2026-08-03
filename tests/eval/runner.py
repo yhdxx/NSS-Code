@@ -16,6 +16,8 @@ import time
 from pathlib import Path
 from typing import Any
 
+from tests.model_manager_stub import RawClientModelManager, ask_model_with_raw_client
+
 
 DATASET_DIR = Path("tests/eval/datasets")
 RESULTS_DIR = Path("tests/eval/results")
@@ -44,10 +46,10 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 
 def precheck_bge() -> dict[str, Any]:
-    from mycodingagent.skill_runtime.embeddings import BgeHttpEmbeddingService
+    from mycodingagent.skill_runtime.embeddings import HttpEmbeddingService
 
     started = time.time()
-    service = BgeHttpEmbeddingService(timeout=15)
+    service = HttpEmbeddingService(timeout=15)
     texts = ["前端页面设计", "数据库迁移", "上下文恢复"]
     vectors = service.embed_many(texts)
     dims = [len(vector) for vector in vectors]
@@ -67,7 +69,7 @@ def precheck_bge() -> dict[str, Any]:
 
 def run_skill_router(dataset_path: Path, *, limit: int | None = None, keep_collection: bool = False) -> dict[str, Any]:
     # Keep this import inside the function so callers may set env vars before running.
-    from mycodingagent.skill_runtime.embeddings import BgeHttpEmbeddingService, EmbeddingCache
+    from mycodingagent.skill_runtime.embeddings import EmbeddingCache, HttpEmbeddingService
     from mycodingagent.skill_runtime.models import SkillRecord
     from mycodingagent.skill_runtime.vector_store import MilvusVectorStore
 
@@ -89,7 +91,7 @@ def run_skill_router(dataset_path: Path, *, limit: int | None = None, keep_colle
     collection_name = os.getenv("MYCODINGAGENT_MILVUS_COLLECTION", "")
     rows: list[dict[str, Any]] = []
     try:
-        service = BgeHttpEmbeddingService(timeout=60)
+        service = HttpEmbeddingService(timeout=60)
         cache = EmbeddingCache(RESULTS_DIR / "skill_router_embeddings.sqlite3")
         vector_store = MilvusVectorStore(service, cache)
         record_values = list(records.values())
@@ -418,9 +420,9 @@ def run_multi_agent_ab(dataset_path: Path, *, limit: int | None = None, project_
 async def _run_multi_agent_case(
     case: dict[str, Any], *, mode: str, ordinal: int, capture_stdout: bool = True,
 ) -> dict[str, Any]:
-    os.environ.setdefault("STEP_TOKEN", "0")
-    os.environ.setdefault("ROUND_TOKEN", "0")
-    os.environ.setdefault("CONVERSATION_TOKEN", "0")
+    os.environ.setdefault("MYCODINGAGENT_STEP_TOKEN", "0")
+    os.environ.setdefault("MYCODINGAGENT_ROUND_TOKEN", "0")
+    os.environ.setdefault("MYCODINGAGENT_CONVERSATION_TOKEN", "0")
     os.environ.setdefault("MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED", "0")
 
     from openai import AsyncOpenAI
@@ -451,11 +453,6 @@ async def _run_multi_agent_case(
             workspace_root=str(workspace),
         )
         api_client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
-        registry = create_default_registry(
-            file_cache=FileCache(),
-            file_state_cache=FileStateCache(),
-            memory_runtime=memory_runtime,
-        )
         # Replace default sandbox-rooted tools with workspace-rooted tools for this isolated case.
         registry = _workspace_registry(workspace, memory_runtime)
         multi_store = MultiAgentStore(state_dir / f"{mode}_multi_agent.sqlite3")
@@ -470,12 +467,14 @@ async def _run_multi_agent_case(
                         f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
                         f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
                     )
-                    text, messages = await agent_client.ask_deepseek(
+                    text, messages = await ask_model_with_raw_client(
                         api_client,
                         prompt,
                         registry,
                         agent_client.format_openai_tools(registry.get_all_schemas("openai")),
-                        messages=None,
+                        messages=agent_client.create_initial_messages(
+                            registry, memory_runtime=memory_runtime
+                        ),
                         memory_runtime=memory_runtime,
                         core_tool_schemas=registry.get_all_schemas("openai"),
                     )
@@ -485,9 +484,8 @@ async def _run_multi_agent_case(
                     orchestrator = MultiAgentOrchestrator(
                         store=multi_store,
                         registry=registry,
-                        api_client=api_client,
+                        model_manager=RawClientModelManager(api_client, profile.model),
                         memory_runtime=memory_runtime,
-                        model=profile.model,
                     )
                     run = await orchestrator.start(
                         task=(
@@ -550,6 +548,7 @@ async def _run_multi_agent_case(
 def _workspace_registry(workspace: Path, memory_runtime: Any, project_graph_service: Any | None = None) -> Any:
     from mycodingagent.tool_runtime import ToolRegistry
     from mycodingagent.tool_runtime.bash import Bash
+    from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
     from mycodingagent.tool_runtime.edit_file import EditFile
     from mycodingagent.tool_runtime.file_state_cache import FileStateCache
     from mycodingagent.tool_runtime.glob import Glob
@@ -573,7 +572,14 @@ def _workspace_registry(workspace: Path, memory_runtime: Any, project_graph_serv
     registry.register(ReadFile(file_cache=file_cache, file_state_cache=file_state_cache, sandbox_root=workspace))
     registry.register(WriteFile(file_cache=file_cache, file_state_cache=file_state_cache, sandbox_root=workspace))
     registry.register(EditFile(file_cache=file_cache, file_state_cache=file_state_cache, sandbox_root=workspace))
-    registry.register(Bash(sandbox_root=workspace))
+    registry.register(
+        Bash(
+            sandbox_root=workspace,
+            policy_evaluator=BashPolicyEvaluator(
+                BashPolicyStore(memory_runtime.store.db_path)
+            ),
+        )
+    )
     registry.register(Glob(sandbox_root=workspace))
     registry.register(Grep(sandbox_root=workspace))
     if project_graph_service is not None:

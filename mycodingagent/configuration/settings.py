@@ -279,22 +279,13 @@ def _default_user_id() -> str:
     )
 
 
-def _default_embedding_api_format() -> str:
-    provider = _user_str("embedding.provider", ("MYCODINGAGENT_EMBEDDING_PROVIDER",), "bge_http").strip().lower()
-    if provider in {"openai", "openai_compatible", "openai-compatible"}:
-        return "openai"
-    if provider == "dashscope":
-        return "dashscope"
-    return "ollama"
-
-
 def _default_builtin_skills_root() -> Path:
     return Path(__file__).resolve().parents[2] / "skills"
 
 
 def _default_workspace_skills_root() -> Path:
     raw_root = (
-        _user_str("skills.workspace_root", ("MYCODINGAGENT_WORKSPACE_SKILLS_ROOT", "MYCODINGAGENT_SKILLS_ROOT"), "")
+        _user_str("skills.workspace_root", ("MYCODINGAGENT_WORKSPACE_SKILLS_ROOT",), "")
     )
     if raw_root:
         return Path(raw_root).expanduser()
@@ -438,13 +429,13 @@ def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
         storage=_raw_env_str(
             raw,
             "storage",
-            ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE", "MYCODINGAGENT_LONG_TERM_MEMORY_STORAGE_PROFILE"),
+            ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE",),
             active,
         ) or active,
         search=_raw_env_str(
             raw,
             "search",
-            ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH", "MYCODINGAGENT_LONG_TERM_MEMORY_SEARCH_PROFILE"),
+            ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH",),
             "memory_search",
         ) or "memory_search",
     )
@@ -528,19 +519,16 @@ class ClientConfig:
     )
     multiline_argument_fields: frozenset[str] = frozenset({"command", "content", "old_string", "new_string"})
     debug: bool = field(
-        default_factory=lambda: _user_bool("client.debug", ("DEBUG", "MYCODINGAGENT_DEBUG"), False)
+        default_factory=lambda: _user_bool("client.debug", ("MYCODINGAGENT_DEBUG",), False)
     )
     step_token: bool = field(
-        default_factory=lambda: _user_bool("client.step_token", ("STEP_TOKEN",), True)
+        default_factory=lambda: _user_bool("client.step_token", ("MYCODINGAGENT_STEP_TOKEN",), True)
     )
     round_token: bool = field(
-        default_factory=lambda: _user_bool("client.round_token", ("ROUND_TOKEN",), True)
+        default_factory=lambda: _user_bool("client.round_token", ("MYCODINGAGENT_ROUND_TOKEN",), True)
     )
     conversation_token: bool = field(
-        default_factory=lambda: _user_bool("client.conversation_token", ("CONVERSATION_TOKEN",), True)
-    )
-    legacy_system_prompt: bool = field(
-        default_factory=lambda: _user_bool("client.legacy_system_prompt", ("MYCODINGAGENT_LEGACY_SYSTEM_PROMPT",), False)
+        default_factory=lambda: _user_bool("client.conversation_token", ("MYCODINGAGENT_CONVERSATION_TOKEN",), True)
     )
 
 
@@ -597,7 +585,7 @@ class MemoryConfig:
         default_factory=lambda: _user_bool("memory.enabled", ("MYCODINGAGENT_MEMORY_ENABLED",), True)
     )
     output_context_compression: bool = field(
-        default_factory=lambda: _user_bool("memory.output_context_compression", ("OUTPUT_CONTEXT_COMPRESSION",), True)
+        default_factory=lambda: _user_bool("memory.output_context_compression", ("MYCODINGAGENT_OUTPUT_CONTEXT_COMPRESSION",), True)
     )
     state_dir: Path = field(default_factory=_default_state_dir)
     db_path: Path = field(
@@ -882,7 +870,7 @@ class SkillConfig:
         default_factory=lambda: _user_int("skills.session_skill_cache_max_entries", ("MYCODINGAGENT_SESSION_SKILL_CACHE_MAX_ENTRIES",), 200)
     )
     output_recall_skill: bool = field(
-        default_factory=lambda: _user_bool("skills.output_recall_skill", ("OUTPUT_RECALL_SKILL",), True)
+        default_factory=lambda: _user_bool("skills.output_recall_skill", ("MYCODINGAGENT_OUTPUT_RECALL_SKILL",), True)
     )
     vector_sync_batch_size: int = field(
         default_factory=lambda: max(1, _user_int("skills.vector_sync_batch_size", ("MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE",), 2))
@@ -904,29 +892,29 @@ class SkillConfig:
 class EmbeddingConfig:
     """Embedding 模型配置：provider/model/endpoint/api_key 等。"""
     provider: str = field(
-        default_factory=lambda: _user_str("embedding.provider", ("MYCODINGAGENT_EMBEDDING_PROVIDER",), "bge_http")
+        default_factory=lambda: _user_str("embedding.provider", ("MYCODINGAGENT_EMBEDDING_PROVIDER",), "http")
     )
     model: str = field(
-        default_factory=lambda: _user_str("embedding.model", ("MYCODINGAGENT_EMBEDDING_MODEL", "MYCODINGAGENT_BGE_MODEL"), "bge-m3")
+        default_factory=lambda: _user_str("embedding.model", ("MYCODINGAGENT_EMBEDDING_MODEL",), "bge-m3")
     )
     endpoint: str = field(
         default_factory=lambda: _user_str(
             "embedding.endpoint",
-            ("MYCODINGAGENT_EMBEDDING_ENDPOINT", "MYCODINGAGENT_BGE_ENDPOINT"),
+            ("MYCODINGAGENT_EMBEDDING_ENDPOINT",),
             "http://127.0.0.1:11434/api/embed",
         )
     )
     api_format: str = field(
         default_factory=lambda: _user_str(
             "embedding.api_format",
-            ("MYCODINGAGENT_EMBEDDING_API_FORMAT", "MYCODINGAGENT_BGE_API_FORMAT"),
-            _default_embedding_api_format(),
+            ("MYCODINGAGENT_EMBEDDING_API_FORMAT",),
+            "ollama",
         )
     )
     api_key: str | None = field(
         default_factory=lambda: _user_str(
             "embedding.api_key",
-            ("MYCODINGAGENT_EMBEDDING_API_KEY", "MYCODINGAGENT_BGE_API_KEY"),
+            ("MYCODINGAGENT_EMBEDDING_API_KEY",),
             "",
         ) or None
     )
@@ -935,7 +923,7 @@ class EmbeddingConfig:
             0.1,
             _user_float(
                 "embedding.timeout",
-                ("MYCODINGAGENT_EMBEDDING_TIMEOUT", "MYCODINGAGENT_BGE_TIMEOUT"),
+                ("MYCODINGAGENT_EMBEDDING_TIMEOUT",),
                 30.0,
             ),
         )
@@ -943,7 +931,7 @@ class EmbeddingConfig:
     query_instruction: str = field(
         default_factory=lambda: _user_str(
             "embedding.query_instruction",
-            ("MYCODINGAGENT_EMBEDDING_QUERY_INSTRUCTION", "MYCODINGAGENT_BGE_QUERY_INSTRUCTION"),
+            ("MYCODINGAGENT_EMBEDDING_QUERY_INSTRUCTION",),
             "为这个句子生成表示以用于检索相关文章：",
         )
     )
@@ -953,7 +941,7 @@ class EmbeddingConfig:
     device: str | None = field(
         default_factory=lambda: _user_str(
             "embedding.device",
-            ("MYCODINGAGENT_EMBEDDING_DEVICE", "MYCODINGAGENT_BGE_DEVICE"),
+            ("MYCODINGAGENT_EMBEDDING_DEVICE",),
             "",
         ) or None
     )
@@ -962,18 +950,18 @@ class EmbeddingConfig:
             1,
             _user_int(
                 "embedding.batch_size",
-                ("MYCODINGAGENT_EMBEDDING_BATCH_SIZE", "MYCODINGAGENT_BGE_BATCH_SIZE"),
+                ("MYCODINGAGENT_EMBEDDING_BATCH_SIZE",),
                 16,
             ),
         )
     )
     dimension: int = field(
-        default_factory=lambda: max(1, _user_int("embedding.dimension", ("MYCODINGAGENT_EMBEDDING_DIMENSION", "MYCODINGAGENT_BGE_DIM"), 1024))
+        default_factory=lambda: max(1, _user_int("embedding.dimension", ("MYCODINGAGENT_EMBEDDING_DIMENSION",), 1024))
     )
     fallback_to_hash: bool = field(
         default_factory=lambda: _user_bool(
             "embedding.fallback_to_hash",
-            ("MYCODINGAGENT_BGE_FALLBACK_TO_HASH",),
+            ("MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH",),
             False,
         )
     )
@@ -986,44 +974,6 @@ class EmbeddingConfig:
     headers: dict = field(
         default_factory=lambda: _user_dict("embedding.headers", ("MYCODINGAGENT_EMBEDDING_HEADERS",), {})
     )
-
-    # 兼容旧 bge_ 前缀属性
-    @property
-    def bge_model(self) -> str:
-        return self.model
-
-    @property
-    def bge_endpoint(self) -> str:
-        return self.endpoint
-
-    @property
-    def bge_api_format(self) -> str:
-        return self.api_format
-
-    @property
-    def bge_api_key(self) -> str | None:
-        return self.api_key
-
-    @property
-    def bge_timeout(self) -> float:
-        return self.timeout
-
-    @property
-    def bge_query_instruction(self) -> str:
-        return self.query_instruction
-
-    @property
-    def bge_device(self) -> str | None:
-        return self.device
-
-    @property
-    def bge_batch_size(self) -> int:
-        return self.batch_size
-
-    @property
-    def bge_dimension(self) -> int:
-        return self.dimension
-
 
 @dataclass(frozen=True)
 class MilvusConfig:
@@ -1120,7 +1070,7 @@ class MCPConfig:
     reconnect_server_step: int = field(
         default_factory=lambda: max(
             1,
-            _user_int("mcp.reconnect_server_step", ("MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP", "RECONNECT_MCP_SERVER_STEP"), 10),
+            _user_int("mcp.reconnect_server_step", ("MYCODINGAGENT_RECONNECT_MCP_SERVER_STEP",), 10),
         )
     )
 
