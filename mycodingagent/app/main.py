@@ -29,6 +29,7 @@ from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration.bootstrap import USER_CONFIG_PATH, USER_CONFIG_README_PATH
 from mycodingagent.configuration.settings import CONFIG
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
+from mycodingagent.media_runtime import MediaModelRuntime
 from mycodingagent.memory import MemoryRuntime
 from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的 SKILL，并按需动态暴露给模型。
 from mycodingagent.sqlite_utils import IncompatibleSchemaError
@@ -135,6 +136,14 @@ async def _run(terminal: TerminalApplication) -> None:
         await model_manager.close()
         return  # Bash 环境无法准备时直接退出，避免后续模型调用命令全部失败。
     print(image_result.output, flush=True)  # 镜像已就绪时打印确认信息。
+
+    media_runtime = MediaModelRuntime(CONFIG.model, sandbox_root=get_sandbox_root())
+    audio_availability = media_runtime.audio_availability()
+    vision_availability = media_runtime.vision_availability()
+    if not audio_availability.enabled:
+        print(f"音频转写工具未启用：{audio_availability.reason}", flush=True)
+    if not vision_availability.enabled:
+        print(f"视觉识别工具未启用：{vision_availability.reason}", flush=True)
 
     workspace_lease = WorkspaceLease(get_sandbox_root(), CONFIG.memory.db_path.parent)
     if CONFIG.sandbox.workspace_lease_enabled:
@@ -257,6 +266,7 @@ async def _run(terminal: TerminalApplication) -> None:
             BashPolicyStore(CONFIG.memory.db_path),
             classify_bash_policy,
         ),
+        media_runtime=media_runtime,
     )
     registry.register(CreatePlan(plan_runtime))
     registry.register(UpdatePlanStep(plan_runtime))
@@ -532,6 +542,7 @@ async def _run(terminal: TerminalApplication) -> None:
             await memory_runtime.close()
         if mcp_manager is not None:
             await mcp_manager.close()
+        await media_runtime.close()
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
         await project_graph_runtime.close()
         workspace_tracker.unsubscribe(project_graph_runtime.mark_dirty)

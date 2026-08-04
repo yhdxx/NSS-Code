@@ -381,6 +381,40 @@ class ModelLongTermMemoryConfig:
     search: str = "main"
 
 
+@dataclass(frozen=True)
+class ModelMediaConfig:
+    """One media capability model selected from a shared provider connection."""
+
+    provider: str
+    model: str
+
+    @classmethod
+    def from_raw(
+        cls,
+        raw: object,
+        *,
+        capability: str,
+        default_provider: str,
+        default_model: str,
+    ) -> "ModelMediaConfig":
+        data = raw if isinstance(raw, dict) else {}
+        env_prefix = f"MYCODINGAGENT_MODEL_{capability.upper()}"
+        return cls(
+            provider=_raw_env_str(
+                data,
+                "provider",
+                (f"{env_prefix}_PROVIDER",),
+                default_provider,
+            ).lower(),
+            model=_raw_env_str(
+                data,
+                "model",
+                (f"{env_prefix}_MODEL",),
+                default_model,
+            ),
+        )
+
+
 def _load_model_profiles() -> dict[str, ModelProfileConfig]:
     raw = _user_dict("model.profiles", (), {})
     if not raw:
@@ -441,6 +475,20 @@ def _load_model_ltm_config() -> ModelLongTermMemoryConfig:
     )
 
 
+def _load_model_media_config(
+    capability: str,
+    *,
+    default_provider: str,
+    default_model: str,
+) -> ModelMediaConfig:
+    return ModelMediaConfig.from_raw(
+        _user_dict(f"model.{capability}", (), {}),
+        capability=capability,
+        default_provider=default_provider,
+        default_model=default_model,
+    )
+
+
 @dataclass(frozen=True)
 class ModelConfig:
     """推理模型配置入口。旧 api.* 配置已移除。"""
@@ -449,6 +497,20 @@ class ModelConfig:
     providers: dict[str, ModelProviderConfig] = field(default_factory=_load_model_providers)
     profiles: dict[str, ModelProfileConfig] = field(default_factory=_load_model_profiles)
     long_term_memory: ModelLongTermMemoryConfig = field(default_factory=_load_model_ltm_config)
+    audio: ModelMediaConfig = field(
+        default_factory=lambda: _load_model_media_config(
+            "audio",
+            default_provider="qwen",
+            default_model="qwen3-asr-flash",
+        )
+    )
+    vision: ModelMediaConfig = field(
+        default_factory=lambda: _load_model_media_config(
+            "vision",
+            default_provider="zhipu",
+            default_model="glm-4v-flash",
+        )
+    )
 
     @property
     def active_profile(self) -> ModelProfileConfig | None:
@@ -496,6 +558,14 @@ class ModelConfig:
                     errors.append(f"model.long_term_memory.{label} 指向不存在的 profile：{key}")
                 elif profile is not None:
                     check_provider_api(profile.provider)
+        supported_media_providers = {"zhipu", "qwen"}
+        for capability, media in (("audio", self.audio), ("vision", self.vision)):
+            if media.provider not in supported_media_providers:
+                errors.append(
+                    f"model.{capability}.provider={media.provider or '<empty>'} 不受支持；支持：qwen, zhipu"
+                )
+            if not media.model:
+                errors.append(f"model.{capability}.model 缺少必要字段：model")
         return errors
 
 

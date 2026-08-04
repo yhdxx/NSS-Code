@@ -483,6 +483,10 @@ def tool_call_metadata(tool_name: str, raw_args: str, output: str) -> dict[str, 
             "operation",
             "name",
             "content_type",
+            "provider",
+            "model",
+            "image_count",
+            "strategy",
         ):
             if payload.get(key) is not None:
                 metadata[key] = compact_tool_metadata_value(payload[key])

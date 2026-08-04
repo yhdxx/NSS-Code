@@ -5,6 +5,12 @@
     "providers": {
       "deepseek": {
         "api": ""
+      },
+      "zhipu": {
+        "api": ""
+      },
+      "qwen": {
+        "api": ""
       }
     },
     "profiles": {
@@ -23,6 +29,14 @@
     "long_term_memory": {
       "storage": "main",
       "search": "memory_search"
+    },
+    "audio": {
+      "provider": "qwen",
+      "model": "qwen3-asr-flash"
+    },
+    "vision": {
+      "provider": "zhipu",
+      "model": "glm-4v-flash"
     }
   },
   "client": {

@@ -83,7 +83,7 @@ myAgent --upgrade
 仓库内 `.mycodingagent/config.example.json` / `.mycodingagent/config.example.yaml` 仅作为字段参考，
 不参与运行时配置读取。所有核心参数都可以放入配置文件，也仍然支持环境变量兜底，包括：
 
-- API 地址、模型名、密钥
+- 对话、长期记忆、音频转写和视觉模型；同一厂商的模型共用一个 API Key
 - Docker 沙箱镜像、CPU/内存/超时限制
 - 上下文窗口、压缩阈值、热工作区阈值
 - Skill 检索、Milvus、Embedding、LRFU 参数
@@ -107,7 +107,7 @@ Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和�
 2. `FileStateCache`，记录模型已读取文件的内容和版本。
 3. `WorkspaceChangeTracker`，监听用户在 Agent 外部修改文件。
 4. `MemoryRuntime`，负责会话持久化、上下文虚拟化、检查点和恢复。
-5. 核心工具注册表，注册文件、Shell、记忆、MCP、Skill 等工具。
+5. 核心工具注册表，注册文件、Shell、记忆、MCP、Skill、音频转写和多图视觉分析等工具。
 6. `MCPClientManager`，加载 MCP server 配置并进行 discovery。
 7. `SkillRuntime`，扫描 Skill、更新索引、启动文件监听和 LRFU 缓存。
 8. `LongTermMemoryRuntime`，启动未完成 extraction 的异步回填。

@@ -27,6 +27,8 @@ READ_LIKE_TOOLS = {
     "Glob",
     "Grep",
     "ReadFile",
+    "TranscribeAudio",
+    "AnalyzeImage",
     "BatchRecoverContext",
     "SearchRecoverableContext",
     "SearchSessionHistory",
@@ -42,6 +44,8 @@ STATUS_READ_TOOLS = {
     "Glob",
     "Grep",
     "ReadFile",
+    "TranscribeAudio",
+    "AnalyzeImage",
     "BatchRecoverContext",
     "SearchRecoverableContext",
     "SearchSessionHistory",
@@ -134,6 +138,10 @@ def processing_status(
 
 
 def tool_status_message(tool_name: str) -> str:
+    if tool_name == "TranscribeAudio":
+        return "正在处理音频中"
+    if tool_name == "AnalyzeImage":
+        return "正在处理图片中"
     if tool_name in {"Grep", "SearchRecoverableContext", "SearchSessionHistory"}:
         return "搜索内容中"
     if tool_name in STATUS_READ_TOOLS:
@@ -525,6 +533,14 @@ def read_call_summary(call: _ToolCallView) -> _ReadSummary:
         if limit:
             return _ReadSummary("Read", f"{path} lines {offset + 1}-{offset + int(limit)}")
         return _ReadSummary("Read", path)
+    if call.name == "TranscribeAudio":
+        source = compact_one_line(call.args.get("source"), 120)
+        return _ReadSummary("Transcribe", source)
+    if call.name == "AnalyzeImage":
+        sources = call.args.get("sources")
+        count = len(sources) if isinstance(sources, list) else 0
+        query = compact_one_line(call.args.get("query"), 100)
+        return _ReadSummary("Analyze", f"{count} image(s): {query}")
     if call.name == "BatchRecoverContext":
         items = call.args.get("items")
         if isinstance(items, list):

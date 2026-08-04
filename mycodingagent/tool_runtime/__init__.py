@@ -92,6 +92,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     terminal_input: Any = None,
     project_graph_service: Any = None,
     bash_policy_evaluator: Any = None,
+    media_runtime: Any = None,
 ) -> ToolRegistry:
     from mycodingagent.tool_runtime.ask_user import AskUser
     from mycodingagent.tool_runtime.bash import Bash  # 导入当前模块需要的依赖。
@@ -149,6 +150,13 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     registry.register(Bash(sandbox_root=sandbox_root, approval_hook=command_approval_hook, policy_evaluator=bash_policy_evaluator))  # 注入审批钩子后，高危命令会先征求用户同意。
     registry.register(Glob(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
     registry.register(Grep(sandbox_root=sandbox_root))  # 保存配置值或中间计算结果。
+    if media_runtime is not None:
+        from mycodingagent.tool_runtime.media import AnalyzeImage, TranscribeAudio
+
+        if media_runtime.audio_availability().enabled:
+            registry.register(TranscribeAudio(media_runtime))
+        if media_runtime.vision_availability().enabled:
+            registry.register(AnalyzeImage(media_runtime))
     if project_graph_service is not None:
         from mycodingagent.tool_runtime.project_graph import (
             ProjectArchitectureTool,

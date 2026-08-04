@@ -1,7 +1,8 @@
 from __future__ import annotations
 
-from pathlib import Path
+import asyncio
 import json
+from pathlib import Path
 
 from mycodingagent.llm_runtime.streaming import PendingToolCall
 from mycodingagent.terminal_ui.output import (
@@ -9,8 +10,10 @@ from mycodingagent.terminal_ui.output import (
     default_bash_display_level,
     mark_terminal_region_start,
     mcp_display_level,
+    processing_status,
     render_assistant_markdown,
     render_tool_calls,
+    tool_status_message,
 )
 from mycodingagent.terminal_ui.theme import (
     COMPOSER_BACKGROUND,
@@ -60,6 +63,39 @@ def test_tool_calls_group_reads_and_render_edit_preview(capsys):
     assert "With" in output
     assert "new value" in output
     assert "old_string" not in output
+
+
+def test_media_tool_calls_render_as_reads_and_have_processing_status(capsys):
+    render_tool_calls(
+        [
+            _call("TranscribeAudio", source="meeting.wav"),
+            _call(
+                "AnalyzeImage",
+                sources=["before.png", "after.png"],
+                query="比较界面变化",
+            ),
+        ]
+    )
+
+    output = capsys.readouterr().out
+    assert "• Explored" in output
+    assert "Transcribe meeting.wav" in output
+    assert "Analyze 2 image(s): 比较界面变化" in output
+    assert tool_status_message("TranscribeAudio") == "正在处理音频中"
+    assert tool_status_message("AnalyzeImage") == "正在处理图片中"
+
+
+def test_media_processing_status_animates_while_tool_is_waiting():
+    output = _TTYBuffer(tty=True)
+
+    async def run() -> None:
+        async with processing_status("正在处理图片中", file=output):
+            await asyncio.sleep(0)
+
+    asyncio.run(run())
+
+    assert "H-Agent:正在处理图片中." in output.content
+    assert output.content.endswith("\r\033[2K")
 
 
 def test_default_bash_display_level_is_ui_only_and_conservative():

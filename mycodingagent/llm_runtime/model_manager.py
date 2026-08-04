@@ -9,6 +9,7 @@ from mycodingagent.configuration.settings import (
     CONFIG,
     ModelConfig,
     ModelLongTermMemoryConfig,
+    ModelMediaConfig,
     ModelProviderConfig,
     ModelProfileConfig,
     _raw_env_str,
@@ -175,6 +176,8 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
     if not profiles:
         profiles = dict(CONFIG.model.profiles)
     ltm_raw = model.get("long_term_memory") if isinstance(model.get("long_term_memory"), dict) else {}
+    audio_raw = model.get("audio") if isinstance(model.get("audio"), dict) else {}
+    vision_raw = model.get("vision") if isinstance(model.get("vision"), dict) else {}
     return ModelConfig(
         active=active,
         providers=providers,
@@ -192,6 +195,18 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
                 ("MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH",),
                 "memory_search",
             ) or "memory_search",
+        ),
+        audio=ModelMediaConfig.from_raw(
+            audio_raw,
+            capability="audio",
+            default_provider="qwen",
+            default_model="qwen3-asr-flash",
+        ),
+        vision=ModelMediaConfig.from_raw(
+            vision_raw,
+            capability="vision",
+            default_provider="zhipu",
+            default_model="glm-4v-flash",
         ),
     )
 

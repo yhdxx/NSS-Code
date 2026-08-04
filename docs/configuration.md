@@ -71,6 +71,10 @@ myAgent
 | `model.profiles.<key>.reasoning` | `MYCODINGAGENT_MODEL_PROFILE_<KEY>_REASONING` | `null` | 可选思考强度/模式，支持厂商专属字段 |
 | `model.long_term_memory.storage` | `MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_STORAGE` | `"main"` | 长期记忆存储/抽取模型 profile |
 | `model.long_term_memory.search` | `MYCODINGAGENT_MODEL_LONG_TERM_MEMORY_SEARCH` | `"memory_search"` | 长期记忆检索模型 profile |
+| `model.audio.provider` | `MYCODINGAGENT_MODEL_AUDIO_PROVIDER` | `"qwen"` | 音频转写厂商，仅支持 `zhipu`、`qwen` |
+| `model.audio.model` | `MYCODINGAGENT_MODEL_AUDIO_MODEL` | `"qwen3-asr-flash"` | 音频转写模型 |
+| `model.vision.provider` | `MYCODINGAGENT_MODEL_VISION_PROVIDER` | `"zhipu"` | 图片分析厂商，仅支持 `zhipu`、`qwen` |
+| `model.vision.model` | `MYCODINGAGENT_MODEL_VISION_MODEL` | `"glm-4v-flash"` | 单图分析及多图比较模型 |
 
 ```json
 {
@@ -78,6 +82,12 @@ myAgent
     "active": "main",
     "providers": {
       "deepseek": {
+        "api": "sk-..."
+      },
+      "zhipu": {
+        "api": "sk-..."
+      },
+      "qwen": {
         "api": "sk-..."
       }
     },
@@ -97,6 +107,14 @@ myAgent
     "long_term_memory": {
       "storage": "main",
       "search": "memory_search"
+    },
+    "audio": {
+      "provider": "qwen",
+      "model": "qwen3-asr-flash"
+    },
+    "vision": {
+      "provider": "zhipu",
+      "model": "glm-4v-flash"
     }
   }
 }
@@ -110,6 +128,12 @@ myAgent
 `MYCODINGAGENT_MODEL_PROVIDER_QWEN_API`，`model.profiles.memory_search.reasoning` 对应
 `MYCODINGAGENT_MODEL_PROFILE_MEMORY_SEARCH_REASONING`。常见厂商 API 也支持通用别名，例如
 `OPENAI_API_KEY`、`ANTHROPIC_API_KEY`、`QWEN_API_KEY`、`DASHSCOPE_API_KEY`、`GEMINI_API_KEY`。
+
+音频转写与视觉识别复用 `model.providers.<provider>.api`，不单独保存媒体密钥。缺少所选厂商 API 时，
+应用仍可启动，只禁用对应媒体工具并打印原因。音频默认使用千问 `qwen3-asr-flash`，视觉默认使用智谱
+`glm-4v-flash`；切换为智谱音频可使用 `glm-asr-2512`，切换为千问视觉建议使用 `qwen3-vl-flash`。
+视觉工具一次接收 1 到 8 张图片：千问原生在一次请求中比较多图；智谱默认模型逐图提取编号证据，再综合为比较结论。媒体输入支持
+工作区文件和无需认证的公网 HTTP/HTTPS URL；音频超过厂商限制时明确失败，不自动切片。
 
 ### 4.2 `client` — LLM 客户端
 
@@ -271,6 +295,10 @@ myAgent
 | `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_API` / `DEEPSEEK_API_KEY` | `model.providers.deepseek.api` | string |
 | `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_BASE_URL` / `DEEPSEEK_BASE_URL` | `model.providers.deepseek.base_url` | string |
 | `MYCODINGAGENT_MODEL_ACTIVE` | `model.active` | string |
+| `MYCODINGAGENT_MODEL_AUDIO_PROVIDER` | `model.audio.provider` | string |
+| `MYCODINGAGENT_MODEL_AUDIO_MODEL` | `model.audio.model` | string |
+| `MYCODINGAGENT_MODEL_VISION_PROVIDER` | `model.vision.provider` | string |
+| `MYCODINGAGENT_MODEL_VISION_MODEL` | `model.vision.model` | string |
 | `MYCODINGAGENT_DEBUG` | `client.debug` | bool |
 | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | int |
 | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | int |

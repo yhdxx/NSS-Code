@@ -7,6 +7,7 @@ from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration.settings import (
     ModelConfig,
     ModelLongTermMemoryConfig,
+    ModelMediaConfig,
     ModelProfileConfig,
     ModelProviderConfig,
 )
@@ -140,6 +141,21 @@ def test_model_provider_config_overrides_environment(tmp_path, monkeypatch):
     manager = ModelManager(config_path=config_path, model_config=load_model_config(config_path))
 
     assert manager.active_profile.api == "sk-deepseek"
+
+
+def test_model_manager_loads_media_models_without_duplicate_api_keys(tmp_path):
+    config_path = tmp_path / "config.json"
+    _write_model_config(config_path)
+    payload = json.loads(config_path.read_text(encoding="utf-8"))
+    payload["model"]["audio"] = {"provider": "qwen", "model": "qwen3-asr-flash"}
+    payload["model"]["vision"] = {"provider": "qwen", "model": "qwen3-vl-flash"}
+    config_path.write_text(json.dumps(payload), encoding="utf-8")
+
+    config = load_model_config(config_path)
+
+    assert config.audio == ModelMediaConfig(provider="qwen", model="qwen3-asr-flash")
+    assert config.vision == ModelMediaConfig(provider="qwen", model="qwen3-vl-flash")
+    assert config.provider("qwen").api == "sk-qwen"
 
 
 def test_missing_provider_entry_can_be_supplied_by_environment(tmp_path, monkeypatch):

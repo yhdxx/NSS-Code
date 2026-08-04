@@ -25,7 +25,7 @@ ROOT = Path(__file__).resolve().parents[1]
 def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None) -> dict:
     home = config_path.parent / "home"
     user_config = home / ".mycodingagent" / "config.json"
-    user_config.parent.mkdir(parents=True)
+    user_config.parent.mkdir(parents=True, exist_ok=True)
     user_config.write_text(config_path.read_text(encoding="utf-8"), encoding="utf-8")
     env = {
         **os.environ,
@@ -49,6 +49,10 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
     env.pop("MYCODINGAGENT_APPROVAL_MODE", None)
+    env.pop("MYCODINGAGENT_MODEL_AUDIO_PROVIDER", None)
+    env.pop("MYCODINGAGENT_MODEL_AUDIO_MODEL", None)
+    env.pop("MYCODINGAGENT_MODEL_VISION_PROVIDER", None)
+    env.pop("MYCODINGAGENT_MODEL_VISION_MODEL", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -80,6 +84,10 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
     env.pop("MYCODINGAGENT_APPROVAL_MODE", None)
+    env.pop("MYCODINGAGENT_MODEL_AUDIO_PROVIDER", None)
+    env.pop("MYCODINGAGENT_MODEL_AUDIO_MODEL", None)
+    env.pop("MYCODINGAGENT_MODEL_VISION_PROVIDER", None)
+    env.pop("MYCODINGAGENT_MODEL_VISION_MODEL", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -115,6 +123,10 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'mcp_project_config_path': str(CONFIG.mcp.project_config_path),\n"
         "  'mcp_user_config_path': str(CONFIG.mcp.user_config_path),\n"
         "  'approval_mode': CONFIG.approval.mode,\n"
+        "  'audio_provider': CONFIG.model.audio.provider,\n"
+        "  'audio_model': CONFIG.model.audio.model,\n"
+        "  'vision_provider': CONFIG.model.vision.provider,\n"
+        "  'vision_model': CONFIG.model.vision.model,\n"
         "  'session_activation_reward': CONFIG.skills.session_activation_reward,\n"
         "  'user_skill_cache_max_entries': CONFIG.skills.user_skill_cache_max_entries,\n"
         "}, ensure_ascii=False, sort_keys=True))\n"
@@ -200,6 +212,31 @@ def test_approval_mode_loads_from_config_and_overrides_environment(tmp_path):
     )
 
     assert data["approval_mode"] == "auto"
+
+
+def test_media_model_defaults_and_environment_overrides(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    defaults = _config_probe(config_path)
+    overridden = _config_probe(
+        config_path,
+        extra_env={
+            "MYCODINGAGENT_MODEL_AUDIO_PROVIDER": "zhipu",
+            "MYCODINGAGENT_MODEL_AUDIO_MODEL": "glm-asr-2512",
+            "MYCODINGAGENT_MODEL_VISION_PROVIDER": "qwen",
+            "MYCODINGAGENT_MODEL_VISION_MODEL": "qwen3-vl-flash",
+        },
+    )
+
+    assert defaults["audio_provider"] == "qwen"
+    assert defaults["audio_model"] == "qwen3-asr-flash"
+    assert defaults["vision_provider"] == "zhipu"
+    assert defaults["vision_model"] == "glm-4v-flash"
+    assert overridden["audio_provider"] == "zhipu"
+    assert overridden["audio_model"] == "glm-asr-2512"
+    assert overridden["vision_provider"] == "qwen"
+    assert overridden["vision_model"] == "qwen3-vl-flash"
 
 
 def test_empty_config_string_falls_back_to_environment_variable(tmp_path):
