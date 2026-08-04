@@ -19,6 +19,7 @@ class CommandContext:
     work_mode: Any = None
     project_graph_runtime: Any = None
     plan_runtime: Any = None
+    approval_runtime: Any = None
     terminal: Any = None
 
 

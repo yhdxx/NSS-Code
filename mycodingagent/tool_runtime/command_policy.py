@@ -20,6 +20,8 @@ from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY, require_compon
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from pydantic import BaseModel
 
+from mycodingagent.approval import ApprovalRuntime
+
 CommandRisk = Literal["normal", "dangerous"]
 ExecutionRisk = Literal["read", "write", "network", "process", "dangerous", "unknown"]
 PolicyLevel = Literal["low", "approval", "high"]
@@ -628,9 +630,12 @@ class CommandApprovalHook:
 @dataclass
 class CLICommandApprovalHook(CommandApprovalHook):
     coordinator: TerminalInput = field(default_factory=SharedTerminalInput)
+    approval_runtime: ApprovalRuntime | None = None
     max_command_chars: int = 2000
 
     async def approve(self, request: CommandApprovalRequest) -> CommandApprovalDecision:
+        if self.approval_runtime is not None and self.approval_runtime.auto_approve:
+            return CommandApprovalDecision(allowed=True, reason="auto 模式自动批准")
         command_text = request.command
         if len(command_text) > self.max_command_chars:
             command_text = command_text[: self.max_command_chars] + "\n... <命令已截断>"

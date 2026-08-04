@@ -533,6 +533,24 @@ class ClientConfig:
 
 
 @dataclass(frozen=True)
+class ApprovalConfig:
+    """Process-wide Bash and MCP approval behavior."""
+
+    mode: str = field(
+        default_factory=lambda: _user_str(
+            "approval.mode",
+            ("MYCODINGAGENT_APPROVAL_MODE",),
+            "default",
+        ).strip().lower()
+    )
+
+    def validation_errors(self) -> list[str]:
+        if self.mode not in {"default", "auto"}:
+            return ["approval.mode 只能是 default 或 auto"]
+        return []
+
+
+@dataclass(frozen=True)
 class MultiAgentConfig:
     """多智能体并发和轮次限制。"""
     max_agent_rounds: int = field(
@@ -1099,6 +1117,7 @@ class AppConfig:
     user_id: str = field(default_factory=_default_user_id)
     model: ModelConfig = field(default_factory=ModelConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
+    approval: ApprovalConfig = field(default_factory=ApprovalConfig)
     multi_agent: MultiAgentConfig = field(default_factory=MultiAgentConfig)
     long_term_memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)

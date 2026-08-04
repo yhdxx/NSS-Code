@@ -61,6 +61,27 @@ ROUND_TOKEN = CONFIG.client.round_token
 CONVERSATION_TOKEN = CONFIG.client.conversation_token
 
 
+class ToolRoundBudget:
+    """Bound consecutive model tool rounds, with optional plan-progress renewal."""
+
+    def __init__(self, max_rounds: int, *, renewable: bool) -> None:
+        self.max_rounds = max(0, int(max_rounds))
+        self.remaining = self.max_rounds
+        self.renewable = renewable
+
+    def consume(self) -> bool:
+        if self.remaining <= 0:
+            return False
+        self.remaining -= 1
+        return True
+
+    def renew_after_plan_progress(self) -> bool:
+        if not self.renewable:
+            return False
+        self.remaining = self.max_rounds
+        return True
+
+
 @dataclass
 class PromptDebugSnapshot:
     request_hash: str
@@ -714,8 +735,12 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     failure_tracker = RepeatedFailureTracker()
     code_query_ledger = CodeQueryLedger()
     frozen_rendered_prompt: RenderedPrompt | None = None
+    round_budget = ToolRoundBudget(
+        MAX_TOOL_ROUNDS,
+        renewable=tool_policy.has_active_plan,
+    )
 
-    for _ in range(MAX_TOOL_ROUNDS):  # 最多循环 MAX_TOOL_ROUNDS 次，防止模型不断调用工具无法结束。
+    while round_budget.consume():  # 无计划时是固定上限；活动计划提交真实进度后可恢复完整预算。
         prepared_messages = round_messages
         summary_text = ""
         if memory_runtime is not None and session_id:
@@ -898,6 +923,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
 
         follow_up_after_tool = False
         created_plan_id = ""
+        plan_progress_submitted = False
         for index, tool_call in enumerate(tool_calls):  # 逐个执行模型请求的本地工具调用。
             tool_call_id = tool_call.tool_id or f"tool_call_{index}"  # 计算工具调用 ID，必须和上面的 assistant tool_calls 对象一致。
             registry_get = getattr(registry, "get", None)
@@ -1008,8 +1034,12 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                     created_plan_id = str(json.loads(raw_tool_output).get("plan_id") or "")
                 except (json.JSONDecodeError, AttributeError):
                     created_plan_id = ""
+            if tool_call.tool_name == "update_plan_step" and not tool_failed:
+                plan_progress_submitted = True
             if follow_up_event is not None and follow_up_event.is_set():
                 follow_up_after_tool = True
+        if plan_progress_submitted:
+            round_budget.renew_after_plan_progress()
         if created_plan_id and plan_runtime is not None:
             if follow_up_event is not None and follow_up_event.is_set():
                 plan_runtime.reject_proposal(created_plan_id, superseded=True)

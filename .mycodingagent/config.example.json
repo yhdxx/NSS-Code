@@ -36,6 +36,9 @@
     "round_token": true,
     "conversation_token": true
   },
+  "approval": {
+    "mode": "default"
+  },
   "multi_agent": {
     "max_agent_rounds": 50,
     "max_parallel_tasks": 5

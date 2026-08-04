@@ -3,6 +3,7 @@ from __future__ import annotations
 import asyncio
 import json
 
+from mycodingagent.approval import ApprovalMode, ApprovalRuntime
 from mycodingagent.commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from mycodingagent.code_intelligence.project_graph_runtime import BootstrapUpdate
 from mycodingagent.work_mode import WorkMode, WorkModeManager
@@ -116,6 +117,23 @@ def test_command_registry_executes_only_exact_command():
     )
 
     assert not model_input.handled
+
+
+def test_approval_command_switches_process_runtime(monkeypatch, capsys):
+    runtime = ApprovalRuntime()
+    messages = [{"role": "system", "content": "system"}]
+    context = CommandContext(None, None, messages, approval_runtime=runtime)
+
+    async def choose_auto(_prompt, _options):
+        return 1
+
+    monkeypatch.setattr(handlers, "request_selection", choose_auto)
+
+    result = asyncio.run(handlers.handle_approval_command(context, ""))
+
+    assert result.messages is messages
+    assert runtime.mode is ApprovalMode.AUTO
+    assert "包括高危操作" in capsys.readouterr().out
 
 
 def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, capsys):

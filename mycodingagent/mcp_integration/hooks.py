@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 from dataclasses import dataclass, field
 
+from mycodingagent.approval import ApprovalRuntime
 from mycodingagent.mcp_integration.policy import MCPApprovalDecision, MCPApprovalRequest
 from mycodingagent.terminal_ui.application import SharedTerminalInput, TerminalCancelled, TerminalInput
 from mycodingagent.terminal_ui.output import (
@@ -34,11 +35,18 @@ class MCPServerLaunchHook:
 
 
 class CLILaunchApprovalHook(MCPServerLaunchHook):
-    def __init__(self, coordinator: TerminalInput) -> None:
+    def __init__(
+        self,
+        coordinator: TerminalInput,
+        approval_runtime: ApprovalRuntime | None = None,
+    ) -> None:
         self.coordinator = coordinator
+        self.approval_runtime = approval_runtime
         self._approved: set[str] = set()
 
     async def approve(self, request: MCPServerLaunchRequest) -> MCPApprovalDecision:
+        if self.approval_runtime is not None and self.approval_runtime.auto_approve:
+            return MCPApprovalDecision(allowed=True, reason="auto 模式自动批准")
         if request.server in self._approved:
             return MCPApprovalDecision(allowed=True, reason="本会话已批准该 Server")
         render_mcp_launch_approval_request(
@@ -62,10 +70,13 @@ class CLILaunchApprovalHook(MCPServerLaunchHook):
 @dataclass
 class CLIApprovalHook(MCPToolApprovalHook):
     coordinator: TerminalInput = field(default_factory=SharedTerminalInput)
+    approval_runtime: ApprovalRuntime | None = None
     max_argument_chars: int = 2000
     _always_allowed: set[tuple[str, str, str]] = field(default_factory=set)
 
     async def approve(self, request: MCPApprovalRequest) -> MCPApprovalDecision:
+        if self.approval_runtime is not None and self.approval_runtime.auto_approve:
+            return MCPApprovalDecision(allowed=True, reason="auto 模式自动批准")
         approval_key = (request.server, request.tool, request.risk)
         if approval_key in self._always_allowed:
             return MCPApprovalDecision(allowed=True, reason="本会话已批准该 MCP 工具")

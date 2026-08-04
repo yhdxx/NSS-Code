@@ -13,6 +13,7 @@ from mycodingagent.llm_runtime import streaming
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.llm_runtime.providers.base import ChatRequest, ModelProfile
 from mycodingagent.llm_runtime.providers.openai_compatible import OpenAICompatibleProvider
+from mycodingagent.plan_runtime import PlanRuntime, PlanStepStatus, UpdatePlanStep
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_runtime.bash import Bash
@@ -535,3 +536,129 @@ def test_api_failure_with_no_progress_rolls_back_cleanly(monkeypatch):
     assert updated == [{"role": "system", "content": "fixed system"}], (
         "a turn with no progress should roll back to the pre-turn state"
     )
+
+
+def _run_plan_round_budget(monkeypatch, outcomes, plan_runtime, *, max_rounds=2):
+    scripted = list(outcomes)
+
+    async def fake_build_round_tools(_default_tools, _core_tool_schemas):
+        return []
+
+    async def fake_stream_one_round(_client, _model, _messages, _tools, **_kwargs):
+        if not scripted:
+            raise AssertionError("unexpected extra model round")
+        return scripted.pop(0)
+
+    monkeypatch.setattr(client, "MAX_TOOL_ROUNDS", max_rounds)
+    monkeypatch.setattr(client, "build_round_tools", fake_build_round_tools)
+    monkeypatch.setattr(client, "stream_one_round", fake_stream_one_round)
+    registry = _registry()
+    registry.register(UpdatePlanStep(plan_runtime))
+    return asyncio.run(
+        ask_model_with_raw_client(
+            raw_client=object(),
+            prompt="implement plan",
+            registry=registry,
+            tools=[],
+            messages=[{"role": "system", "content": "fixed system"}],
+            plan_runtime=plan_runtime,
+        )
+    )
+
+
+def test_successful_plan_progress_renews_full_round_budget(monkeypatch):
+    runtime = PlanRuntime(session_id=lambda: "session")
+    runtime.enter_plan_mode()
+    plan = runtime.create_proposal("finish work", ["implement"])
+    runtime.activate_proposal(plan.id)
+    progress_args = json.dumps(
+        {
+            "plan_id": plan.id,
+            "step_id": plan.steps[0].id,
+            "status": "in_progress",
+            "note": "started",
+        }
+    )
+    outcomes = [
+        ("", [client.PendingToolCall("progress", "update_plan_step", progress_args)], None),
+        ("", [client.PendingToolCall("work", "EchoTool", "{}")], None),
+        ("done", [], None),
+    ]
+
+    text, _messages = _run_plan_round_budget(monkeypatch, outcomes, runtime)
+
+    assert text == "done"
+    assert runtime.active_plan().steps[0].status is PlanStepStatus.IN_PROGRESS
+
+
+def test_completing_last_plan_step_still_renews_current_request(monkeypatch):
+    runtime = PlanRuntime(session_id=lambda: "session")
+    runtime.enter_plan_mode()
+    plan = runtime.create_proposal("finish work", ["implement"])
+    runtime.activate_proposal(plan.id)
+    runtime.update_step(
+        plan_id=plan.id,
+        step_id=plan.steps[0].id,
+        status=PlanStepStatus.IN_PROGRESS,
+    )
+    complete_args = json.dumps(
+        {
+            "plan_id": plan.id,
+            "step_id": plan.steps[0].id,
+            "status": "completed",
+            "note": "verified",
+        }
+    )
+    outcomes = [
+        ("", [client.PendingToolCall("complete", "update_plan_step", complete_args)], None),
+        ("", [client.PendingToolCall("cleanup", "EchoTool", "{}")], None),
+        ("done", [], None),
+    ]
+
+    text, _messages = _run_plan_round_budget(monkeypatch, outcomes, runtime)
+
+    assert text == "done"
+    assert runtime.active_plan() is None
+
+
+def test_failed_plan_progress_does_not_renew_round_budget(monkeypatch):
+    runtime = PlanRuntime(session_id=lambda: "session")
+    runtime.enter_plan_mode()
+    plan = runtime.create_proposal("finish work", ["implement"])
+    runtime.activate_proposal(plan.id)
+    invalid_args = json.dumps(
+        {
+            "plan_id": plan.id,
+            "step_id": plan.steps[0].id,
+            "status": "completed",
+        }
+    )
+    outcomes = [
+        ("", [client.PendingToolCall("invalid", "update_plan_step", invalid_args)], None),
+        ("", [client.PendingToolCall("work", "EchoTool", "{}")], None),
+        ("should not run", [], None),
+    ]
+
+    text, _messages = _run_plan_round_budget(monkeypatch, outcomes, runtime)
+
+    assert text == "Error: exceeded max tool rounds (2)"
+    assert runtime.active_plan().steps[0].status is PlanStepStatus.PENDING
+
+
+def test_parallel_tool_calls_consume_one_round_but_do_not_extend_it(monkeypatch):
+    monkeypatch.setattr(client, "MAX_TOOL_ROUNDS", 1)
+    outcomes = [
+        (
+            "",
+            [
+                client.PendingToolCall("one", "EchoTool", "{}"),
+                client.PendingToolCall("two", "EchoTool", "{}"),
+            ],
+            None,
+        )
+    ]
+
+    text, _messages, executed = _run_ask_model(monkeypatch, outcomes)
+
+    assert text == "Error: exceeded max tool rounds (1)"
+    assert executed == ["EchoTool", "EchoTool"]

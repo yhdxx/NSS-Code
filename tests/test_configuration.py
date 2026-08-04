@@ -48,6 +48,7 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
+    env.pop("MYCODINGAGENT_APPROVAL_MODE", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -78,6 +79,7 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_LOAD_WORKSPACE_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
+    env.pop("MYCODINGAGENT_APPROVAL_MODE", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -112,6 +114,7 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'memory_db_path': str(CONFIG.memory.db_path),\n"
         "  'mcp_project_config_path': str(CONFIG.mcp.project_config_path),\n"
         "  'mcp_user_config_path': str(CONFIG.mcp.user_config_path),\n"
+        "  'approval_mode': CONFIG.approval.mode,\n"
         "  'session_activation_reward': CONFIG.skills.session_activation_reward,\n"
         "  'user_skill_cache_max_entries': CONFIG.skills.user_skill_cache_max_entries,\n"
         "}, ensure_ascii=False, sort_keys=True))\n"
@@ -185,6 +188,18 @@ def test_config_file_overrides_environment_variable(tmp_path):
     data = _config_probe(config_path, extra_env={"MYCODINGAGENT_MILVUS_PORT": "19532"})
 
     assert data["milvus_uri"] == "http://127.0.0.1:19531"
+
+
+def test_approval_mode_loads_from_config_and_overrides_environment(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(json.dumps({"approval": {"mode": "auto"}}), encoding="utf-8")
+
+    data = _config_probe(
+        config_path,
+        extra_env={"MYCODINGAGENT_APPROVAL_MODE": "default"},
+    )
+
+    assert data["approval_mode"] == "auto"
 
 
 def test_empty_config_string_falls_back_to_environment_variable(tmp_path):

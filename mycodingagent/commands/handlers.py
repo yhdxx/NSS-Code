@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import sys
 
+from mycodingagent.approval import ApprovalMode
 from mycodingagent.commands.registry import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from mycodingagent.configuration import CONFIG
 from mycodingagent.memory.session_switch import has_conversation_content, save_current_session_if_needed
@@ -141,6 +142,15 @@ def build_command_registry() -> CommandRegistry:
     registry = CommandRegistry()
     registry.register(
         CommandSpec(
+            name="/approval",
+            aliases=("approval", "审批模式"),
+            description="切换 Bash 与 MCP 的审批模式",
+            usages=(("", "交互选择 default 或 auto"),),
+            handler=handle_approval_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/model",
             aliases=("model", "模型"),
             description="交互选择并切换当前主推理模型",
@@ -233,6 +243,34 @@ def build_command_registry() -> CommandRegistry:
         )
     )
     return registry
+
+
+async def handle_approval_command(context: CommandContext, arguments: str) -> CommandResult:
+    if arguments.strip():
+        print("用法：/approval", flush=True)
+        return CommandResult(messages=context.messages)
+    runtime = context.approval_runtime
+    if runtime is None:
+        print("审批运行时未启用。", flush=True)
+        return CommandResult(messages=context.messages)
+    options = [
+        "default - 按风险请求审批",
+        "auto - 自动放行全部 Bash/MCP，包括高危操作",
+    ]
+    selected = await request_selection(
+        f"当前审批模式：{runtime.mode.value}。请选择审批模式：",
+        options,
+    )
+    if selected is None:
+        print("已取消审批模式切换。", flush=True)
+        return CommandResult(messages=context.messages)
+    mode = (ApprovalMode.DEFAULT, ApprovalMode.AUTO)[selected]
+    runtime.set_mode(mode)
+    if mode is ApprovalMode.AUTO:
+        print("审批模式已切换为 auto：Bash、MCP 工具和 MCP Server 启动将全部自动放行，包括高危操作。", flush=True)
+    else:
+        print("审批模式已切换为 default：Bash 与 MCP 将恢复按风险审批。", flush=True)
+    return CommandResult(messages=context.messages)
 
 
 async def handle_plan_command(context: CommandContext, arguments: str) -> CommandResult:

@@ -37,12 +37,13 @@ myAgent
 
 ## 3. 配置结构总览
 
-`~/.mycodingagent/config.json` 包含以下 11 个顶层模块：
+`~/.mycodingagent/config.json` 包含以下 12 个顶层模块：
 
 | Key | 说明 |
 |-----|------|
 | `model` | 推理模型配置（厂商级 API、模型 profile、长期记忆模型选择） |
 | `client` | LLM 客户端行为（重试、调试、展示） |
+| `approval` | Bash 与 MCP 的进程级审批模式 |
 | `multi_agent` | 多智能体并发与轮次限制 |
 | `long_term_memory` | 长期记忆存储、检索和候选推荐行为配置 |
 | `memory` | 会话持久化、上下文虚拟化、检查点 |
@@ -114,7 +115,7 @@ myAgent
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `client.max_tool_rounds` | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `50` | 单次请求最多工具调用轮数 |
+| `client.max_tool_rounds` | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `50` | 无计划时为单次请求上限；执行活动计划时，每次成功提交步骤进度后重新获得完整轮次预算 |
 | `client.api_max_retries` | `MYCODINGAGENT_API_MAX_RETRIES` | `3` | API 调用失败重试次数 |
 | `client.api_retry_base_delay` | `MYCODINGAGENT_API_RETRY_BASE_DELAY` | `1.0` | 重试退避基础延迟（秒） |
 | `client.debug` | `MYCODINGAGENT_DEBUG` | `false` | 调试模式 |
@@ -122,14 +123,22 @@ myAgent
 | `client.round_token` | `MYCODINGAGENT_ROUND_TOKEN` | `true` | 显示轮次 token 计数 |
 | `client.conversation_token` | `MYCODINGAGENT_CONVERSATION_TOKEN` | `true` | 显示会话 token 计数 |
 
-### 4.3 `multi_agent` — 多智能体
+### 4.3 `approval` — Bash/MCP 审批模式
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `approval.mode` | `MYCODINGAGENT_APPROVAL_MODE` | `"default"` | `default` 按现有风险策略审批；`auto` 自动放行全部 Bash、MCP 工具和 MCP Server 启动 |
+
+`/approval` 可以在当前 myAgent 进程内临时切换模式，重启后重新使用配置默认值。`auto` 不会关闭风险分类和风险颜色，但会自动放行包括高危操作在内的全部审批请求。
+
+### 4.4 `multi_agent` — 多智能体
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `multi_agent.max_agent_rounds` | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `50` | 多智能体最大轮次 |
 | `multi_agent.max_parallel_tasks` | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `5` | 最大并发任务数 |
 
-### 4.4 `long_term_memory` — 长期记忆
+### 4.5 `long_term_memory` — 长期记忆
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -140,7 +149,7 @@ myAgent
 | `long_term_memory.max_skill_candidates` | `MYCODINGAGENT_LONG_TERM_MEMORY_MAX_SKILL_CANDIDATES` | `3` | Skill 候选最多条数 |
 | `long_term_memory.startup_backfill_enabled` | `MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED` | `true` | 启动时异步回填未完成抽取 |
 
-### 4.5 `memory` — 会话与上下文管理
+### 4.6 `memory` — 会话与上下文管理
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -161,7 +170,7 @@ myAgent
 | `memory.reserved_tool_tokens` | `MYCODINGAGENT_RESERVED_TOOL_TOKENS` | `12000` | 为工具调用保留的 token 数 |
 | `memory.model_context_windows` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOWS` | `{"deepseek-v4-flash": 1000000}` | 各模型上下文窗口映射（JSON 字典） |
 
-### 4.6 `sandbox` — 沙箱配置
+### 4.7 `sandbox` — 沙箱配置
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -169,7 +178,7 @@ myAgent
 | `sandbox.max_output_chars` | `MYCODINGAGENT_MAX_OUTPUT_CHARS` | `10000` | 单次命令输出最大字符数 |
 | `sandbox.workspace_lease_enabled` | `MYCODINGAGENT_WORKSPACE_LEASE_ENABLED` | `true` | 启用工作区租约锁 |
 
-### 4.7 `docker` — Docker 容器配置
+### 4.8 `docker` — Docker 容器配置
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -182,7 +191,7 @@ myAgent
 | `docker.max_timeout` | `MYCODINGAGENT_DOCKER_MAX_TIMEOUT` | `600` | 最大命令超时（秒） |
 | `docker.pull_timeout` | `MYCODINGAGENT_DOCKER_PULL_TIMEOUT` | `300` | Docker pull 超时（秒） |
 
-### 4.8 `skills` — Skill 路由与检索
+### 4.9 `skills` — Skill 路由与检索
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -200,7 +209,7 @@ myAgent
 | `skills.vector_sync_batch_size` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE` | `2` | 向量同步批大小 |
 | `skills.vector_sync_max_retries` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_MAX_RETRIES` | `3` | 向量同步最大重试 |
 
-### 4.9 `embedding` — 嵌入模型
+### 4.10 `embedding` — 嵌入模型
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -213,7 +222,7 @@ myAgent
 | `embedding.batch_size` | `MYCODINGAGENT_EMBEDDING_BATCH_SIZE` | `16` | 嵌入批大小 |
 | `embedding.fallback_to_hash` | `MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH` | `false` | 本地嵌入不可用时回退到哈希 |
 
-### 4.10 `milvus` — Milvus 向量库
+### 4.11 `milvus` — Milvus 向量库
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -232,7 +241,7 @@ myAgent
 | `milvus.sparse_inverted_index_algo` | `MYCODINGAGENT_MILVUS_SPARSE_ALGO` | `"DAAT_MAXSCORE"` | BM25 稀疏倒排索引算法 |
 | `milvus.rrf_k` | `MYCODINGAGENT_MILVUS_RRF_K` | `60` | RRF 融合 K 值 |
 
-### 4.11 `mcp` — MCP Server
+### 4.12 `mcp` — MCP Server
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -257,6 +266,7 @@ myAgent
 | 环境变量 | JSON 路径 | 类型 |
 |----------|-----------|------|
 | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `client.max_tool_rounds` | int |
+| `MYCODINGAGENT_APPROVAL_MODE` | `approval.mode` | string |
 | `MYCODINGAGENT_API_MAX_RETRIES` | `client.api_max_retries` | int |
 | `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_API` / `DEEPSEEK_API_KEY` | `model.providers.deepseek.api` | string |
 | `MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_BASE_URL` / `DEEPSEEK_BASE_URL` | `model.providers.deepseek.base_url` | string |

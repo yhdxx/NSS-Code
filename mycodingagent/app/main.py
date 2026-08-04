@@ -19,6 +19,7 @@ from pathlib import Path
 
 import pyfiglet  # 导入当前模块需要的依赖。
 
+from mycodingagent.approval import ApprovalRuntime
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.code_intelligence import ProjectGraphRuntime, ProjectGraphService, WorkspaceCodeIndex
 from mycodingagent.terminal_ui.application import TerminalApplication, TerminalCancelled
@@ -117,6 +118,7 @@ async def _run(terminal: TerminalApplication) -> None:
     config_errors = [
         *model_manager.validation_errors(require_long_term_memory=CONFIG.long_term_memory.enabled),
         *CONFIG.embedding.validation_errors(),
+        *CONFIG.approval.validation_errors(),
     ]
     if config_errors:
         await model_manager.close()
@@ -158,6 +160,7 @@ async def _run(terminal: TerminalApplication) -> None:
     plan_runtime.bind_mode_listener(
         lambda mode: terminal.set_interaction_mode(mode.value)
     )
+    approval_runtime = ApprovalRuntime(CONFIG.approval.mode)
     code_index = WorkspaceCodeIndex(
         get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
     )
@@ -238,7 +241,11 @@ async def _run(terminal: TerminalApplication) -> None:
         }.get(tool_calls[0].tool_name, "approval")
     # 对话历史记录，跨轮次保持记忆
     messages: list[dict] = []  # 保存配置值或中间计算结果。
-    command_approval_hook = CLICommandApprovalHook(terminal) if sys.stdin.isatty() else None
+    command_approval_hook = (
+        CLICommandApprovalHook(terminal, approval_runtime=approval_runtime)
+        if sys.stdin.isatty()
+        else None
+    )
     registry = create_default_registry(  # 保存配置值或中间计算结果。
         file_state_cache=file_state_cache,
         workspace_tracker=workspace_tracker,
@@ -278,7 +285,11 @@ async def _run(terminal: TerminalApplication) -> None:
                 user_path=CONFIG.mcp.user_config_path,
             ),
             metadata_cache=MCPMetadataCache(CONFIG.memory.db_path.with_name("mcp_cache.sqlite3")),
-            launch_hook=CLILaunchApprovalHook(terminal) if sys.stdin.isatty() else None,
+            launch_hook=(
+                CLILaunchApprovalHook(terminal, approval_runtime=approval_runtime)
+                if sys.stdin.isatty()
+                else None
+            ),
         )
         try:
             await mcp_manager.initialize()
@@ -290,7 +301,11 @@ async def _run(terminal: TerminalApplication) -> None:
             registry,
             manager=mcp_manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=CLIApprovalHook(terminal) if sys.stdin.isatty() else MCPToolApprovalHook(),
+            approval_hook=(
+                CLIApprovalHook(terminal, approval_runtime=approval_runtime)
+                if sys.stdin.isatty()
+                else MCPToolApprovalHook()
+            ),
         )
         print(f"已配置 MCP Server：{mcp_manager.server_count()} 个", flush=True)
     else:
@@ -409,6 +424,7 @@ async def _run(terminal: TerminalApplication) -> None:
                         work_mode=work_mode,
                         project_graph_runtime=project_graph_runtime,
                         plan_runtime=plan_runtime,
+                        approval_runtime=approval_runtime,
                         terminal=terminal,
                     ),
                 )
