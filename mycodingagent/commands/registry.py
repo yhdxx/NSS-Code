@@ -20,6 +20,8 @@ class CommandContext:
     project_graph_runtime: Any = None
     plan_runtime: Any = None
     approval_runtime: Any = None
+    network_access: Any = None
+    mcp_manager: Any = None
     terminal: Any = None
 
 

@@ -41,15 +41,23 @@ def _fake_repo(tmp_path: Path) -> Path:
                             "model": "demo-model",
                         }
                     },
+                    "research": "memory_search",
                     "long_term_memory": {"storage": "main", "search": "main"},
                 },
-                "client": {"max_tool_rounds": 50},
+                "client": {"max_tool_rounds": 100},
             }
         ),
         encoding="utf-8",
     )
     (repo / ".mycodingagent" / "mcp.example.json").write_text(
-        json.dumps({"servers": {"github": {"disabled": True}}}),
+        json.dumps(
+            {
+                "servers": {
+                    "github": {"disabled": True},
+                    "playwright": {"disabled": False, "image": "playwright-mcp"},
+                }
+            }
+        ),
         encoding="utf-8",
     )
     (repo / "docs" / "configuration.md").write_text("# 配置教程\n", encoding="utf-8")
@@ -74,6 +82,7 @@ def test_bootstrap_creates_user_config_and_readme(tmp_path):
     assert json.loads(config_path.read_text(encoding="utf-8"))["model"]["profiles"]["main"]["model"] == "demo-model"
     assert readme_path.read_text(encoding="utf-8") == "# 配置教程\n"
     assert json.loads(mcp_config_path.read_text(encoding="utf-8"))["servers"]["github"]["disabled"] is True
+    assert json.loads(mcp_config_path.read_text(encoding="utf-8"))["servers"]["playwright"]["disabled"] is False
     assert mcp_readme_path.read_text(encoding="utf-8") == "# MCP 配置说明\n"
 
 
@@ -105,7 +114,27 @@ def test_bootstrap_preserves_existing_valid_config(tmp_path):
     assert result.recreated_invalid_config is False
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["model"]["providers"]["qwen"]["api"] == "keep"
-    assert "client" not in config
+    assert config["model"]["research"] == "custom"
+    assert config["client"]["max_tool_rounds"] == 100
+    assert result.added_config_fields == ["client.max_tool_rounds", "model.research"]
+
+
+def test_bootstrap_preserves_user_max_tool_rounds(tmp_path):
+    home = tmp_path / "home"
+    repo = _fake_repo(tmp_path)
+    config_path = home / ".mycodingagent" / "config.json"
+    config_path.parent.mkdir(parents=True)
+    config_path.write_text(
+        json.dumps({"client": {"max_tool_rounds": 240, "debug": True}}),
+        encoding="utf-8",
+    )
+
+    result = bootstrap_user_config(home=home, repo_root=repo)
+
+    config = json.loads(config_path.read_text(encoding="utf-8"))
+    assert config["client"] == {"max_tool_rounds": 240, "debug": True}
+    assert config["model"]["research"] == "memory_search"
+    assert result.added_config_fields == ["model.research"]
 
 
 def test_bootstrap_backs_up_and_recreates_invalid_config(tmp_path):
@@ -138,7 +167,7 @@ def test_bootstrap_backs_up_and_recreates_non_object_config(tmp_path):
     assert json.loads(config_path.read_text(encoding="utf-8"))["model"]["profiles"]["main"]["model"] == "demo-model"
 
 
-def test_bootstrap_preserves_existing_mcp_config(tmp_path):
+def test_bootstrap_appends_missing_builtin_mcp_servers_and_preserves_user_servers(tmp_path):
     home = tmp_path / "home"
     repo = _fake_repo(tmp_path)
     mcp_path = home / ".mycodingagent" / "mcp.json"
@@ -152,9 +181,59 @@ def test_bootstrap_preserves_existing_mcp_config(tmp_path):
 
     assert result.created_mcp_config is False
     assert result.recreated_invalid_mcp_config is False
-    assert json.loads(mcp_path.read_text(encoding="utf-8")) == {
-        "servers": {"custom": {"command": "custom-server"}}
+    config = json.loads(mcp_path.read_text(encoding="utf-8"))
+    assert config["servers"]["custom"] == {"command": "custom-server"}
+    assert config["servers"]["github"]["disabled"] is True
+    assert config["servers"]["playwright"] == {
+        "disabled": False,
+        "image": "playwright-mcp",
     }
+    assert result.added_mcp_servers == ["github", "playwright"]
+
+
+def test_bootstrap_never_overwrites_same_name_user_mcp_server(tmp_path):
+    home = tmp_path / "home"
+    repo = _fake_repo(tmp_path)
+    mcp_path = home / ".mycodingagent" / "mcp.json"
+    mcp_path.parent.mkdir(parents=True)
+    mcp_path.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "github": {
+                        "disabled": False,
+                        "command": "user-github-server",
+                        "env": {"CUSTOM": "keep"},
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    result = bootstrap_user_config(home=home, repo_root=repo)
+
+    config = json.loads(mcp_path.read_text(encoding="utf-8"))
+    assert config["servers"]["github"] == {
+        "disabled": False,
+        "command": "user-github-server",
+        "env": {"CUSTOM": "keep"},
+    }
+    assert result.added_mcp_servers == ["playwright"]
+
+
+def test_bootstrap_mcp_merge_is_idempotent(tmp_path):
+    home = tmp_path / "home"
+    repo = _fake_repo(tmp_path)
+
+    first = bootstrap_user_config(home=home, repo_root=repo)
+    mcp_path = home / ".mycodingagent" / "mcp.json"
+    first_content = mcp_path.read_text(encoding="utf-8")
+    second = bootstrap_user_config(home=home, repo_root=repo)
+
+    assert first.added_mcp_servers == []
+    assert second.added_mcp_servers == []
+    assert mcp_path.read_text(encoding="utf-8") == first_content
 
 
 def test_bootstrap_backs_up_invalid_mcp_config(tmp_path):
@@ -189,6 +268,12 @@ def test_repository_config_template_exposes_external_configuration_fields():
         ("mcp", "enabled"),
         ("mcp", "project_config_path"),
         ("mcp", "user_config_path"),
+        ("search", "enabled"),
+        ("search", "endpoint"),
+        ("search", "max_results"),
+        ("network", "enabled"),
+        ("network", "upstream_proxy"),
+        ("network", "allow_domains"),
     ]
     for section, key in required_paths:
         assert key in template[section], f"missing {section}.{key}"
@@ -206,6 +291,13 @@ def test_repository_config_template_exposes_external_configuration_fields():
         "search": "memory_search",
     }
     assert "api" not in template["model"]["profiles"]["main"]
+    assert "network" not in template["docker"]
+    assert template["search"]["endpoint"] == ""
+    assert template["network"]["allow_domains"] == ["*"]
+    assert template["client"]["max_tool_rounds"] == 100
+    assert template["research"]["max_tool_rounds"] == 100
+    assert template["research"]["max_sources"] == 5
+    assert template["research"]["fetch_max_chars_per_source"] == 6000
 
 
 def test_main_bootstrap_creates_config_before_runtime_config_import(tmp_path):

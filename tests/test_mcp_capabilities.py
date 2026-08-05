@@ -1,22 +1,91 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 from pathlib import Path
 import sys
+
+import pytest
 
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.capability_discovery.models import CapabilityRecommendation, CapabilityResult
 from mycodingagent.mcp_integration.hooks import CLIApprovalHook, MCPToolApprovalHook, USER_DENIED_MESSAGE
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
-from mycodingagent.mcp_integration.models import MCPItemSummary
+from mycodingagent.mcp_integration.manager import _validate_playwright_output_arguments
+from mycodingagent.mcp_integration.config import MCPServerConfig
+from mycodingagent.mcp_integration.cache import MCPMetadataCache
+from mycodingagent.mcp_integration.execution import normalize_mcp_result
+from mycodingagent.network_access import NetworkAccessRuntime
+from mycodingagent.mcp_integration.models import MCPExecutionResult, MCPItemSummary
 from mycodingagent.mcp_integration.policy import MCPApprovalDecision, MCPToolPermissionPolicy
 from mycodingagent.llm_runtime.context import PromptRenderer, RuntimeContextBuilder
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
+from mycodingagent.tool_runtime.playwright_direct import register_discovered_playwright_tools
 from mycodingagent.tool_runtime.skill_tools import SearchSkillTool
 from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
+
+
+def test_discovered_playwright_tools_are_registered_with_remote_names(tmp_path):
+    class FakeManager:
+        server_configs = {}
+
+        @staticmethod
+        def cached_tools(_server):
+            return [
+                MCPItemSummary(
+                    name="browser_take_screenshot",
+                    description="Capture page screenshot",
+                    metadata={
+                        "inputSchema": {
+                            "type": "object",
+                            "properties": {"fullPage": {"type": "boolean"}},
+                        }
+                    },
+                )
+            ]
+
+    registry = ToolRegistry()
+    count = register_discovered_playwright_tools(
+        registry,
+        manager=FakeManager(),
+        policy=MCPToolPermissionPolicy(),
+        approval_hook=MCPToolApprovalHook(),
+    )
+    schema = registry.get("browser_take_screenshot").get_schema()["input_schema"]
+
+    assert count == 1
+    assert "browser_take_screenshot" in {item["name"] for item in registry.get_all_schemas("openai")}
+    assert "fullPage" in schema["properties"]
+    assert "intent" in schema["required"]
+
+
+def test_discovered_mcp_tool_count_is_reflected_in_server_summary():
+    config = MCPServerConfig(name="playwright")
+    cache = MCPMetadataCache()
+    cache.sync_configs({"playwright": config})
+    cache.update_discovery(
+        "playwright",
+        tools=[
+            MCPItemSummary(name="browser_navigate"),
+            MCPItemSummary(name="browser_snapshot"),
+        ],
+    )
+
+    summary = cache.servers()[0]
+
+    assert summary.tools_count == 2
+
+
+def test_playwright_is_hidden_from_model_facing_mcp_server_list():
+    manager = MCPClientManager(metadata_cache=MCPMetadataCache())
+    manager.server_configs = {"playwright": MCPServerConfig(name="playwright")}
+    manager.metadata_cache.sync_configs(manager.server_configs)
+
+    assert manager.list_servers() == []
+    assert manager.server_count() == 0
 
 
 def test_runtime_context_skill_recommendation_points_to_invoke_skill():
@@ -145,6 +214,257 @@ def test_mcp_config_supports_streamable_http_and_fail_closed_defaults(tmp_path):
     assert server.transport == "streamable_http"
     assert server.url.endswith("/mcp")
     assert server.permissions.readonly_by_default is False
+
+
+def test_mcp_config_loads_browser_container_options(tmp_path):
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "playwright": {
+                        "sandbox": True,
+                        "image": "mcr.microsoft.com/playwright/mcp",
+                        "image_entrypoint": True,
+                        "auto_start": True,
+                        "network": True,
+                        "init": True,
+                        "shm_size": "1g",
+                        "cpus": "2",
+                        "memory": "2g",
+                        "pids_limit": "512",
+                        "container_user": "image",
+                        "extra_hosts": ["host.docker.internal:host-gateway"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    server = MCPConfigLoader(project_path=config, user_path=tmp_path / "missing").load()["playwright"]
+
+    assert server.init is True
+    assert server.shm_size == "1g"
+    assert server.memory == "2g"
+    assert server.image_entrypoint is True
+    assert server.auto_start is True
+    assert server.container_user == "image"
+    assert server.extra_hosts == ("host.docker.internal:host-gateway",)
+
+
+def test_mcp_sandbox_args_include_browser_resources_and_no_forced_user():
+    manager = MCPClientManager()
+    config = MCPServerConfig(
+        name="playwright",
+        args=("--headless",),
+        sandbox=True,
+        image="mcr.microsoft.com/playwright/mcp",
+        image_entrypoint=True,
+        network=True,
+        init=True,
+        shm_size="1g",
+        cpus="3",
+        memory="2g",
+        pids_limit="512",
+        container_user="image",
+        extra_hosts=("host.docker.internal:host-gateway",),
+    )
+
+    args = manager._sandboxed_stdio_args(config)
+
+    assert args[:3] == ["run", "--rm", "-i"]
+    assert args[args.index("--network"):args.index("--network") + 2] == ["--network", "none"]
+    assert "--init" in args
+    assert args[args.index("--shm-size"):args.index("--shm-size") + 2] == ["--shm-size", "1g"]
+    assert args[args.index("--memory"):args.index("--memory") + 2] == ["--memory", "2g"]
+    assert args[args.index("--add-host"):args.index("--add-host") + 2] == [
+        "--add-host",
+        "host.docker.internal:host-gateway",
+    ]
+    assert "--user" not in args
+    assert args[-2:] == ["mcr.microsoft.com/playwright/mcp", "--headless"]
+
+
+def test_playwright_output_mount_is_runtime_specific_and_forces_output_dir(tmp_path):
+    output_dir = tmp_path / ".mycodingagent" / "artifacts" / "playwright" / "runtime-a"
+    output_dir.mkdir(parents=True)
+    manager = MCPClientManager(playwright_output_dir=output_dir, workspace_root=tmp_path)
+    config = MCPServerConfig(
+        name="playwright",
+        args=("--headless",),
+        sandbox=True,
+        image="mcr.microsoft.com/playwright/mcp",
+        image_entrypoint=True,
+        network=True,
+        container_user="image",
+    )
+
+    args = manager._sandboxed_stdio_args(config)
+
+    assert ["--volume", f"{output_dir.resolve()}:/mycodingagent-output:rw"] == args[
+        args.index("--volume"):args.index("--volume") + 2
+    ]
+    assert ["--workdir", "/mycodingagent-output"] == args[
+        args.index("--workdir"):args.index("--workdir") + 2
+    ]
+    assert args[-3:] == ["--headless", "--output-dir", "/mycodingagent-output"]
+
+
+def test_playwright_outputs_only_include_current_runtime_and_call(tmp_path):
+    first_dir = tmp_path / ".mycodingagent" / "artifacts" / "playwright" / "runtime-a"
+    second_dir = tmp_path / ".mycodingagent" / "artifacts" / "playwright" / "runtime-b"
+    first_dir.mkdir(parents=True)
+    second_dir.mkdir(parents=True)
+    (first_dir / "existing.png").write_bytes(b"old")
+    (second_dir / "foreign.png").write_bytes(b"foreign")
+    manager = MCPClientManager(playwright_output_dir=first_dir, workspace_root=tmp_path)
+    before = manager._playwright_output_snapshot()
+    (first_dir / "current.png").write_bytes(b"new")
+    result = MCPExecutionResult(
+        server="playwright",
+        operation="tool",
+        name="browser_take_screenshot",
+        content_text="done",
+    )
+
+    attached = manager._attach_playwright_outputs(result, before)
+
+    outputs = attached.metadata["runtime_outputs"]
+    assert [item["path"] for item in outputs] == [
+        ".mycodingagent/artifacts/playwright/runtime-a/current.png"
+    ]
+    assert "existing.png" not in attached.content_text
+    assert "foreign.png" not in attached.content_text
+
+
+@pytest.mark.parametrize("value", ["/tmp/out.png", "../out.png", "nested/../../out.png"])
+def test_playwright_rejects_outputs_outside_runtime_directory(value):
+    assert _validate_playwright_output_arguments({"filename": value})
+
+
+def test_playwright_accepts_relative_output_paths():
+    assert _validate_playwright_output_arguments({"filename": "screens/current.png"}) == ""
+
+
+def test_playwright_creates_nested_output_parent_inside_runtime_directory(tmp_path):
+    output_dir = tmp_path / ".mycodingagent" / "artifacts" / "playwright" / "runtime-a"
+    output_dir.mkdir(parents=True)
+    manager = MCPClientManager(playwright_output_dir=output_dir, workspace_root=tmp_path)
+
+    manager._prepare_playwright_output_parents({"filename": "screens/current.png"})
+
+    assert (output_dir / "screens").is_dir()
+
+
+def test_network_policy_blocks_github_but_keeps_browser_for_localhost():
+    access = NetworkAccessRuntime(enabled=False)
+
+    assert not access.allows_mcp(MCPServerConfig(name="github", command="docker"))
+    assert access.allows_mcp(
+        MCPServerConfig(name="playwright", command="node", network=True)
+    )
+    assert access.allows_mcp(
+        MCPServerConfig(
+            name="local",
+            transport="streamable_http",
+            url="http://localhost:9000/mcp",
+        )
+    )
+
+
+def test_manager_rejects_external_mcp_before_connecting():
+    manager = MCPClientManager(network_access=NetworkAccessRuntime(enabled=False))
+    manager.server_configs["github"] = MCPServerConfig(name="github", command="docker")
+
+    with pytest.raises(PermissionError, match="智能搜索已关闭"):
+        asyncio.run(manager._ensure_session("github"))
+
+
+def test_public_streamable_http_mcp_requires_managed_network():
+    manager = MCPClientManager(network_access=NetworkAccessRuntime(enabled=True))
+    manager.server_configs["remote"] = MCPServerConfig(
+        name="remote",
+        transport="streamable_http",
+        url="https://example.test/mcp",
+        auto_start=True,
+    )
+
+    with pytest.raises(RuntimeError, match="远程 MCP 缺少 Runtime 托管网络"):
+        asyncio.run(manager._ensure_session("remote"))
+
+
+def test_local_streamable_http_mcp_does_not_require_managed_network():
+    class DenyLaunch:
+        async def approve(self, _request):
+            return type("Decision", (), {"allowed": False})()
+
+    manager = MCPClientManager(
+        network_access=NetworkAccessRuntime(enabled=True),
+        launch_hook=DenyLaunch(),
+    )
+    manager.server_configs["local"] = MCPServerConfig(
+        name="local",
+        transport="streamable_http",
+        url="http://localhost:9000/mcp",
+    )
+
+    with pytest.raises(PermissionError, match="MCP Server 启动被拒绝"):
+        asyncio.run(manager._ensure_session("local"))
+
+
+def test_mcp_image_content_is_saved_as_workspace_artifact(tmp_path):
+    png = b"\x89PNG\r\n\x1a\nimage"
+    item = type(
+        "Image",
+        (),
+        {
+            "type": "image",
+            "mimeType": "image/png",
+            "data": base64.b64encode(png).decode("ascii"),
+        },
+    )()
+    result = type("Result", (), {"isError": False, "content": [item]})()
+
+    normalized = normalize_mcp_result(
+        server="playwright",
+        operation="tool",
+        name="browser_take_screenshot",
+        result=result,
+        artifact_root=tmp_path / ".mycodingagent" / "artifacts" / "mcp",
+        workspace_root=tmp_path,
+    )
+
+    artifact = normalized.metadata["artifacts"][0]
+    saved = tmp_path / artifact["path"]
+    assert saved.read_bytes() == png
+    assert artifact["mime_type"] == "image/png"
+    assert artifact["path"] in normalized.content_text
+
+
+def test_invalid_mcp_image_is_not_written(tmp_path):
+    item = type(
+        "Image",
+        (),
+        {
+            "type": "image",
+            "mimeType": "image/png",
+            "data": base64.b64encode(b"not-a-png").decode("ascii"),
+        },
+    )()
+    result = type("Result", (), {"isError": False, "content": [item]})()
+
+    normalized = normalize_mcp_result(
+        server="playwright",
+        operation="tool",
+        name="browser_take_screenshot",
+        result=result,
+        artifact_root=tmp_path / ".mycodingagent" / "artifacts" / "mcp",
+        workspace_root=tmp_path,
+    )
+
+    assert normalized.metadata["non_text_content"][0]["type"] == "image"
+    assert not (tmp_path / ".mycodingagent").exists()
 
 
 def test_mcp_annotation_overrides_name_heuristic_and_unknown_is_closed():

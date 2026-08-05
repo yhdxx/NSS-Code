@@ -37,7 +37,7 @@ myAgent
 
 ## 3. 配置结构总览
 
-`~/.mycodingagent/config.json` 包含以下 12 个顶层模块：
+`~/.mycodingagent/config.json` 包含以下 15 个顶层模块：
 
 | Key | 说明 |
 |-----|------|
@@ -49,6 +49,9 @@ myAgent
 | `memory` | 会话持久化、上下文虚拟化、检查点 |
 | `sandbox` | Docker 沙箱工作区设置 |
 | `docker` | Docker 容器资源限制 |
+| `network` | 会话托管网络、上游代理和公网域名策略 |
+| `search` | SearXNG 搜索与静态网页读取限制 |
+| `research` | 无状态网页研究子智能体及结果上限 |
 | `skills` | Skill 发现、索引、路由、LRFU |
 | `embedding` | 嵌入模型配置（provider/model/api_key 等） |
 | `milvus` | Milvus 向量数据库连接 |
@@ -139,7 +142,7 @@ myAgent
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `client.max_tool_rounds` | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `50` | 无计划时为单次请求上限；执行活动计划时，每次成功提交步骤进度后重新获得完整轮次预算 |
+| `client.max_tool_rounds` | `MYCODINGAGENT_MAX_TOOL_ROUNDS` | `100` | 无计划时为单次请求上限；缺失或为空时回落到 100；执行活动计划时，每次成功提交步骤进度后重新获得完整轮次预算 |
 | `client.api_max_retries` | `MYCODINGAGENT_API_MAX_RETRIES` | `3` | API 调用失败重试次数 |
 | `client.api_retry_base_delay` | `MYCODINGAGENT_API_RETRY_BASE_DELAY` | `1.0` | 重试退避基础延迟（秒） |
 | `client.debug` | `MYCODINGAGENT_DEBUG` | `false` | 调试模式 |
@@ -178,8 +181,8 @@ myAgent
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `memory.enabled` | `MYCODINGAGENT_MEMORY_ENABLED` | `true` | 启用会话持久化 |
-| `memory.state_dir` | `MYCODINGAGENT_STATE_DIR` | `~/.mycodingagent/state` | 会话、长期记忆和运行状态默认目录 |
-| `memory.db_path` | `MYCODINGAGENT_MEMORY_DB_PATH` | `~/.mycodingagent/state/sessions.sqlite3` | 会话与长期记忆 SQLite 文件；代码索引、项目图谱、MCP cache、多智能体状态默认放在同目录 |
+| `memory.state_dir` | `MYCODINGAGENT_STATE_DIR` | `~/.mycodingagent/state` | 用户全局配置/跨项目记忆的默认目录；当前工作区的运行状态使用工作区 `.mycodingagent/state/` |
+| `memory.db_path` | `MYCODINGAGENT_MEMORY_DB_PATH` | `~/.mycodingagent/state/sessions.sqlite3` | 用户全局长期记忆库；会话、项目事实、代码索引、项目图谱、MCP cache 和多智能体状态落在 `<workspace>/.mycodingagent/state/` |
 | `memory.default_work_mode` | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `"general"` | 默认工作模式（`general` / `code`） |
 | `memory.default_context_window` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `128000` | 默认上下文窗口大小 |
 | `memory.session_ttl_days` | `MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS` | `90` | 会话保留天数 |
@@ -207,7 +210,6 @@ myAgent
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
 | `docker.image` | `MYCODINGAGENT_DOCKER_IMAGE` | `"mycodingagent-sandbox:py312"` | 沙箱镜像名称 |
-| `docker.network` | `MYCODINGAGENT_DOCKER_NETWORK` | `"bridge"` | Docker 网络模式 |
 | `docker.cpus` | `MYCODINGAGENT_DOCKER_CPUS` | `"2"` | CPU 限制 |
 | `docker.memory` | `MYCODINGAGENT_DOCKER_MEMORY` | `"1g"` | 内存限制 |
 | `docker.pids_limit` | `MYCODINGAGENT_DOCKER_PIDS_LIMIT` | `"256"` | 进程数限制 |
@@ -215,7 +217,72 @@ myAgent
 | `docker.max_timeout` | `MYCODINGAGENT_DOCKER_MAX_TIMEOUT` | `600` | 最大命令超时（秒） |
 | `docker.pull_timeout` | `MYCODINGAGENT_DOCKER_PULL_TIMEOUT` | `300` | Docker pull 超时（秒） |
 
-### 4.9 `skills` — Skill 路由与检索
+### 4.9 `network` — Runtime 托管网络
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `network.enabled` | `MYCODINGAGENT_NETWORK_ENABLED` | `true` | Agent 工具公网权限的启动默认值 |
+| `network.upstream_proxy` | `MYCODINGAGENT_NETWORK_UPSTREAM_PROXY` | `"auto"` | 上游代理；`auto` 读取宿主 HTTP/HTTPS/ALL proxy，也可写 HTTP、HTTPS 或 SOCKS5 URL |
+| `network.allow_domains` | `MYCODINGAGENT_NETWORK_ALLOW_DOMAINS` | `["*"]` | 允许访问的公网域名模式，环境变量使用 JSON 数组 |
+| `network.deny_domains` | `MYCODINGAGENT_NETWORK_DENY_DOMAINS` | `[]` | 拒绝域名模式，优先级高于 allow |
+| `network.connect_timeout` | `MYCODINGAGENT_NETWORK_CONNECT_TIMEOUT` | `10` | 建立目标或上游代理连接的超时秒数 |
+| `network.idle_timeout` | `MYCODINGAGENT_NETWORK_IDLE_TIMEOUT` | `300` | 空闲隧道超时秒数 |
+| `network.ca_bundle` | `MYCODINGAGENT_NETWORK_CA_BUNDLE` | `""` | HTTPS 上游代理使用的自定义 CA bundle 路径 |
+
+每个 CLI 会话都会创建独立的 Docker internal 网络。Bash、Playwright、SearXNG 和联网 stdio MCP 不能直接访问
+公网，只能连接绑定在当前网络网关上的 Runtime forward proxy。代理始终执行 allow/deny 规则并拒绝非公网 IP
+字面量；direct 模式还会使用宿主 DNS 校验解析结果，配置上游代理时由上游负责域名解析，避免宿主 DNS 污染误判。
+私网、链路本地、回环和云元数据地址默认拒绝，唯一的回环例外是当前会话工作区容器中的开发服务。
+
+`upstream_proxy=auto` 可以复用只监听宿主 `127.0.0.1` 的代理，用户无需开启 Allow LAN。上游不可达时请求
+fail closed，不会偷偷回退到直连。LLM、音频/视觉 API、镜像拉取和安装属于控制面，不受 `/search` 开关影响。
+
+### 4.10 `search` — 网页研究的底层搜索与静态读取
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `search.enabled` | `MYCODINGAGENT_SEARCH_ENABLED` | `true` | 是否启用研究子智能体的底层搜索和主模型 `FetchUrl` |
+| `search.endpoint` | `MYCODINGAGENT_SEARCH_ENDPOINT` | `""` | 空值表示由 Runtime 启动会话私有 SearXNG；非空表示自定义端点 |
+| `search.image` | `MYCODINGAGENT_SEARCH_IMAGE` | `"searxng/searxng:latest"` | 会话私有 SearXNG 镜像 |
+| `search.timeout` | `MYCODINGAGENT_SEARCH_TIMEOUT` | `20` | 搜索和静态网页请求超时（秒） |
+| `search.max_results` | `MYCODINGAGENT_SEARCH_MAX_RESULTS` | `10` | 单次搜索最多返回的去重结果数 |
+| `search.max_query_chars` | `MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS` | `500` | 搜索词最大字符数 |
+| `search.language` | `MYCODINGAGENT_SEARCH_LANGUAGE` | `"zh-CN"` | 默认搜索语言 |
+| `search.safesearch` | `MYCODINGAGENT_SEARCH_SAFESEARCH` | `0` | SearXNG SafeSearch 等级 |
+| `search.fetch_max_bytes` | `MYCODINGAGENT_FETCH_MAX_BYTES` | `2000000` | `FetchUrl` 最大流式下载字节数 |
+| `search.fetch_max_chars` | `MYCODINGAGENT_FETCH_MAX_CHARS` | `50000` | `FetchUrl` 最大返回字符数 |
+| `search.max_redirects` | `MYCODINGAGENT_FETCH_MAX_REDIRECTS` | `5` | 最大重定向次数；每跳都会重新校验公网地址 |
+
+空 `search.endpoint` 时，Runtime 为当前会话启动独立 SearXNG，配置写入工作区
+`.mycodingagent/state/network/<runtime-id>/`，容器不发布宿主端口并在退出时删除。非空 endpoint 只连接，不由
+Runtime 管理；公网端点仍经过托管代理。需要 JavaScript、页面交互、截图或 UI 验证时使用 Playwright。
+
+主模型不直接获得底层 `SearchWeb`。它调用 `ResearchWeb` 后，由无状态研究子智能体搜索、读取网页并提交带引用的
+文本总结，原始搜索结果和网页正文不会进入主会话。默认流程只搜索一次，再并发批量读取最多 5 个来源；每页正文最多
+6000 字符。至少一个可靠来源足以覆盖核心问题时立即提交，来源冲突、部分读取失败和次要信息缺失写入限制说明；最后
+两个内部轮次只暴露提交工具。`FetchUrl` 仍提供给主模型读取明确 URL 的静态文本。
+
+### 4.11 `research` — 无状态网页研究子智能体
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `model.research` | `MYCODINGAGENT_MODEL_RESEARCH` | `model.active` | 研究子智能体使用的模型 profile；模板显式使用 `memory_search` |
+| `research.enabled` | `MYCODINGAGENT_RESEARCH_ENABLED` | `true` | 是否注册 `ResearchWeb` |
+| `research.max_tool_rounds` | `MYCODINGAGENT_RESEARCH_MAX_TOOL_ROUNDS` | `100` | 单次研究最多内部工具轮次，与主推理模型单次任务默认上限一致，最大为 100 |
+| `research.max_sources` | `MYCODINGAGENT_RESEARCH_MAX_SOURCES` | `5` | 单次研究最多登记并批量读取的来源数，最大为 5 |
+| `research.max_findings` | `MYCODINGAGENT_RESEARCH_MAX_FINDINGS` | `20` | 最终最多事实结论数 |
+| `research.max_summary_chars` | `MYCODINGAGENT_RESEARCH_MAX_SUMMARY_CHARS` | `6000` | 返回主模型的总结字符上限 |
+| `research.fetch_max_chars_per_source` | `MYCODINGAGENT_RESEARCH_FETCH_MAX_CHARS` | `6000` | 子智能体读取每个来源的正文字符上限，最大为 6000 |
+
+`ResearchWeb` 只能返回文本总结和来源 URL，不能检索、查看、分析或返回图片。它可以定位包含目标图片的网站并返回
+网页 URL，主模型随后使用 `browser_*` 访问并下载图片。所有 finding 必须引用研究过程中实际读取过的来源；网页正文
+按不可信数据处理，不能改变研究任务、权限或输出格式。
+
+进程启动后终端右下角显示 `智能搜索（开启/关闭）`。执行 `/search` 关闭后，代理统一禁止 Search、Fetch、Bash、
+Playwright 和联网 MCP 的公网流量，并断开不再允许的 MCP；Playwright 仍可访问当前会话
+`localhost:<port>` 开发服务。该开关不修改 system prompt 或 tool schema，只通过 Runtime Context 和执行门禁生效。
+
+### 4.12 `skills` — Skill 路由与检索
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -233,7 +300,7 @@ myAgent
 | `skills.vector_sync_batch_size` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE` | `2` | 向量同步批大小 |
 | `skills.vector_sync_max_retries` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_MAX_RETRIES` | `3` | 向量同步最大重试 |
 
-### 4.10 `embedding` — 嵌入模型
+### 4.13 `embedding` — 嵌入模型
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -246,7 +313,7 @@ myAgent
 | `embedding.batch_size` | `MYCODINGAGENT_EMBEDDING_BATCH_SIZE` | `16` | 嵌入批大小 |
 | `embedding.fallback_to_hash` | `MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH` | `false` | 本地嵌入不可用时回退到哈希 |
 
-### 4.11 `milvus` — Milvus 向量库
+### 4.14 `milvus` — Milvus 向量库
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -265,7 +332,7 @@ myAgent
 | `milvus.sparse_inverted_index_algo` | `MYCODINGAGENT_MILVUS_SPARSE_ALGO` | `"DAAT_MAXSCORE"` | BM25 稀疏倒排索引算法 |
 | `milvus.rrf_k` | `MYCODINGAGENT_MILVUS_RRF_K` | `60` | RRF 融合 K 值 |
 
-### 4.12 `mcp` — MCP Server
+### 4.15 `mcp` — MCP Server
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -312,6 +379,24 @@ myAgent
 | `MYCODINGAGENT_DOCKER_IMAGE` | `docker.image` | string |
 | `MYCODINGAGENT_DOCKER_CPUS` | `docker.cpus` | string |
 | `MYCODINGAGENT_DOCKER_MEMORY` | `docker.memory` | string |
+| `MYCODINGAGENT_NETWORK_ENABLED` | `network.enabled` | bool |
+| `MYCODINGAGENT_NETWORK_UPSTREAM_PROXY` | `network.upstream_proxy` | string |
+| `MYCODINGAGENT_NETWORK_ALLOW_DOMAINS` | `network.allow_domains` | JSON array |
+| `MYCODINGAGENT_NETWORK_DENY_DOMAINS` | `network.deny_domains` | JSON array |
+| `MYCODINGAGENT_NETWORK_CONNECT_TIMEOUT` | `network.connect_timeout` | float |
+| `MYCODINGAGENT_NETWORK_IDLE_TIMEOUT` | `network.idle_timeout` | float |
+| `MYCODINGAGENT_NETWORK_CA_BUNDLE` | `network.ca_bundle` | path |
+| `MYCODINGAGENT_SEARCH_ENABLED` | `search.enabled` | bool |
+| `MYCODINGAGENT_SEARCH_ENDPOINT` | `search.endpoint` | string |
+| `MYCODINGAGENT_SEARCH_IMAGE` | `search.image` | string |
+| `MYCODINGAGENT_SEARCH_TIMEOUT` | `search.timeout` | float |
+| `MYCODINGAGENT_SEARCH_MAX_RESULTS` | `search.max_results` | int |
+| `MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS` | `search.max_query_chars` | int |
+| `MYCODINGAGENT_SEARCH_LANGUAGE` | `search.language` | string |
+| `MYCODINGAGENT_SEARCH_SAFESEARCH` | `search.safesearch` | int |
+| `MYCODINGAGENT_FETCH_MAX_BYTES` | `search.fetch_max_bytes` | int |
+| `MYCODINGAGENT_FETCH_MAX_CHARS` | `search.fetch_max_chars` | int |
+| `MYCODINGAGENT_FETCH_MAX_REDIRECTS` | `search.max_redirects` | int |
 | `MYCODINGAGENT_EMBEDDING_PROVIDER` | `embedding.provider` | string |
 | `MYCODINGAGENT_EMBEDDING_MODEL` | `embedding.model` | string |
 | `MYCODINGAGENT_EMBEDDING_API_KEY` | `embedding.api_key` | string |
@@ -329,7 +414,7 @@ myAgent
 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
 | `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | path |
 
-启动过程不会迁移旧目录或修补旧 SQLite schema。会话、长期记忆和 Bash 策略数据库版本不兼容时会直接报出数据库路径；请先备份并删除旧库，由当前版本创建新状态。代码索引和项目图谱是可重建缓存，仅在 Code 模式初始化时按当前 schema 创建或重建。
+项目专属状态不再写入用户目录：会话、检查点、项目事实、代码索引、项目图谱、MCP metadata cache 和多智能体状态位于 `<workspace>/.mycodingagent/state/`，删除项目目录会一并删除这些数据。用户画像、偏好、工作流/Skill 候选仍保留在 `memory.db_path` 指向的全局库。启动过程不会迁移旧目录或修补旧 SQLite schema；不兼容时请删除对应数据库后由当前版本重建。
 
 ---
 
@@ -435,6 +520,44 @@ docker compose -f Milvus/docker-compose.yml up -d
 - `model.long_term_memory.storage`：长期记忆存储模型 profile
 - `model.long_term_memory.search`：长期记忆检索模型 profile
 - `embedding.model`：向量嵌入模型（独立于对话模型）
+
+### 7.6 启用网页搜索与浏览器自动化
+
+```bash
+bash scripts/install.sh --with-web-tools
+```
+
+安装脚本会预拉取 Playwright MCP 和 SearXNG 镜像，不启动共享服务。`myAgent` 会在每次会话中启动并管理私有
+SearXNG。默认配置无需修改：
+
+```json
+{
+  "network": {
+    "enabled": true,
+    "upstream_proxy": "auto",
+    "allow_domains": ["*"],
+    "deny_domains": []
+  },
+  "search": {
+    "enabled": true,
+    "endpoint": "",
+    "image": "searxng/searxng:latest",
+    "max_results": 10
+  }
+}
+```
+
+Playwright 是默认启用的内置浏览器工具；首次使用自动拉取镜像，后续复用 Docker 本地缓存，不请求 MCP Server
+启动审批。完整 Playwright MCP 权限和容器字段见 `docs/mcp.md`。
+
+Runtime 在项目加载阶段自动创建 Bash 工作区容器和专用 internal Docker network，Playwright 自动加入同一网络。
+项目服务需监听 `0.0.0.0`，浏览器可通过 `http://localhost:<port>` 访问，Runtime 自动映射到本会话容器且不暴露
+宿主机端口；`http://mycodingagent-devserver:<port>` 仍可显式使用。Bash 参数
+`is_persistent_command=true` 用于开发服务器和 watcher：Runtime 将命令放入独立进程组，确认短时间内未退出后返回，
+日志写入 `.mycodingagent/artifacts/services/<runtime-id>/`。普通命令保持 `false` 并等待退出。Esc 和普通命令超时只清理
+当前前台命令。Agent 退出时先同步保存最终消息、停止文件监听并释放工作区租约；持久进程、工作区容器、SearXNG、
+Playwright/MCP 容器和专用网络由按 runtime label 隔离的后台进程清理，CLI 不等待 Docker 删除，也不向模型提供容器
+管理工具。本地连接和可取消任务并行关闭且有 2 秒总上限；超时信息只在 `client.debug=true` 时显示。
 
 ---
 

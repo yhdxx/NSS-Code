@@ -43,12 +43,14 @@ class LongTermMemoryRuntime:
         model_manager: ModelManager,
         user_id: str,
         store: SQLiteLongTermMemoryStore | None = None,
+        global_store: SQLiteLongTermMemoryStore | None = None,
     ) -> None:
         self.memory_runtime = memory_runtime
         self.registry = registry
         self.model_manager = model_manager
         self.user_id = user_id
         self.store = store or SQLiteLongTermMemoryStore(CONFIG.memory.db_path)
+        self.global_store = global_store or self.store
         self.storage_model = LongTermMemoryStorageModel(provider_getter=model_manager.storage_provider)
         self.query_model = LongTermMemoryQueryModel(provider_getter=model_manager.search_provider)
         self._backfill_task: asyncio.Task | None = None
@@ -127,11 +129,11 @@ class LongTermMemoryRuntime:
         if not CONFIG.long_term_memory.enabled:
             return None
         session_id = self.memory_runtime.get_current_session_id() or ""
-        global_version, global_items = self.store.load_latest_active_items(
+        global_version, global_items = self.global_store.load_latest_active_items(
             user_id=self.user_id,
             workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
         )
-        workflow_version, workflow_items = self.store.load_latest_active_items(
+        workflow_version, workflow_items = self.global_store.load_latest_active_items(
             user_id=self.user_id,
             workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
         )
@@ -192,7 +194,7 @@ class LongTermMemoryRuntime:
         used_memory = _extract_used_memory_uids(messages[turn_start_index:])
         used_workflow = sorted(set(exposed_workflow) & used_memory)
         used_skill = sorted(set(exposed_skill) & used_memory)
-        self.store.record_turn_usage(
+        self.global_store.record_turn_usage(
             session_id=session_id,
             turn_start_index=turn_start_index,
             turn_end_index=len(messages),
@@ -204,7 +206,7 @@ class LongTermMemoryRuntime:
             success=success,
         )
         for memory_uid in exposed_workflow:
-            self.store.update_workflow_observation(
+            self.global_store.update_workflow_observation(
                 user_id=self.user_id,
                 memory_uid=memory_uid,
                 current_workspace_fingerprint=self.memory_runtime.workspace_fingerprint,
@@ -219,7 +221,7 @@ class LongTermMemoryRuntime:
             if not self._should_prompt_skill_promotion(memory_uid):
                 continue
             decision = await _confirm_skill_promotion(memory_uid)
-            self.store.record_turn_usage(
+            self.global_store.record_turn_usage(
                 session_id=session_id,
                 turn_start_index=turn_start_index,
                 turn_end_index=len(messages),
@@ -259,11 +261,11 @@ class LongTermMemoryRuntime:
         state = self.memory_runtime.store.load_session(job.session_id)
         if state is None:
             raise ValueError(f"session not found: {job.session_id}")
-        global_latest, global_items = self.store.load_latest_active_items(
+        global_latest, global_items = self.global_store.load_latest_active_items(
             user_id=job.user_id,
             workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
         )
-        workflow_latest, workflow_items = self.store.load_latest_active_items(
+        workflow_latest, workflow_items = self.global_store.load_latest_active_items(
             user_id=job.user_id,
             workspace_fingerprint=WORKFLOW_STAGING_FINGERPRINT,
         )
@@ -298,7 +300,11 @@ class LongTermMemoryRuntime:
         version_ids: dict[str, str] = {}
         for namespace, namespace_patch in patches.items():
             latest, existing_items = namespace_existing.get(namespace, (None, []))
-            version_id = self.store.apply_patch_as_new_version(
+            target_store = self.global_store if namespace in {
+                GLOBAL_WORKSPACE_FINGERPRINT,
+                WORKFLOW_STAGING_FINGERPRINT,
+            } else self.store
+            version_id = target_store.apply_patch_as_new_version(
                 user_id=job.user_id,
                 workspace_fingerprint=namespace,
                 workspace_label=label_for_namespace(namespace, job.workspace_label),
@@ -311,14 +317,15 @@ class LongTermMemoryRuntime:
                 extraction_id=job.extraction_id,
             )
             version_ids[namespace] = version_id
-        if not version_ids:
-            self.store.mark_extraction_committed(job.extraction_id, "")
         preferred_version_id = (
             version_ids.get(job.workspace_fingerprint)
             or version_ids.get(GLOBAL_WORKSPACE_FINGERPRINT)
             or version_ids.get(WORKFLOW_STAGING_FINGERPRINT)
             or ""
         )
+        # The extraction job itself is workspace-owned even when the extracted
+        # patch also updates user-global namespaces.
+        self.store.mark_extraction_committed(job.extraction_id, preferred_version_id)
         return ExtractionResult(
             status="committed",
             extraction_id=job.extraction_id,
@@ -327,14 +334,14 @@ class LongTermMemoryRuntime:
         )
 
     def _should_prompt_skill_promotion(self, memory_uid: str) -> bool:
-        if self.store.successful_skill_reuse_count(memory_uid) < CONFIG.long_term_memory.skill_candidate_success_threshold:
+        if self.global_store.successful_skill_reuse_count(memory_uid) < CONFIG.long_term_memory.skill_candidate_success_threshold:
             return False
-        last_prompted_at = self.store.last_skill_prompt_at(memory_uid)
+        last_prompted_at = self.global_store.last_skill_prompt_at(memory_uid)
         cooldown = CONFIG.long_term_memory.skill_candidate_prompt_cooldown_days * 24 * 60 * 60
         return not last_prompted_at or (time() - last_prompted_at) >= cooldown
 
     def _mark_skill_promotion_decision(self, memory_uid: str, decision: str) -> None:
-        self.store.mark_skill_candidate_promotion_status(
+        self.global_store.mark_skill_candidate_promotion_status(
             user_id=self.user_id,
             workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
             memory_uid=memory_uid,

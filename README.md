@@ -39,6 +39,20 @@ bash scripts/install.sh
 Python/TypeScript、Go、Rust 等 LSP 属于可选分析工具，脚本会询问是否安装；Java 的 `jdtls` 需要单独下载
 Eclipse JDT Language Server。缺少某个外部工具链时，脚本会给出提示，但不会阻止 Python 项目启动。
 
+需要网页搜索和浏览器自动化时使用：
+
+```bash
+bash scripts/install.sh --with-web-tools
+```
+
+该选项只预拉取 Microsoft Playwright MCP 与 SearXNG 镜像。`myAgent` 启动时会为每个会话创建私有 Docker 网络、
+托管出口代理和独立 SearXNG 容器。退出时 Runtime 先同步保存会话并释放工作区租约，再由独立后台清理进程回收本
+会话的容器和网络，因此 Docker 删除不会阻塞终端退出。Playwright 默认作为内置浏览器工具启用；首次使用会自动
+拉取镜像，后续启动复用 Docker 本地镜像缓存。
+
+Runtime 自动读取宿主进程的 HTTP/HTTPS/ALL proxy（也支持 SOCKS5），容器只连接绑定在会话网关上的托管代理。
+因此宿主代理只监听 `127.0.0.1` 也可以使用，无需开启 Allow LAN。
+
 只安装 Python 依赖、不构建 Docker 或不安装 LSP 时可以使用：
 
 ```bash
@@ -103,15 +117,17 @@ Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和�
 
 应用入口依次初始化：
 
-1. Docker 沙箱镜像，供 `Bash` 工具隔离执行命令。
-2. `FileStateCache`，记录模型已读取文件的内容和版本。
+1. Docker 沙箱镜像和会话级 `ManagedNetworkRuntime`；容器处于 internal 网络，公网只能经过受控代理。
+2. 工作区运行容器与 `FileStateCache`，前者承载 Bash 和持久开发服务，后者记录模型已读取文件的内容和版本。
 3. `WorkspaceChangeTracker`，监听用户在 Agent 外部修改文件。
 4. `MemoryRuntime`，负责会话持久化、上下文虚拟化、检查点和恢复。
-5. 核心工具注册表，注册文件、Shell、记忆、MCP、Skill、音频转写和多图视觉分析等工具。
-6. `MCPClientManager`，加载 MCP server 配置并进行 discovery。
-7. `SkillRuntime`，扫描 Skill、更新索引、启动文件监听和 LRFU 缓存。
-8. `LongTermMemoryRuntime`，启动未完成 extraction 的异步回填。
-9. `MultiAgentStore`，为 `/multiAgent` 命令提供持久化运行状态。
+5. `SearXNGServiceRuntime` 启动当前会话私有搜索服务；`ResearchRuntime` 用无状态子智能体隔离搜索与网页正文，`SearchRuntime` 负责底层搜索、静态网页读取和出口限制。
+6. 核心工具注册表，注册文件、Shell、记忆、MCP、Skill、`ResearchWeb`、`FetchUrl`、音频转写和多图视觉分析等工具。
+7. `MCPClientManager`，加载 MCP server 配置并进行 discovery。
+8. 启动时从 Playwright 容器读取当前工具清单，并把全部 `browser_*` 能力直接注册到模型 Tool Schema；模型侧不需要 Playwright MCP discovery。
+9. `SkillRuntime`，扫描 Skill、更新索引、启动文件监听和 LRFU 缓存。
+10. `LongTermMemoryRuntime`，启动未完成 extraction 的异步回填。
+11. `MultiAgentStore`，为 `/multiAgent` 命令提供持久化运行状态。
 
 ### 2.3 终端输入准备
 
@@ -140,6 +156,7 @@ Code 中的后续文件变化会去抖并异步刷新，刷新过程默认静默
 
 内置命令包括：
 
+- `/search`：交互开启或关闭 Agent 工具公网权限。默认开启；关闭后 Search、Fetch、Bash、Playwright 和联网 MCP 都不能访问公网，但 Playwright/Fetch 仍可访问当前会话的 `localhost:<port>` 开发服务。
 - `/plan`：进入 Plan 模式；保持固定 system message 和工具 schema，通过 Runtime Context 注入规划要求和工具权限，并在提交计划后显示交互式审批面板。
 - `/resume`：恢复历史会话，并加载消息、LRFU 快照、文件状态。
 - `/fork`：从历史会话分叉出新会话。
@@ -217,6 +234,7 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 
 ```text
 核心工具（文件读写、Glob/Grep、Bash、ask_user）
+  + 固定网页工具（ResearchWeb / FetchUrl）
   + MCP 固定 discovery/execution tools
   + Skill 固定入口（search_tool / Get_all_tool / invoke_skill 等）
   + 上下文恢复工具
@@ -293,11 +311,11 @@ WriteFile/EditFile
 
 ### 6.2 Bash 沙箱
 
-`Bash` 工具在一次性 Docker 容器内执行：
+`Bash` 工具在当前会话复用的工作区 Docker 容器内执行：
 
 - 工作区挂载到容器 `/workspace`
 - 限制 CPU、内存和超时
-- 容器执行后自动删除
+- Agent 退出后自动删除容器和专用网络
 - 禁止越界访问宿主机路径
 
 沙箱之外还有一层基于 tree-sitter Bash AST 的命令审批（`tool_runtime/command_policy.py`）：
@@ -307,12 +325,52 @@ Bash(command)
   -> BashPolicyEvaluator 按命令名和 AST 事件查询三表策略
   -> low：直接执行
   -> approval/unknown：请求用户确认
-  -> high：拒绝执行
+  -> high：请求用户确认
 ```
 
 判定标准是“难以撤销”或“影响范围超出工作区”，例如 `rm -rf`、`git push --force`、
 `git reset --hard`、`sudo`、`chmod -R`、下载后直接管道执行、写裸设备、指向工作区外的绝对路径操作。
 动态命令目标、解析失败和无法静态判断副作用的进程一律 fail-closed。
+
+网络访问不通过 `Bash` 旁路开放。默认路由按能力逐级升级：
+
+```text
+ResearchWeb -> FetchUrl -> browser_* -> AnalyzeImage
+隔离文本研究    静态正文    JS/交互/下载      图片理解或多图比较
+```
+
+`ResearchWeb` 每次创建无状态、只读的研究上下文，只向主模型返回文本总结、结论和来源 URL；搜索结果、网页正文和
+研究过程不会写入主会话。它不能检索、查看、分析或返回图片，但可以定位包含目标图片的网站并返回网页 URL，之后由
+主模型使用 `browser_*` 访问或下载图片。`FetchUrl` 继续用于读取主模型已知 URL 的静态文本，并在每次重定向后重新
+校验地址。正常研究路径只搜索一次，再并发批量读取最多 5 个来源，每页正文最多 6000 字符；获得足以回答核心问题的
+可靠证据后立即提交，来源冲突或次要信息缺失写入限制说明。最后两个内部轮次只允许提交结果，避免研究子智能体继续
+漫游搜索。动态页面、交互、截图和本地 UI 验证交给独立 Playwright 容器；图片可再传给 `AnalyzeImage`。
+
+公网请求使用上游代理时由上游解析域名，Runtime 仍强制执行域名 allow/deny 和 IP 字面量安全检查；direct 模式
+额外校验宿主 DNS 的全部解析结果。策略拒绝、上游失败和超时会返回明确错误码，不以空连接代替错误响应。
+
+Playwright 生成的截图、PDF 等文件统一保存在
+`<workspace>/.mycodingagent/artifacts/playwright/<runtime-id>/`。每个 Runtime 只挂载和扫描自己的目录，工具结果返回
+工作区相对路径；绝对路径和包含 `..` 的输出路径会被拒绝，避免写出工作区或读取其他会话的输出。
+
+终端右下角始终显示 `智能搜索（开启/关闭）`。执行 `/search` 只改变 Runtime Context 和执行门禁，不修改
+system prompt 或 tool schema。关闭后 Runtime 代理拒绝 Search、Fetch、Bash、Playwright 和联网 MCP 的公网连接，
+但保留当前会话 `localhost:<port>` 开发服务；已经建立的公网隧道会立即取消。
+
+### 6.2.1 会话内开发服务器
+
+Runtime 在项目加载阶段自动创建工作区运行容器；模型不会看到容器创建、停止或状态管理工具。普通 Bash 命令均通过
+`docker exec` 进入该容器。开发服务器、watcher 等长期命令必须设置 `is_persistent_command=true`；Runtime 会在独立
+进程组中启动它，短暂确认进程仍存活后立即返回服务 ID、PID 和工作区日志路径。普通命令保持默认值 `false`，等待命令
+结束并返回 stdout、stderr 和退出码。项目服务必须监听 `0.0.0.0`。Playwright 和 `FetchUrl` 可以直接使用
+`http://localhost:<port>`；Runtime 会把它解析到当前会话的工作区容器，也兼容显式地址
+`http://mycodingagent-devserver:<port>`。
+
+工作区容器、Playwright 与 SearXNG 位于当前会话专有 internal Docker network，不映射宿主机端口。Runtime 退出时
+按 runtime label 启动独立后台清理进程，终止本会话创建的持久进程并删除容器和 network；主 CLI 不等待 Docker，
+也不会误清理其他会话或把容器管理职责交给模型。持久命令日志保存在
+`.mycodingagent/artifacts/services/<runtime-id>/<service-id>.log`。普通 Bash 超时或用户按 Esc 只终止当前前台命令，
+不会误杀已经登记的持久服务。
 
 审批钩子由 `app/main.py` 仅在交互式终端注入；非交互环境（脚本、测试、CI）不拦截，保持既有行为。
 核心文件工具 `WriteFile` / `EditFile` 不再弹交互式写入审批，仍保留沙箱路径、先读后改、checkpoint 和文件状态缓存等执行保护。
@@ -324,7 +382,7 @@ MCP 工具执行分为 discovery 和 execution：
 1. `list_mcp_tools` / `search_mcp_tools` 将本次分页中实际返回给模型的工具名称、描述和参数 schema 记录为已查看。
 2. `call_mcp_tool` 首先执行 discovery gate；只知道 Server/工具名称、查看了其他分页或 metadata 已变化都不能通过。
 3. 门禁通过后，`call_mcp_tool` 才结合显式配置、实时 annotation 和工具名进行风险分类。
-4. CLI 始终保留 MCP Server 启动/连接审批；`read` 工具自动放行，`write`、`destructive`、`network`、`admin`、`unknown` 工具调用执行前请求用户确认。
+4. CLI 默认保留 MCP Server 启动/连接审批；内置 Playwright 是例外，它只运行无工作区挂载的受限浏览器容器并自动启动。`read` 工具自动放行，`write`、`destructive`、`network`、`admin`、`unknown` 工具调用执行前请求用户确认。
 5. MCP 工具审批支持本次允许和本会话内记住该 Server+Tool+Risk；门禁失败返回 `required_discovery`，不会连接或执行目标工具。
 
 已查看状态在当前 `MCPClientManager` 生命周期内保留；MCP 配置重载、Server discovery 刷新或工具 metadata
@@ -396,7 +454,12 @@ MCP 配置加载顺序：
 
 后加载的同名 server 覆盖前者。
 
-首次启动会自动生成用户级 `~/.mycodingagent/mcp.json` 和 `~/.mycodingagent/MCP.md`。需要项目级覆盖时，在当前工作目录创建 `.mycodingagent/mcp.json`。完整字段说明和 GitHub token 配置示例见 `docs/mcp.md`。
+首次启动会自动生成用户级 `~/.mycodingagent/mcp.json` 和 `~/.mycodingagent/MCP.md`。后续启动会把模板中缺失的内置
+Server 追加到用户级配置，但绝不覆盖同名 Server 或用户自定义 Server。需要项目级覆盖时，在当前工作目录创建
+`.mycodingagent/mcp.json`。完整字段说明和 GitHub token 配置示例见 `docs/mcp.md`。
+
+模板包含默认启用的 Playwright MCP。`bash scripts/install.sh --with-web-tools` 可提前拉取镜像；该 Server 使用独立
+Docker 容器、禁止工作区挂载，并通过会话托管代理访问网络；无需再配置一个重复的 Chromium MCP。
 
 ### 8.1 Discovery
 
@@ -518,10 +581,10 @@ ContextEpoch 提交后，旧阶段进入冷历史：
   -> 不阻塞主对话调用存储模型
 用户 exit / clear / resume / fork
   -> 标记当前 session pending extraction
-退出阶段
-  -> 在超时窗口内尝试抽取
-如果超时或异常中断
-  -> 下次启动异步 requeue 未完成 extraction
+用户 exit
+  -> 同步保存最终消息并立即退出，不调用存储模型
+下次启动
+  -> 异步 requeue pending extraction
 ```
 
 ### 10.2 存储模型输入
@@ -548,6 +611,9 @@ ContextEpoch 提交后，旧阶段进入冷历史：
 3. 当前 workspace 项目事实：`project_fact`
 
 项目事实只保存抽象架构逻辑，例如项目目的、模块职责、控制流、稳定技术选择和关键设计决策，不保存具体代码片段、行号、diff 或测试日志。
+项目专属会话、检查点、项目事实、代码索引、项目图谱、MCP 元数据缓存和多智能体运行状态统一位于
+`<workspace>/.mycodingagent/state/`；用户删除项目目录时这些状态会随目录一起删除。跨项目的用户画像、偏好、工作流和
+Skill 候选仍位于用户级 `memory.db_path`，不会因切换项目而丢失。
 
 ### 10.4 查询与使用
 
@@ -635,8 +701,10 @@ mycodingagent/
 ├── llm_runtime/            # 模型调用和工具循环
 ├── long_term_memory/       # 长期记忆存储、查询和生命周期
 ├── mcp_integration/        # MCP 连接、发现、执行和审批
+├── managed_network.py      # 会话私有网络、出口代理和 localhost 映射
 ├── memory/                 # 会话、上下文虚拟化、检查点、恢复
 ├── relevance/              # LRFU 等排序算法
+├── search_runtime/         # SearXNG 搜索与静态网页读取
 ├── skill_runtime/          # Skill 发现、索引、路由和反馈
 ├── terminal_ui/            # 终端输入和会话选择
 ├── tool_runtime/           # 工具实现和注册表
@@ -644,6 +712,7 @@ mycodingagent/
 
 mycodingagent/multi_agent/   # 多智能体编排、上下文、工具权限和文件协调
 skills/                     # Skill 插件资产
+infra/searxng/              # 会话私有 SearXNG 配置模板
 tests/                      # 单元、集成和评测测试
 ```
 
@@ -661,4 +730,10 @@ PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/
 
 ```bash
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_llm_runtime_client.py tests/test_command_policy.py
+```
+
+网页搜索、MCP 容器和安装脚本：
+
+```bash
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_search_runtime.py tests/test_mcp_capabilities.py tests/test_install_scripts.py
 ```

@@ -2,6 +2,7 @@
   "_说明": "此文件是 myCodingAgent 全量 JSON 配置模板。首次启动会自动复制为 ~/.mycodingagent/config.json；实际使用时请在用户目录文件中填入真实密钥。详细说明见 docs/configuration.md（每次启动会自动复制到 ~/.mycodingagent/README.md）。",
   "model": {
     "active": "main",
+    "research": "memory_search",
     "providers": {
       "deepseek": {
         "api": ""
@@ -40,7 +41,7 @@
     }
   },
   "client": {
-    "max_tool_rounds": 50,
+    "max_tool_rounds": 100,
     "max_display_string_chars": 12000,
     "max_tool_output_chars": 20000,
     "api_max_retries": 3,
@@ -118,7 +119,6 @@
   },
   "docker": {
     "image": "mycodingagent-sandbox:py312",
-    "network": "bridge",
     "build_network": "host",
     "cpus": "2",
     "memory": "1g",
@@ -127,6 +127,15 @@
     "max_timeout": 600,
     "check_timeout": 30,
     "pull_timeout": 300
+  },
+  "network": {
+    "enabled": true,
+    "upstream_proxy": "auto",
+    "allow_domains": ["*"],
+    "deny_domains": [],
+    "connect_timeout": 10.0,
+    "idle_timeout": 300.0,
+    "ca_bundle": ""
   },
   "skills": {
     "builtin_root": "",
@@ -203,5 +212,26 @@
     "project_config_path": ".mycodingagent/mcp.json",
     "user_config_path": "~/.mycodingagent/mcp.json",
     "reconnect_server_step": 10
+  },
+  "search": {
+    "enabled": true,
+    "endpoint": "",
+    "image": "searxng/searxng:latest",
+    "timeout": 20,
+    "max_results": 10,
+    "max_query_chars": 500,
+    "language": "zh-CN",
+    "safesearch": 0,
+    "fetch_max_bytes": 2000000,
+    "fetch_max_chars": 50000,
+    "max_redirects": 5
+  },
+  "research": {
+    "enabled": true,
+    "max_tool_rounds": 100,
+    "max_sources": 5,
+    "max_findings": 20,
+    "max_summary_chars": 6000,
+    "fetch_max_chars_per_source": 6000
   }
 }

@@ -4,19 +4,18 @@
     "_comment": "servers 下每个对象名就是 MCP Server 名称；同名 server 在后加载的配置中会覆盖前者。",
     "github": {
       "disabled": true,
-      "_comment": "GitHub 官方 MCP Server。启用前把 disabled 改为 false，并在启动 myAgent 的 shell 中 export GITHUB_PERSONAL_ACCESS_TOKEN。",
+      "_comment": "GitHub 官方 MCP Server。启用前把 disabled 改为 false，并在启动 myAgent 的 shell 中 export GITHUB_PERSONAL_ACCESS_TOKEN。Runtime 会把它放入会话私有网络。",
       "transport": "stdio",
-      "command": "docker",
-      "args": [
-        "run",
-        "-i",
-        "--rm",
-        "-e",
-        "GITHUB_PERSONAL_ACCESS_TOKEN",
-        "-e",
-        "GITHUB_TOOLSETS=repos,issues,pull_requests",
-        "ghcr.io/github/github-mcp-server"
-      ],
+      "sandbox": true,
+      "image": "ghcr.io/github/github-mcp-server",
+      "image_entrypoint": true,
+      "args": [],
+      "env": {
+        "GITHUB_PERSONAL_ACCESS_TOKEN": "",
+        "GITHUB_TOOLSETS": "repos,issues,pull_requests"
+      },
+      "network": true,
+      "workspace_access": "none",
       "description": "GitHub 仓库、Issue、PR 和代码搜索操作",
       "tags": ["github", "git", "repo"],
       "aliases": ["gh"],
@@ -44,6 +43,59 @@
       "tags": ["filesystem", "workspace", "file"],
       "permissions": {
         "readonly_by_default": true
+      }
+    },
+    "playwright": {
+      "disabled": false,
+      "_comment": "Microsoft Playwright MCP，默认启用并在启动时加载为直接 browser_* 工具。Docker 首次自动拉取镜像，后续复用本地缓存；bash scripts/install.sh --with-web-tools 可预拉取 Playwright 和 SearXNG 镜像。",
+      "transport": "stdio",
+      "sandbox": true,
+      "image": "mcr.microsoft.com/playwright/mcp",
+      "image_entrypoint": true,
+      "auto_start": true,
+      "args": [
+        "--headless",
+        "--browser",
+        "chromium",
+        "--isolated",
+        "--no-sandbox"
+      ],
+      "network": true,
+      "workspace_access": "none",
+      "init": true,
+      "shm_size": "1g",
+      "cpus": "2",
+      "memory": "2g",
+      "pids_limit": "512",
+      "container_user": "image",
+      "description": "使用 Headless Chromium 执行动态网页交互、截图和本地 UI 验证",
+      "tags": ["playwright", "browser", "chromium", "web", "screenshot"],
+      "aliases": ["browser"],
+      "keywords": ["网页", "浏览器", "动态页面", "截图", "UI 测试"],
+      "startup_timeout": 60,
+      "call_timeout": 120,
+      "permissions": {
+        "read_tools": [
+          "browser_navigate",
+          "browser_snapshot",
+          "browser_take_screenshot",
+          "browser_console_messages",
+          "browser_network_requests",
+          "browser_tabs"
+        ],
+        "write_tools": [
+          "browser_click",
+          "browser_type",
+          "browser_fill_form",
+          "browser_press_key",
+          "browser_select_option"
+        ],
+        "dangerous_tools": [
+          "browser_evaluate",
+          "browser_file_upload",
+          "browser_install"
+        ],
+        "readonly_by_default": false
       }
     },
     "remote-http": {

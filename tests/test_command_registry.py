@@ -136,6 +136,49 @@ def test_approval_command_switches_process_runtime(monkeypatch, capsys):
     assert "包括高危操作" in capsys.readouterr().out
 
 
+def test_search_command_disables_external_access_and_updates_terminal(monkeypatch, capsys):
+    from mycodingagent.network_access import NetworkAccessRuntime
+
+    class FakeMCPManager:
+        def __init__(self) -> None:
+            self.applied = False
+
+        async def apply_network_policy(self) -> None:
+            self.applied = True
+
+    class FakeTerminal:
+        def __init__(self) -> None:
+            self.enabled = True
+
+        def set_smart_search_enabled(self, enabled: bool) -> None:
+            self.enabled = enabled
+
+    async def choose_off(_prompt, _options):
+        return 1
+
+    monkeypatch.setattr(handlers, "request_selection", choose_off)
+    runtime = NetworkAccessRuntime()
+    manager = FakeMCPManager()
+    terminal = FakeTerminal()
+    messages = [{"role": "system", "content": "system"}]
+    context = CommandContext(
+        None,
+        None,
+        messages,
+        network_access=runtime,
+        mcp_manager=manager,
+        terminal=terminal,
+    )
+
+    result = asyncio.run(handlers.handle_search_command(context, ""))
+
+    assert result.messages is messages
+    assert runtime.enabled is False
+    assert manager.applied is True
+    assert terminal.enabled is False
+    assert "localhost:port 仍可访问" in capsys.readouterr().out
+
+
 def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, capsys):
     class FakeMemoryRuntime:
         def __init__(self) -> None:

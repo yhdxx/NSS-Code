@@ -12,6 +12,7 @@ SKIP_DOCKER=0
 SKIP_LSP=0
 UPGRADE_MODE=0
 LAUNCHER_ONLY=0
+WITH_WEB_TOOLS=0
 SANDBOX_IMAGE="mycodingagent-sandbox:py312"
 SANDBOX_HASH_LABEL="org.mycodingagent.sandbox-input-sha"
 
@@ -24,6 +25,7 @@ usage() {
   --skip-lsp     不安装或探测语言服务器
   --upgrade      安装必要依赖，并询问是否安装可选分析工具
   --launcher-only 只安装用户级 myAgent 启动命令
+  --with-web-tools 预拉取 Playwright MCP 与 SearXNG 镜像
   -h, --help     显示帮助
 
 环境变量：
@@ -108,6 +110,7 @@ while (($#)); do
         --skip-lsp) SKIP_LSP=1 ;;
         --upgrade) UPGRADE_MODE=1 ;;
         --launcher-only) LAUNCHER_ONLY=1 ;;
+        --with-web-tools) WITH_WEB_TOOLS=1 ;;
         -h|--help) usage; exit 0 ;;
         *) usage >&2; die "未知选项：$1" ;;
     esac
@@ -203,8 +206,17 @@ if ((SKIP_DOCKER == 0)); then
             docker build --network=host -f Dockerfile.sandbox \
                 --label "$SANDBOX_HASH_LABEL=$expected_hash" -t "$SANDBOX_IMAGE" .
     fi
+    if ((WITH_WEB_TOOLS == 1)); then
+        log "拉取 Playwright MCP Headless Chromium 镜像"
+        docker pull mcr.microsoft.com/playwright/mcp
+        log "拉取 SearXNG 搜索镜像"
+        docker pull searxng/searxng:latest
+    fi
 else
     log "已跳过 Docker 沙箱镜像构建"
+    if ((WITH_WEB_TOOLS == 1)); then
+        warn "--skip-docker 与 --with-web-tools 不能同时生效，已跳过网络工具安装"
+    fi
 fi
 
 install_launcher

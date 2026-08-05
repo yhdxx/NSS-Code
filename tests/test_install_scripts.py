@@ -80,3 +80,25 @@ def test_install_script_rejects_misspelled_upgrade():
 
     assert result.returncode != 0
     assert "未知选项" in result.stderr
+
+
+def test_install_help_documents_optional_web_tools():
+    result = subprocess.run(
+        ["bash", str(PROJECT_ROOT / "scripts" / "install.sh"), "--help"],
+        capture_output=True,
+        text=True,
+        check=True,
+        cwd=PROJECT_ROOT,
+    )
+
+    assert "--with-web-tools" in result.stdout
+    assert "Playwright MCP" in result.stdout
+    assert "SearXNG" in result.stdout
+
+
+def test_install_script_pulls_both_session_web_runtime_images():
+    text = (PROJECT_ROOT / "scripts" / "install.sh").read_text(encoding="utf-8")
+
+    assert "docker pull mcr.microsoft.com/playwright/mcp" in text
+    assert "docker pull searxng/searxng:latest" in text
+    assert "scripts/searxng.sh" not in text

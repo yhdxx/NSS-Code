@@ -49,10 +49,14 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
     env.pop("MYCODINGAGENT_APPROVAL_MODE", None)
+    env.pop("MYCODINGAGENT_MAX_TOOL_ROUNDS", None)
     env.pop("MYCODINGAGENT_MODEL_AUDIO_PROVIDER", None)
     env.pop("MYCODINGAGENT_MODEL_AUDIO_MODEL", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_PROVIDER", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_MODEL", None)
+    env.pop("MYCODINGAGENT_SEARCH_ENABLED", None)
+    env.pop("MYCODINGAGENT_SEARCH_ENDPOINT", None)
+    env.pop("MYCODINGAGENT_SEARCH_MAX_RESULTS", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -84,10 +88,14 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_MCP_PROJECT_CONFIG", None)
     env.pop("MYCODINGAGENT_MCP_USER_CONFIG", None)
     env.pop("MYCODINGAGENT_APPROVAL_MODE", None)
+    env.pop("MYCODINGAGENT_MAX_TOOL_ROUNDS", None)
     env.pop("MYCODINGAGENT_MODEL_AUDIO_PROVIDER", None)
     env.pop("MYCODINGAGENT_MODEL_AUDIO_MODEL", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_PROVIDER", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_MODEL", None)
+    env.pop("MYCODINGAGENT_SEARCH_ENABLED", None)
+    env.pop("MYCODINGAGENT_SEARCH_ENDPOINT", None)
+    env.pop("MYCODINGAGENT_SEARCH_MAX_RESULTS", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -123,10 +131,19 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'mcp_project_config_path': str(CONFIG.mcp.project_config_path),\n"
         "  'mcp_user_config_path': str(CONFIG.mcp.user_config_path),\n"
         "  'approval_mode': CONFIG.approval.mode,\n"
+        "  'max_tool_rounds': CONFIG.client.max_tool_rounds,\n"
+        "  'research_max_tool_rounds': CONFIG.research.max_tool_rounds,\n"
+        "  'research_max_sources': CONFIG.research.max_sources,\n"
+        "  'research_fetch_max_chars': CONFIG.research.fetch_max_chars_per_source,\n"
         "  'audio_provider': CONFIG.model.audio.provider,\n"
         "  'audio_model': CONFIG.model.audio.model,\n"
         "  'vision_provider': CONFIG.model.vision.provider,\n"
         "  'vision_model': CONFIG.model.vision.model,\n"
+        "  'search_enabled': CONFIG.search.enabled,\n"
+        "  'search_endpoint': CONFIG.search.endpoint,\n"
+        "  'search_max_results': CONFIG.search.max_results,\n"
+        "  'network_enabled': CONFIG.network.enabled,\n"
+        "  'network_upstream_proxy': CONFIG.network.upstream_proxy,\n"
         "  'session_activation_reward': CONFIG.skills.session_activation_reward,\n"
         "  'user_skill_cache_max_entries': CONFIG.skills.user_skill_cache_max_entries,\n"
         "}, ensure_ascii=False, sort_keys=True))\n"
@@ -214,6 +231,52 @@ def test_approval_mode_loads_from_config_and_overrides_environment(tmp_path):
     assert data["approval_mode"] == "auto"
 
 
+def test_max_tool_rounds_defaults_to_100_and_supports_user_override(tmp_path):
+    missing_path = tmp_path / "missing.json"
+    empty_path = tmp_path / "empty.json"
+    custom_path = tmp_path / "custom.json"
+    missing_path.write_text("{}", encoding="utf-8")
+    empty_path.write_text(json.dumps({"client": {"max_tool_rounds": ""}}), encoding="utf-8")
+    custom_path.write_text(json.dumps({"client": {"max_tool_rounds": 240}}), encoding="utf-8")
+
+    assert _config_probe(missing_path)["max_tool_rounds"] == 100
+    assert _config_probe(empty_path)["max_tool_rounds"] == 100
+    assert _config_probe(custom_path)["max_tool_rounds"] == 240
+
+
+def test_research_max_tool_rounds_defaults_to_100_and_is_capped(tmp_path):
+    missing_path = tmp_path / "missing.json"
+    custom_path = tmp_path / "custom.json"
+    oversized_path = tmp_path / "oversized.json"
+    missing_path.write_text("{}", encoding="utf-8")
+    custom_path.write_text(json.dumps({"research": {"max_tool_rounds": 40}}), encoding="utf-8")
+    oversized_path.write_text(json.dumps({"research": {"max_tool_rounds": 240}}), encoding="utf-8")
+
+    assert _config_probe(missing_path)["research_max_tool_rounds"] == 100
+    assert _config_probe(custom_path)["research_max_tool_rounds"] == 40
+    assert _config_probe(oversized_path)["research_max_tool_rounds"] == 100
+
+
+def test_research_source_and_page_limits_are_hard_capped(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps(
+            {
+                "research": {
+                    "max_sources": 20,
+                    "fetch_max_chars_per_source": 50000,
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    config = _config_probe(config_path)
+
+    assert config["research_max_sources"] == 5
+    assert config["research_fetch_max_chars"] == 6000
+
+
 def test_media_model_defaults_and_environment_overrides(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
@@ -237,6 +300,30 @@ def test_media_model_defaults_and_environment_overrides(tmp_path):
     assert overridden["audio_model"] == "glm-asr-2512"
     assert overridden["vision_provider"] == "qwen"
     assert overridden["vision_model"] == "qwen3-vl-flash"
+
+
+def test_search_defaults_and_environment_overrides(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    defaults = _config_probe(config_path)
+    overridden = _config_probe(
+        config_path,
+        extra_env={
+            "MYCODINGAGENT_SEARCH_ENABLED": "false",
+            "MYCODINGAGENT_SEARCH_ENDPOINT": "http://127.0.0.1:9999/search",
+            "MYCODINGAGENT_SEARCH_MAX_RESULTS": "6",
+        },
+    )
+
+    assert defaults["search_enabled"] is True
+    assert defaults["search_endpoint"] == ""
+    assert defaults["search_max_results"] == 10
+    assert defaults["network_enabled"] is True
+    assert defaults["network_upstream_proxy"] == "auto"
+    assert overridden["search_enabled"] is False
+    assert overridden["search_endpoint"] == "http://127.0.0.1:9999/search"
+    assert overridden["search_max_results"] == 6
 
 
 def test_empty_config_string_falls_back_to_environment_variable(tmp_path):

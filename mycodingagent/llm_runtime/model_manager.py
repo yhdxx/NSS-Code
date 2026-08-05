@@ -1,5 +1,6 @@
 from __future__ import annotations
 
+import asyncio
 import json
 from pathlib import Path
 from typing import Any
@@ -74,8 +75,19 @@ class ModelManager:
         key = self.model_config.long_term_memory.search or self.model_config.active
         return self.provider(key)
 
-    def validation_errors(self, *, require_long_term_memory: bool = True) -> list[str]:
-        errors = self.model_config.validation_errors(require_long_term_memory=require_long_term_memory)
+    def research_provider(self) -> InferenceProvider:
+        return self.provider(self.model_config.research or self.model_config.active)
+
+    def validation_errors(
+        self,
+        *,
+        require_long_term_memory: bool = True,
+        require_research: bool = True,
+    ) -> list[str]:
+        errors = self.model_config.validation_errors(
+            require_long_term_memory=require_long_term_memory,
+            require_research=require_research,
+        )
         for key, profile in self.model_config.profiles.items():
             if profile.provider and not is_provider_registered(profile.provider):
                 errors.append(
@@ -126,8 +138,7 @@ class ModelManager:
     async def close(self) -> None:
         providers = list(self._providers.values())
         self._providers.clear()
-        for provider in providers:
-            await provider.close()
+        await asyncio.gather(*(provider.close() for provider in providers), return_exceptions=True)
 
     def _update_model_config(
         self,
@@ -165,8 +176,6 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
         provider_key = str(key).strip().lower()
         if provider_key:
             providers[provider_key] = ModelProviderConfig.from_raw(value, provider_key=provider_key)
-    if not providers:
-        providers = dict(CONFIG.model.providers)
     profiles_raw = model.get("profiles") if isinstance(model.get("profiles"), dict) else {}
     profiles: dict[str, ModelProfileConfig] = {}
     for key, value in profiles_raw.items():
@@ -175,6 +184,16 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
             profiles[profile_key] = ModelProfileConfig.from_raw(value, profile_key=profile_key)
     if not profiles:
         profiles = dict(CONFIG.model.profiles)
+    if not providers:
+        provider_keys = sorted({profile.provider for profile in profiles.values() if profile.provider})
+        providers = (
+            {
+                provider_key: ModelProviderConfig.from_raw({}, provider_key=provider_key)
+                for provider_key in provider_keys
+            }
+            if provider_keys
+            else dict(CONFIG.model.providers)
+        )
     ltm_raw = model.get("long_term_memory") if isinstance(model.get("long_term_memory"), dict) else {}
     audio_raw = model.get("audio") if isinstance(model.get("audio"), dict) else {}
     vision_raw = model.get("vision") if isinstance(model.get("vision"), dict) else {}
@@ -182,6 +201,12 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
         active=active,
         providers=providers,
         profiles=profiles,
+        research=_raw_env_str(
+            model,
+            "research",
+            ("MYCODINGAGENT_MODEL_RESEARCH",),
+            active,
+        ) or active,
         long_term_memory=ModelLongTermMemoryConfig(
             storage=_raw_env_str(
                 ltm_raw,

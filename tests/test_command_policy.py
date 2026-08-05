@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+from pathlib import Path
 
 import pytest
 
@@ -186,6 +187,76 @@ def test_bash_execute_passes_checked_image_and_timeout_to_docker(monkeypatch, tm
 
     assert result.output == "ok"
     assert captured == {"command": "echo ok", "image": "custom-image:test", "timeout": 7}
+
+
+def test_persistent_bash_uses_session_runtime_and_returns_service_metadata(monkeypatch, tmp_path):
+    monkeypatch.setattr("mycodingagent.tool_runtime.bash.shutil.which", lambda _name: "/usr/bin/docker")
+
+    async def ok_check(self, *args):  # noqa: ANN001
+        return ""
+
+    class Runtime:
+        async def start_persistent_command(self, command):  # noqa: ANN001
+            assert command == "npm run dev -- --host 0.0.0.0"
+            return (
+                type(
+                    "Started",
+                    (),
+                    {
+                        "service_id": "server-1",
+                        "pid": 4321,
+                        "log_path": Path(".mycodingagent/artifacts/services/runtime/server-1.log"),
+                    },
+                )(),
+                "",
+            )
+
+    monkeypatch.setattr(Bash, "_check_docker_daemon", ok_check)
+    monkeypatch.setattr(Bash, "_check_image_available", ok_check)
+    tool = Bash(
+        sandbox_root=tmp_path,
+        policy_evaluator=_evaluator(tmp_path),
+        session_runtime=Runtime(),
+    )
+
+    result = asyncio.run(
+        tool.execute(
+            tool.params_model(
+                command="npm run dev -- --host 0.0.0.0",
+                is_persistent_command=True,
+                intent="start dev server",
+            )
+        )
+    )
+
+    assert result.is_error is False
+    assert "服务 ID：server-1" in result.output
+    assert "PID：4321" in result.output
+    assert ".mycodingagent/artifacts/services/runtime/server-1.log" in result.output
+
+
+def test_persistent_bash_does_not_fallback_to_disposable_container(monkeypatch, tmp_path):
+    monkeypatch.setattr("mycodingagent.tool_runtime.bash.shutil.which", lambda _name: "/usr/bin/docker")
+
+    async def ok_check(self, *args):  # noqa: ANN001
+        return ""
+
+    monkeypatch.setattr(Bash, "_check_docker_daemon", ok_check)
+    monkeypatch.setattr(Bash, "_check_image_available", ok_check)
+    tool = Bash(sandbox_root=tmp_path, policy_evaluator=_evaluator(tmp_path))
+
+    result = asyncio.run(
+        tool.execute(
+            tool.params_model(
+                command="npm run dev",
+                is_persistent_command=True,
+                intent="start dev server",
+            )
+        )
+    )
+
+    assert result.is_error is True
+    assert "会话级工作区运行容器" in result.output
 
 
 def test_cli_hook_accepts_yes(monkeypatch, capsys):

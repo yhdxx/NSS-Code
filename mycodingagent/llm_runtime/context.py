@@ -38,6 +38,7 @@ class RuntimeContext:
     long_term_memory: dict[str, Any] | None = None
     tool_policy: dict[str, Any] | None = None
     plan: dict[str, Any] | None = None
+    network_routing: dict[str, Any] | None = None
 
     def to_payload(self) -> dict[str, Any]:
         return self.stable_payload()
@@ -50,6 +51,8 @@ class RuntimeContext:
         }
         if self.tool_policy:
             payload["tool_policy"] = self.tool_policy
+        if self.network_routing:
+            payload["network_routing"] = self.network_routing
         if self.plan:
             payload["plan"] = self.plan
         if self.capabilities:
@@ -103,6 +106,7 @@ class RuntimeContextBuilder:
         interaction_mode: str = "normal",
         tool_policy: dict[str, Any] | None = None,
         plan: dict[str, Any] | None = None,
+        network_routing: dict[str, Any] | None = None,
         context_budget: ContextBudgetState | None = None,
     ) -> None:
         self.workspace_tracker = workspace_tracker
@@ -114,6 +118,7 @@ class RuntimeContextBuilder:
         self.interaction_mode = interaction_mode
         self.tool_policy = tool_policy
         self.plan = plan
+        self.network_routing = network_routing
         self.context_budget = context_budget
 
     def build(self) -> RuntimeContext:
@@ -127,6 +132,7 @@ class RuntimeContextBuilder:
             long_term_memory=self.long_term_memory,
             tool_policy=self.tool_policy,
             plan=self.plan,
+            network_routing=self.network_routing,
             context_budget=self.context_budget,
         )
 

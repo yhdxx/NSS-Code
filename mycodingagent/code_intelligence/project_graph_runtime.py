@@ -10,6 +10,7 @@ from typing import Any, Callable
 
 from mycodingagent.code_intelligence.index import LANGUAGE_BY_SUFFIX, SKIP_DIRS, WorkspaceCodeIndex
 from mycodingagent.code_intelligence.project_graph import ProjectGraphService
+from mycodingagent.async_utils import run_daemon_thread
 from mycodingagent.work_mode import WorkMode, WorkModeManager
 
 
@@ -184,16 +185,24 @@ class ProjectGraphRuntime:
         )
 
     async def close(self) -> None:
-        self._closed = True
-        task = self._cancel_background_refresh()
+        task = self.begin_shutdown()
         if task is not None:
             await asyncio.gather(task, return_exceptions=True)
         async with self._refresh_lock:
             return None
 
+    def begin_shutdown(self) -> asyncio.Task[None] | None:
+        self._closed = True
+        task = self._cancel_background_refresh()
+        if task is not None and not task.done():
+            task.cancel()
+        return task
+
     async def _refresh_until_clean(
         self,
         progress: Callable[[str], None] | None,
+        *,
+        background: bool = False,
     ) -> dict[str, Any]:
         status: dict[str, Any] = self.service.status()
         async with self._refresh_lock:
@@ -202,7 +211,10 @@ class ProjectGraphRuntime:
                     revision = self._dirty_revision
                     self._refreshing = True
                 try:
-                    status = await asyncio.to_thread(self.service.refresh, progress)
+                    if background:
+                        status = await run_daemon_thread(self.service.refresh, progress)
+                    else:
+                        status = await asyncio.to_thread(self.service.refresh, progress)
                 finally:
                     with self._state_lock:
                         self._refreshing = False
@@ -226,7 +238,7 @@ class ProjectGraphRuntime:
         try:
             await asyncio.sleep(self.debounce_seconds)
             if self.current_mode is WorkMode.CODE and not self._deactivating:
-                await self._refresh_until_clean(None)
+                await self._refresh_until_clean(None, background=True)
         except asyncio.CancelledError:
             raise
         except Exception as exc:

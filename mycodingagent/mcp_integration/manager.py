@@ -4,7 +4,9 @@ import asyncio
 import contextlib
 import os
 import time
+from pathlib import Path
 from typing import Any
+from uuid import uuid4
 from contextlib import AsyncExitStack
 
 from mycodingagent.mcp_integration.cache import MCPMetadataCache
@@ -14,6 +16,11 @@ from mycodingagent.mcp_integration.execution import normalize_mcp_result
 from mycodingagent.mcp_integration.models import MCPExecutionResult, MCPItemSummary, MCPServerSummary
 from mycodingagent.mcp_integration.hooks import MCPServerLaunchHook, MCPServerLaunchRequest
 from mycodingagent.configuration import CONFIG
+from mycodingagent.network_access import NetworkAccessRuntime, is_local_http_url
+from mycodingagent.managed_network import ManagedNetworkRuntime
+
+
+DIRECT_TOOL_ONLY_SERVERS = frozenset({"playwright"})
 
 
 class MCPClientManager:
@@ -25,10 +32,24 @@ class MCPClientManager:
         config_loader: MCPConfigLoader | None = None,
         metadata_cache: MCPMetadataCache | None = None,
         launch_hook: MCPServerLaunchHook | None = None,
+        network_access: NetworkAccessRuntime | None = None,
+        network_runtime: ManagedNetworkRuntime | None = None,
+        playwright_network: str = "",
+        playwright_output_dir: Path | None = None,
+        playwright_output_container_path: str = "/mycodingagent-output",
+        workspace_root: Path | None = None,
     ) -> None:
         self.config_loader = config_loader or MCPConfigLoader()
         self.metadata_cache = metadata_cache or MCPMetadataCache()
         self.launch_hook = launch_hook
+        self.network_access = network_access or NetworkAccessRuntime()
+        self.network_runtime = network_runtime
+        self.playwright_network = playwright_network
+        self.playwright_output_dir = (
+            playwright_output_dir.resolve(strict=False) if playwright_output_dir is not None else None
+        )
+        self.playwright_output_container_path = playwright_output_container_path
+        self.workspace_root = (workspace_root or CONFIG.sandbox.root).expanduser().resolve(strict=False)
         self.discovery_gate = MCPDiscoveryGate()
         self.server_configs: dict[str, MCPServerConfig] = {}
         self._sessions: dict[str, Any] = {}
@@ -52,20 +73,37 @@ class MCPClientManager:
             self._reconnect_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reconnect_task
+        # MCP stdio sessions use AnyIO cancel scopes whose exits must remain
+        # ordered within the task that entered them.
         for server in list(self._sessions):
-            await self._close_session(server)
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._close_session(server)
+
+    async def apply_network_policy(self) -> None:
+        for server in list(self._sessions):
+            config = self.server_configs.get(server)
+            if config is not None and not self.network_access.allows_mcp(config):
+                await self._close_session(server)
 
     def server_count(self) -> int:
-        return len(self.server_configs)
+        return len(self.list_servers())
 
     def connected_count(self) -> int:
         return self.available_count()
 
     def available_count(self) -> int:
-        return sum(1 for server in self.metadata_cache.servers() if server.available)
+        return sum(1 for server in self.list_servers() if server.available)
 
     def list_servers(self) -> list[MCPServerSummary]:
-        return self.metadata_cache.servers()
+        return [
+            summary
+            for summary in self.metadata_cache.servers()
+            if not self.is_direct_tool_server(summary.name)
+        ]
+
+    @staticmethod
+    def is_direct_tool_server(server: str) -> bool:
+        return server in DIRECT_TOOL_ONLY_SERVERS
 
     async def refresh_server(self, server: str) -> MCPServerSummary | None:
         if server not in self.server_configs:
@@ -94,6 +132,8 @@ class MCPClientManager:
         return entry.summary() if entry is not None else None
 
     async def list_tools(self, server: str) -> dict[str, Any]:
+        if self.is_direct_tool_server(server):
+            return {"error": "Playwright 工具已直接注册为本地 Tool，不支持 MCP discovery。", "tools": []}
         summary = await self._ensure_discovered(server)
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
@@ -126,17 +166,42 @@ class MCPClientManager:
         unavailable = self._unavailable_result(server, operation="tool", name=tool)
         if unavailable is not None:
             return unavailable
+        call_arguments = dict(arguments or {})
+        if server == "playwright":
+            if tool == "browser_take_screenshot" and not str(call_arguments.get("filename") or "").strip():
+                extension = "jpg" if call_arguments.get("type") == "jpeg" else "png"
+                call_arguments["filename"] = f"screens/screenshot-{uuid4().hex}.{extension}"
+            output_error = _validate_playwright_output_arguments(call_arguments)
+            if output_error:
+                return MCPExecutionResult(
+                    server=server,
+                    operation="tool",
+                    name=tool,
+                    is_error=True,
+                    content_text=output_error,
+                    content_type="error",
+                )
+            self._prepare_playwright_output_parents(call_arguments)
+        before_outputs = self._playwright_output_snapshot() if server == "playwright" else {}
         try:
             session = await self._ensure_session(server)
             result = await asyncio.wait_for(
-                session.call_tool(tool, arguments or {}),
+                session.call_tool(tool, call_arguments),
                 timeout=self.server_configs[server].call_timeout,
             )
         except Exception as exc:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP 工具调用失败：{exc}", content_type="error")
-        return normalize_mcp_result(server=server, operation="tool", name=tool, result=result)
+        normalized = self._normalize_result(
+            server=server,
+            operation="tool",
+            name=tool,
+            result=result,
+        )
+        if server == "playwright":
+            normalized = self._attach_playwright_outputs(normalized, before_outputs)
+        return normalized
 
     async def read_resource(self, server: str, uri: str) -> MCPExecutionResult:
         if server not in self.server_configs:
@@ -153,7 +218,7 @@ class MCPClientManager:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP 资源读取失败：{exc}", content_type="error")
-        return normalize_mcp_result(server=server, operation="resource", name=uri, result=result)
+        return self._normalize_result(server=server, operation="resource", name=uri, result=result)
 
     async def get_prompt(self, server: str, prompt: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
         if server not in self.server_configs:
@@ -171,7 +236,20 @@ class MCPClientManager:
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, str(exc))
             return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"获取 MCP Prompt 失败：{exc}", content_type="error")
-        return normalize_mcp_result(server=server, operation="prompt", name=prompt, result=result)
+        return self._normalize_result(server=server, operation="prompt", name=prompt, result=result)
+
+    def _normalize_result(self, *, server: str, operation: str, name: str, result: Any) -> MCPExecutionResult:
+        artifact_root = self.workspace_root / ".mycodingagent" / "artifacts" / "mcp"
+        if server == "playwright" and self.playwright_output_dir is not None:
+            artifact_root = self.playwright_output_dir
+        return normalize_mcp_result(
+            server=server,
+            operation=operation,
+            name=name,
+            result=result,
+            artifact_root=artifact_root,
+            workspace_root=self.workspace_root,
+        )
 
     def unavailable_servers(self) -> list[str]:
         return self.metadata_cache.unavailable_servers()
@@ -207,8 +285,16 @@ class MCPClientManager:
         if existing is not None:
             return existing
         config = self.server_configs[server]
-        if self.launch_hook is not None:
-            target = config.url if config.transport == "streamable_http" else config.command
+        if not self.network_access.allows_mcp(config):
+            raise PermissionError(f"智能搜索已关闭，禁止连接外网 MCP Server：{server}")
+        if config.transport == "stdio" and config.network and not config.sandbox:
+            raise PermissionError(
+                f"联网 stdio MCP Server 必须启用 sandbox，避免绕过 Runtime 网络策略：{server}"
+            )
+        if config.network and self.network_runtime is None:
+            raise RuntimeError(f"联网 MCP Server 缺少 Runtime 托管网络：{server}")
+        if self.launch_hook is not None and not config.auto_start:
+            target = config.url if config.transport == "streamable_http" else (config.image or config.command)
             decision = await self.launch_hook.approve(
                 MCPServerLaunchRequest(
                     server=server,
@@ -232,16 +318,31 @@ class MCPClientManager:
         stack = AsyncExitStack()
         try:
             if config.transport == "streamable_http":
+                if self.network_runtime is None and not is_local_http_url(config.url):
+                    raise RuntimeError("远程 MCP 缺少 Runtime 托管网络")
                 http_client = await stack.enter_async_context(
-                    httpx.AsyncClient(headers=config.headers, timeout=config.call_timeout)
+                    httpx.AsyncClient(
+                        headers=config.headers,
+                        timeout=config.call_timeout,
+                        trust_env=False,
+                        proxy=(
+                            self.network_runtime.proxy_url
+                            if self.network_runtime and not is_local_http_url(config.url)
+                            else None
+                        ),
+                    )
                 )
                 read_stream, write_stream, _ = await stack.enter_async_context(
                     streamable_http_client(config.url, http_client=http_client)
                 )
             else:
                 env = os.environ.copy()
-                env.update(config.env)
+                for key, value in config.env.items():
+                    if value:
+                        env[key] = value
                 env.setdefault("npm_config_cache", "/tmp/mycodingagent-npm-cache")
+                if config.network and self.network_runtime is not None:
+                    env.update(self.network_runtime.proxy_environment)
                 if config.sandbox:
                     docker_args = self._sandboxed_stdio_args(config)
                     params = StdioServerParameters(command="docker", args=docker_args, env=env)
@@ -267,16 +368,50 @@ class MCPClientManager:
             await contexts.aclose()
 
     def _sandboxed_stdio_args(self, config: MCPServerConfig) -> list[str]:
+        network_name = (
+            self.network_runtime.network_name
+            if config.network and self.network_runtime is not None
+            else self.playwright_network
+            if config.name == "playwright" and self.playwright_network
+            else "none"
+        )
         args = [
             "run", "--rm", "-i",
-            "--network", "bridge" if config.network else "none",
-            "--cpus", CONFIG.docker.cpus,
-            "--memory", CONFIG.docker.memory,
-            "--pids-limit", CONFIG.docker.pids_limit,
+            "--network", network_name,
+            "--cpus", config.cpus or CONFIG.docker.cpus,
+            "--memory", config.memory or CONFIG.docker.memory,
+            "--pids-limit", config.pids_limit or CONFIG.docker.pids_limit,
             "--security-opt", "no-new-privileges",
             "--cap-drop", "ALL",
-            "--user", f"{os.getuid()}:{os.getgid()}",
         ]
+        if self.network_runtime is not None:
+            args.extend(
+                [
+                    "--label", "com.mycodingagent.managed=true",
+                    "--label", f"com.mycodingagent.runtime={self.network_runtime.runtime_id}",
+                    "--label", "com.mycodingagent.kind=mcp-runtime",
+                ]
+            )
+        if config.init:
+            args.append("--init")
+        if config.shm_size:
+            args.extend(["--shm-size", config.shm_size])
+        if config.container_user == "host":
+            args.extend(["--user", f"{os.getuid()}:{os.getgid()}"])
+        elif config.container_user != "image":
+            args.extend(["--user", config.container_user])
+        for host in config.extra_hosts:
+            args.extend(["--add-host", host])
+        if config.name == "playwright" and self.playwright_output_dir is not None:
+            self.playwright_output_dir.mkdir(parents=True, exist_ok=True)
+            args.extend(
+                [
+                    "--volume",
+                    f"{self.playwright_output_dir}:{self.playwright_output_container_path}:rw",
+                    "--workdir",
+                    self.playwright_output_container_path,
+                ]
+            )
         if config.workspace_access != "none":
             mode = "rw" if config.workspace_access == "write" else "ro"
             args.extend(
@@ -289,8 +424,94 @@ class MCPClientManager:
             )
         for key in config.env:
             args.extend(["--env", key])
-        args.extend([config.image or CONFIG.docker.image, config.command, *config.args])
+        if config.network and self.network_runtime is not None:
+            for key, value in self.network_runtime.proxy_environment.items():
+                args.extend(["--env", f"{key}={value}"])
+        args.append(config.image or CONFIG.docker.image)
+        if not config.image_entrypoint:
+            args.append(config.command)
+        args.extend(config.args)
+        if config.name == "playwright" and self.playwright_output_dir is not None:
+            args.extend(["--output-dir", self.playwright_output_container_path])
+        if config.name == "playwright" and self.network_runtime is not None:
+            args.extend(
+                [
+                    "--proxy-server",
+                    self.network_runtime.proxy_url,
+                    "--proxy-bypass",
+                    "<-loopback>,mycodingagent-devserver",
+                ]
+            )
         return args
+
+    def _playwright_output_snapshot(self) -> dict[Path, tuple[int, int]]:
+        root = self.playwright_output_dir
+        if root is None:
+            return {}
+        snapshot: dict[Path, tuple[int, int]] = {}
+        for path in root.rglob("*"):
+            if not path.is_file():
+                continue
+            try:
+                stat = path.stat()
+                snapshot[path] = (stat.st_mtime_ns, stat.st_size)
+            except OSError:
+                continue
+        return snapshot
+
+    def _prepare_playwright_output_parents(self, arguments: dict[str, Any]) -> None:
+        root = self.playwright_output_dir
+        if root is None:
+            return
+        for key in ("filename", "outputPath", "output_path"):
+            raw = arguments.get(key)
+            if not isinstance(raw, str) or not raw.strip():
+                continue
+            target = root / Path(raw)
+            target.parent.mkdir(parents=True, exist_ok=True)
+
+    def _attach_playwright_outputs(
+        self,
+        result: MCPExecutionResult,
+        before: dict[Path, tuple[int, int]],
+    ) -> MCPExecutionResult:
+        root = self.playwright_output_dir
+        if root is None:
+            return result
+        outputs: list[dict[str, Any]] = []
+        for path, fingerprint in self._playwright_output_snapshot().items():
+            if before.get(path) == fingerprint:
+                continue
+            try:
+                relative_to_output = path.resolve(strict=True).relative_to(root)
+                workspace_path = path.resolve(strict=True).relative_to(self.workspace_root)
+            except (OSError, ValueError):
+                continue
+            outputs.append(
+                {
+                    "path": workspace_path.as_posix(),
+                    "output_path": relative_to_output.as_posix(),
+                    "size": fingerprint[1],
+                }
+            )
+        if not outputs:
+            return result
+        outputs.sort(key=lambda item: item["path"])
+        metadata = dict(result.metadata)
+        metadata["runtime_outputs"] = outputs
+        lines = ["Runtime 已将本次输出保存到工作区："]
+        lines.extend(f"[workspace output] {item['path']}" for item in outputs)
+        if result.content_text:
+            lines.extend(["", result.content_text])
+        return MCPExecutionResult(
+            server=result.server,
+            operation=result.operation,
+            name=result.name,
+            is_error=result.is_error,
+            content_text="\n".join(lines),
+            content_type="mixed" if result.content_text else "metadata",
+            metadata=metadata,
+        )
 
     async def _mark_server_unavailable(self, server: str, error: str) -> None:
         await self._close_session(server)
@@ -315,6 +536,11 @@ class MCPClientManager:
             return None
         item = next((candidate for candidate in entry.tools if candidate.name == tool), None)
         return item.to_payload() if item is not None else None
+
+    def cached_tools(self, server: str) -> list[MCPItemSummary]:
+        """Return the last discovered tool metadata for a configured server."""
+        entry = self.metadata_cache.get(server)
+        return list(entry.tools) if entry is not None else []
 
     def _unavailable_result(self, server: str, *, operation: str, name: str) -> MCPExecutionResult | None:
         entry = self.metadata_cache.get(server)
@@ -377,3 +603,15 @@ def _is_mcp_operation_error(exc: Exception) -> bool:
     """Return True for server-side operation errors that should not poison the connection."""
     exc_type = type(exc)
     return exc_type.__name__ == "McpError" and exc_type.__module__ == "mcp.shared.exceptions"
+
+
+def _validate_playwright_output_arguments(arguments: dict[str, Any]) -> str:
+    """Keep every user-selected Playwright output inside its mounted output root."""
+    for key in ("filename", "path", "outputPath", "output_path"):
+        raw = arguments.get(key)
+        if not isinstance(raw, str) or not raw.strip():
+            continue
+        candidate = Path(raw)
+        if candidate.is_absolute() or ".." in candidate.parts:
+            return f"Playwright 输出路径必须是工作区 Runtime 输出目录内的相对路径：{raw}"
+    return ""

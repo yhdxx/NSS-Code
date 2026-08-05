@@ -46,6 +46,14 @@ def test_background_output_does_not_corrupt_active_prompt() -> None:
     asyncio.run(scenario())
 
 
+def test_smart_search_status_is_always_rendered_with_current_state() -> None:
+    terminal = TerminalApplication()
+
+    assert "智能搜索（开启）" in str(terminal._formatted_smart_search_status())
+    terminal.set_smart_search_enabled(False)
+    assert "智能搜索（关闭）" in str(terminal._formatted_smart_search_status())
+
+
 def test_slash_opens_hint_without_completing_until_arrow_selection_is_confirmed() -> None:
     async def scenario() -> None:
         master_fd, slave_fd = pty.openpty()

@@ -11,7 +11,8 @@
 `bootstrap.py` 在 `CONFIG` 导入前负责创建 `~/.mycodingagent/config.json`，并把
 `docs/configuration.md` 同步到 `~/.mycodingagent/README.md`。
 项目提供 `.mycodingagent/config.example.json` 作为主配置模板；YAML 示例仅作字段参考，运行时不读取。
-完整配置说明、环境变量表、按场景可复制示例、Embedding、Milvus 和 MCP 配置示例见根目录 `docs/configuration.md`。
+完整配置说明、环境变量表、按场景可复制示例、Embedding、Milvus、SearXNG 搜索和 MCP 配置示例见根目录
+`docs/configuration.md`。
 新增外部依赖配置时，优先加入 `settings.py` 的配置文件映射、JSON 示例和配置文档，并保留环境变量兜底能力。
 
 Embedding provider 只接受 `http`、`local`、`hash`；`http` 的协议由 `api_format` 选择 Ollama、OpenAI 或 DashScope。Skill 向量索引会记录 embedding signature；模型、接口或请求参数变化后会重新嵌入。

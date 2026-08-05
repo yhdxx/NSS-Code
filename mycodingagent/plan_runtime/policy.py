@@ -22,7 +22,6 @@ MCP_TOOL_NAMES = frozenset(
     }
 )
 
-
 @dataclass(frozen=True)
 class TurnToolPolicy:
     interaction_mode: InteractionMode
@@ -31,6 +30,8 @@ class TurnToolPolicy:
     def allows(self, tool: Any) -> bool:
         name = str(getattr(tool, "name", ""))
         if self.interaction_mode is InteractionMode.PLAN:
+            if bool(getattr(tool, "is_playwright_tool", False)):
+                return False
             if name in MCP_TOOL_NAMES or name in {"Bash", "WriteFile", "EditFile", "update_plan_step"}:
                 return False
             return getattr(tool, "category", "read") != "write" or name == "UpdateProjectDescription"

@@ -151,6 +151,15 @@ def build_command_registry() -> CommandRegistry:
     )
     registry.register(
         CommandSpec(
+            name="/search",
+            aliases=("search", "智能搜索"),
+            description="开启或关闭外网搜索与网络 MCP 连接",
+            usages=(("", "交互选择开启或关闭；localhost 始终允许"),),
+            handler=handle_search_command,
+        )
+    )
+    registry.register(
+        CommandSpec(
             name="/model",
             aliases=("model", "模型"),
             description="交互选择并切换当前主推理模型",
@@ -270,6 +279,37 @@ async def handle_approval_command(context: CommandContext, arguments: str) -> Co
         print("审批模式已切换为 auto：Bash、MCP 工具和 MCP Server 启动将全部自动放行，包括高危操作。", flush=True)
     else:
         print("审批模式已切换为 default：Bash 与 MCP 将恢复按风险审批。", flush=True)
+    return CommandResult(messages=context.messages)
+
+
+async def handle_search_command(context: CommandContext, arguments: str) -> CommandResult:
+    if arguments.strip():
+        print("用法：/search", flush=True)
+        return CommandResult(messages=context.messages)
+    runtime = context.network_access
+    if runtime is None:
+        print("智能搜索运行时未启用。", flush=True)
+        return CommandResult(messages=context.messages)
+    options = [
+        "开启 - 允许联网搜索与外网 MCP 连接",
+        "关闭 - 禁止外网，仅保留 localhost:port",
+    ]
+    selected = await request_selection(
+        f"当前智能搜索：{'开启' if runtime.enabled else '关闭'}。请选择：",
+        options,
+    )
+    if selected is None:
+        print("已取消智能搜索切换。", flush=True)
+        return CommandResult(messages=context.messages)
+    await runtime.set_enabled_async(selected == 0)
+    if context.mcp_manager is not None:
+        await context.mcp_manager.apply_network_policy()
+    if context.terminal is not None:
+        context.terminal.set_smart_search_enabled(runtime.enabled)
+    if runtime.enabled:
+        print("智能搜索已开启：允许联网搜索与外网 MCP 连接。", flush=True)
+    else:
+        print("智能搜索已关闭：搜索与 GitHub 等外网 MCP 连接已禁用；localhost:port 仍可访问。", flush=True)
     return CommandResult(messages=context.messages)
 
 

@@ -58,6 +58,11 @@ class CallMCPToolTool(Tool):
         intent = _compact_intent(params.intent)
         if not intent:
             return ToolResult(output="MCP 工具调用需要提供简短 intent。", is_error=True)
+        if self._manager.is_direct_tool_server(params.server):
+            return ToolResult(
+                output="Playwright 工具已直接注册为本地 Tool，请调用对应 browser_* 工具。",
+                is_error=True,
+            )
         cached_metadata = self._manager.cached_tool_payload(params.server, params.tool)
         if not self._manager.discovery_gate.allows(params.server, params.tool, cached_metadata):
             return _discovery_required_result(params.server, params.tool)
@@ -113,6 +118,8 @@ class ReadMCPResourceTool(Tool):
         intent = _compact_intent(params.intent)
         if not intent:
             return ToolResult(output="MCP 资源读取需要提供简短 intent。", is_error=True)
+        if self._manager.is_direct_tool_server(params.server):
+            return ToolResult(output="Playwright 不通过 MCP resource 提供给模型。", is_error=True)
         result = await self._manager.read_resource(params.server, params.uri)
         payload = result.to_payload()
         payload["intent"] = intent
@@ -138,6 +145,8 @@ class GetMCPPromptTool(Tool):
         intent = _compact_intent(params.intent)
         if not intent:
             return ToolResult(output="获取 MCP Prompt 需要提供简短 intent。", is_error=True)
+        if self._manager.is_direct_tool_server(params.server):
+            return ToolResult(output="Playwright 不通过 MCP prompt 提供给模型。", is_error=True)
         result = await self._manager.get_prompt(params.server, params.prompt, params.arguments)
         payload = result.to_payload()
         payload["intent"] = intent

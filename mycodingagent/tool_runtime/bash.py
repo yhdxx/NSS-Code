@@ -6,6 +6,7 @@ import shutil  # 检查宿主机是否安装了 docker 可执行文件。
 import tempfile
 import uuid  # 为每次命令生成唯一容器名，避免并发或残留容器名称冲突。
 from pathlib import Path  # 表示并保存宿主机上的沙箱根目录路径。
+from typing import TYPE_CHECKING
 
 from pydantic import BaseModel, Field  # 定义并校验 Bash 工具对外暴露的参数 schema。
 
@@ -19,10 +20,12 @@ from mycodingagent.tool_runtime.command_policy import (  # 高危命令分类与
     BashPolicyStore,
 )
 
+if TYPE_CHECKING:
+    from mycodingagent.workspace_runtime import WorkspaceRuntime
+
 MAX_TIMEOUT = CONFIG.docker.max_timeout  # 单次命令允许的最大运行秒数；即使调用方传入更大 timeout，也会被截断到该上限。
 DEFAULT_DOCKER_IMAGE = CONFIG.docker.image  # 默认执行镜像，提供基础 Python/Bash 环境，同时保持镜像体积较小。
 DOCKER_IMAGE_ENV = CONFIG.docker.image_env  # 覆盖执行镜像的环境变量，便于按项目切换到带依赖的镜像。
-DOCKER_NETWORK_ENV = CONFIG.docker.network_env  # 控制容器网络模式；默认 none，避免命令随意访问外网。
 DOCKER_BUILD_NETWORK_ENV = CONFIG.docker.build_network_env  # 控制 Docker build 阶段网络，便于安装系统包和 Python 依赖。
 DOCKER_CPUS_ENV = CONFIG.docker.cpus_env  # 控制 Docker --cpus 参数，限制命令最多使用的 CPU 份额。
 DOCKER_MEMORY_ENV = CONFIG.docker.memory_env  # 控制 Docker --memory 参数，防止命令占用过多宿主机内存。
@@ -91,6 +94,13 @@ class Params(BaseModel):  # Bash 工具的入参模型，会被工具注册表�
         le=MAX_TIMEOUT,
         description=f"超时时间，单位为秒，最大值为 {MAX_TIMEOUT}",
     )  # 调用方期望的超时时间；实际执行时会再受 MAX_TIMEOUT 限制。
+    is_persistent_command: bool = Field(
+        default=False,
+        description=(
+            "是否为需要在当前 Agent 会话期间持续运行的命令。仅开发服务器、watcher 等长期服务设为 true；"
+            "测试、构建、安装和查询命令必须保持 false。"
+        ),
+    )
     intent: str = Field(default="", description="本次命令的简短目的")  # 基类 schema 会强制要求 intent；这里显式声明，避免校验时被丢弃。
 
 
@@ -99,6 +109,10 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
     description = (  # 传给模型的工具说明，帮助模型理解该工具适合执行命令而不是直接读写文件。
         "在 Docker 沙箱内执行 Shell 命令并返回标准输出和标准错误。"  # 明确命令运行位置在 Docker 沙箱内部，而非直接在宿主机执行。
         f"沙箱将 Agent 工作区挂载到 {CONFIG.sandbox.docker_workspace_alias}。"  # 告诉模型项目根目录在容器内的固定路径，方便生成正确命令。
+        "当前会话复用同一工作区容器。供 browser_* 访问的服务必须监听 0.0.0.0，"
+        "浏览器可使用 http://localhost:<port> 访问，Runtime 会映射到当前会话容器；也支持 "
+        "http://mycodingagent-devserver:<port>。开发服务器和 watcher 应设置 "
+        "is_persistent_command=true；普通命令保持 false 并等待退出。"
     )  # 多段字符串在编译期自动拼接成完整描述。
     params_model = Params  # 指定参数校验模型；客户端执行工具前会用它校验模型生成的 JSON 参数。
     category = "command"  # 标记为命令类工具，区别于 ReadFile/Glob/Grep 这类只读工具和 WriteFile/EditFile 写工具。
@@ -109,10 +123,12 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
         approval_hook: CommandApprovalHook | None = None,
         *,
         policy_evaluator: BashPolicyEvaluator,
+        session_runtime: WorkspaceRuntime | None = None,
     ) -> None:  # 创建工具实例时确定要挂载进容器的宿主机工作区。
         self._sandbox_root = sandbox_root or get_sandbox_root()  # 未显式传入时，使用统一沙箱根目录解析逻辑，通常是启动 agent 的当前目录。
         self._approval_hook = approval_hook  # 为 None 时不做审批，保持非交互场景和既有测试行为不变。
         self._policy_evaluator = policy_evaluator
+        self._session_runtime = session_runtime
 
     def display_policy_level(self, command: str) -> tuple[str, str]:
         """Return the same policy level used by execution for terminal previews."""
@@ -155,10 +171,86 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
                         output=f"{USER_DENIED_COMMAND_MESSAGE}：{decision.reason or reason or '用户拒绝'}",
                         is_error=True,
                     )
+        if self._session_runtime is not None:
+            if params.is_persistent_command:
+                return await self._execute_persistent_command(params)
+            return await self._execute_workspace_runtime(params, timeout)
+        if params.is_persistent_command:
+            return ToolResult(
+                output="错误：持久命令需要会话级工作区运行容器，当前 Runtime 不可用",
+                is_error=True,
+            )
         return await self._execute_docker(params, image, timeout)
 
+    async def _execute_persistent_command(self, params: Params) -> ToolResult:
+        started, error = await self._session_runtime.start_persistent_command(params.command)
+        if error or started is None:
+            return ToolResult(output=error or "启动持久命令失败", is_error=True)
+        return ToolResult(
+            output=(
+                "持久命令已启动。\n"
+                f"服务 ID：{started.service_id}\n"
+                f"PID：{started.pid}\n"
+                f"日志：{started.log_path.as_posix()}"
+            )
+        )
+
+    async def _execute_workspace_runtime(self, params: Params, timeout: int) -> ToolResult:
+        command, error = await self._session_runtime.bash_exec_args(params.command, timeout)
+        if error or command is None:
+            return ToolResult(output=f"执行命令失败：{error or '工作区运行容器不可用'}", is_error=True)
+
+        proc: asyncio.subprocess.Process | None = None
+        stdout_task: asyncio.Task[tuple[bytes, int]] | None = None
+        stderr_task: asyncio.Task[tuple[bytes, int]] | None = None
+        try:
+            proc = await asyncio.create_subprocess_exec(
+                *command,
+                stdout=asyncio.subprocess.PIPE,
+                stderr=asyncio.subprocess.PIPE,
+                env=docker_subprocess_env(),
+            )
+            stdout_task = asyncio.create_task(_read_limited_stream(proc.stdout, MAX_OUTPUT_CHARS))
+            stderr_task = asyncio.create_task(_read_limited_stream(proc.stderr, MAX_OUTPUT_CHARS))
+            await asyncio.wait_for(proc.wait(), timeout=timeout)
+            (stdout, stdout_omitted), (stderr, stderr_omitted) = await asyncio.gather(
+                stdout_task,
+                stderr_task,
+            )
+        except asyncio.CancelledError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            await _finish_stream_tasks(stdout_task, stderr_task)
+            await self._session_runtime.cancel_active_command()
+            raise
+        except asyncio.TimeoutError:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            await _finish_stream_tasks(stdout_task, stderr_task)
+            await self._session_runtime.cancel_active_command()
+            return ToolResult(output=f"错误：命令在 {timeout} 秒后超时", is_error=True)
+        except FileNotFoundError:
+            return ToolResult(output="错误：未找到 docker 可执行程序", is_error=True)
+        except Exception as exc:
+            if proc is not None and proc.returncode is None:
+                proc.kill()
+                await proc.wait()
+            await _finish_stream_tasks(stdout_task, stderr_task)
+            return ToolResult(output=f"执行命令失败：{exc}", is_error=True)
+
+        parts: list[str] = []
+        if stdout or stdout_omitted:
+            parts.append(_format_limited_stream("标准输出", stdout, stdout_omitted))
+        if stderr or stderr_omitted:
+            parts.append(_format_limited_stream("标准错误", stderr, stderr_omitted))
+        return ToolResult(
+            output="\n".join(parts) if parts else "（无输出）",
+            is_error=proc.returncode != 0,
+        )
+
     async def _execute_docker(self, params: Params, image: str, timeout: int) -> ToolResult:
-        network = CONFIG.docker.network  # 默认关闭容器网络；需要联网时必须由外部环境显式打开。
         cpus = CONFIG.docker.cpus  # 默认限制为 2 个 CPU，避免编译或测试命令压满宿主机。
         memory = CONFIG.docker.memory  # 默认限制为 1GB 内存，降低失控命令影响整个 agent 进程的风险。
         pids_limit = CONFIG.docker.pids_limit  # 默认限制 256 个进程，防止 fork 型命令耗尽系统进程表。
@@ -171,7 +263,7 @@ class Bash(Tool):  # 命令执行工具：把 shell 命令放进 Docker 容器�
             "--name",  # 显式设置容器名，方便超时场景下通过名称强制删除。
             container_name,  # 本次工具调用专属的容器名。
             "--network",  # 指定容器网络模式。
-            network,  # 默认 `none`，也可通过环境变量配置为 bridge/host 等 Docker 支持的模式。
+            "none",  # 非 CLI 回退路径严格断网；CLI 会话统一使用 Runtime 托管网络。
             "--cpus",  # Docker CPU 配额参数。
             cpus,  # CPU 配额值，来自环境变量或默认值。
             "--memory",  # Docker 内存上限参数。

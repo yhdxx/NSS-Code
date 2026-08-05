@@ -147,6 +147,8 @@ def test_write_file_preserves_content_and_rejects_directory_target(tmp_path) -> 
 
 
 def test_bash_validates_command_and_timeout() -> None:
+    assert BashParams(command="true").is_persistent_command is False
+    assert BashParams(command="npm run dev", is_persistent_command=True).is_persistent_command is True
     with pytest.raises(ValidationError):
         BashParams(command="")
     with pytest.raises(ValidationError):

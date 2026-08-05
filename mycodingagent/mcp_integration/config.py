@@ -30,6 +30,15 @@ class MCPServerConfig:
     image: str = ""
     workspace_access: str = "none"
     network: bool = False
+    init: bool = False
+    shm_size: str = ""
+    cpus: str = ""
+    memory: str = ""
+    pids_limit: str = ""
+    container_user: str = "host"
+    image_entrypoint: bool = False
+    auto_start: bool = False
+    extra_hosts: tuple[str, ...] = ()
     description: str = ""
     tags: tuple[str, ...] = ()
     aliases: tuple[str, ...] = ()
@@ -108,7 +117,10 @@ def _server_config_from_dict(name: str, data: dict[str, Any]) -> MCPServerConfig
     disabled = bool(data.get("disabled", False))
     if transport not in {"stdio", "streamable_http"}:
         raise ValueError(f"MCP Server {name!r} 使用了不支持的传输方式：{transport}")
-    if transport == "stdio" and not command and not disabled:
+    image = str(data.get("image", "") or "").strip()
+    sandbox = bool(data.get("sandbox", False))
+    image_entrypoint = bool(data.get("image_entrypoint", False))
+    if transport == "stdio" and not command and not disabled and not (sandbox and image and image_entrypoint):
         raise ValueError(f"MCP Server {name!r} 缺少必填字段：command")
     if transport == "streamable_http" and not url and not disabled:
         raise ValueError(f"MCP Server {name!r} 缺少必填字段：url")
@@ -125,10 +137,19 @@ def _server_config_from_dict(name: str, data: dict[str, Any]) -> MCPServerConfig
         headers={str(key): str(value) for key, value in dict(data.get("headers", {})).items()},
         startup_timeout=max(0.1, float(data.get("startup_timeout", 20.0))),
         call_timeout=max(0.1, float(data.get("call_timeout", 60.0))),
-        sandbox=bool(data.get("sandbox", False)),
-        image=str(data.get("image", "") or ""),
+        sandbox=sandbox,
+        image=image,
         workspace_access=workspace_access,
         network=bool(data.get("network", False)),
+        init=bool(data.get("init", False)),
+        shm_size=str(data.get("shm_size", "") or "").strip(),
+        cpus=str(data.get("cpus", "") or "").strip(),
+        memory=str(data.get("memory", "") or "").strip(),
+        pids_limit=str(data.get("pids_limit", "") or "").strip(),
+        container_user=str(data.get("container_user", "host") or "host").strip(),
+        image_entrypoint=image_entrypoint,
+        auto_start=bool(data.get("auto_start", name == "playwright")),
+        extra_hosts=_string_tuple(data.get("extra_hosts", ())),
         description=str(data.get("description", "") or ""),
         tags=_string_tuple(data.get("tags", ())),
         aliases=_string_tuple(data.get("aliases", ())),

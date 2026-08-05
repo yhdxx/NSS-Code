@@ -3,6 +3,7 @@ from __future__ import annotations
 import json
 import shutil
 import time
+from copy import deepcopy
 from dataclasses import dataclass, field
 from pathlib import Path
 
@@ -28,6 +29,8 @@ class ConfigBootstrapResult:
     recreated_invalid_mcp_config: bool = False
     mcp_backup_path: Path | None = None
     synced_mcp_readme: bool = False
+    added_mcp_servers: list[str] = field(default_factory=list)
+    added_config_fields: list[str] = field(default_factory=list)
     messages: list[str] = field(default_factory=list)
     warnings: list[str] = field(default_factory=list)
     fatal_error: str = ""
@@ -88,6 +91,30 @@ def bootstrap_user_config(*, home: Path | None = None, repo_root: Path | None = 
         result=result,
     )
     if not result.fatal_error:
+        result.added_config_fields = _merge_missing_config_fields(
+            template_path=template_path,
+            target_path=config_path,
+            fields=(
+                "client.max_tool_rounds",
+                "network.enabled",
+                "network.upstream_proxy",
+                "network.allow_domains",
+                "network.deny_domains",
+                "network.connect_timeout",
+                "network.idle_timeout",
+                "network.ca_bundle",
+                "search.image",
+                "model.research",
+                "research.enabled",
+                "research.max_tool_rounds",
+                "research.max_sources",
+                "research.max_findings",
+                "research.max_summary_chars",
+                "research.fetch_max_chars_per_source",
+            ),
+            result=result,
+        )
+    if not result.fatal_error:
         (
             result.created_mcp_config,
             result.recreated_invalid_mcp_config,
@@ -99,7 +126,123 @@ def bootstrap_user_config(*, home: Path | None = None, repo_root: Path | None = 
             required=False,
             result=result,
         )
+        if not result.fatal_error:
+            result.added_mcp_servers = _merge_missing_mcp_servers(
+                template_path=mcp_template_path,
+                target_path=mcp_config_path,
+                result=result,
+            )
     return result
+
+
+def _merge_missing_config_fields(
+    *,
+    template_path: Path,
+    target_path: Path,
+    fields: tuple[str, ...],
+    result: ConfigBootstrapResult,
+) -> list[str]:
+    try:
+        template = _parse_config_json(template_path.read_text(encoding="utf-8"))
+        target = _parse_config_json(target_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        result.warnings.append(f"无法增量同步配置字段：{exc}")
+        return []
+    if template is None or target is None:
+        return []
+    added: list[str] = []
+    for path in fields:
+        parts = path.split(".")
+        template_parent: object = template
+        target_parent: object = target
+        for part in parts[:-1]:
+            if not isinstance(template_parent, dict) or part not in template_parent:
+                template_parent = None
+                break
+            template_parent = template_parent[part]
+            if isinstance(target_parent, dict):
+                child = target_parent.get(part)
+                if child is None:
+                    child = {}
+                    target_parent[part] = child
+                target_parent = child
+        leaf = parts[-1]
+        if (
+            not isinstance(template_parent, dict)
+            or leaf not in template_parent
+            or not isinstance(target_parent, dict)
+            or leaf in target_parent
+        ):
+            continue
+        value = deepcopy(template_parent[leaf])
+        if path == "model.research":
+            model = target.get("model")
+            if isinstance(model, dict):
+                value = str(model.get("active") or value)
+        target_parent[leaf] = value
+        added.append(path)
+    if not added:
+        return []
+    temporary = target_path.with_suffix(target_path.suffix + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(target, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target_path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        result.warnings.append(f"无法追加配置字段到 {target_path}: {exc}")
+        return []
+    result.messages.append(f"已追加配置字段：{', '.join(added)}")
+    return added
+
+
+def _merge_missing_mcp_servers(
+    *,
+    template_path: Path,
+    target_path: Path,
+    result: ConfigBootstrapResult,
+) -> list[str]:
+    try:
+        template = _parse_config_json(template_path.read_text(encoding="utf-8"))
+        target = _parse_config_json(target_path.read_text(encoding="utf-8"))
+    except OSError as exc:
+        result.warnings.append(f"无法增量同步 MCP Server 配置：{exc}")
+        return []
+    if template is None or target is None:
+        return []
+    template_servers = template.get("servers")
+    target_servers = target.get("servers")
+    if not isinstance(template_servers, dict):
+        result.warnings.append(f"MCP 配置模板缺少 servers 对象：{template_path}")
+        return []
+    if not isinstance(target_servers, dict):
+        result.warnings.append(
+            f"现有 MCP 配置缺少 servers 对象，已保留原文件且未自动补全：{target_path}"
+        )
+        return []
+    added: list[str] = []
+    for name, server_config in template_servers.items():
+        if name.startswith("_") or name in target_servers or not isinstance(server_config, dict):
+            continue
+        target_servers[name] = deepcopy(server_config)
+        added.append(name)
+    if not added:
+        return []
+    temporary = target_path.with_suffix(target_path.suffix + ".tmp")
+    try:
+        temporary.write_text(
+            json.dumps(target, ensure_ascii=False, indent=2) + "\n",
+            encoding="utf-8",
+        )
+        temporary.replace(target_path)
+    except OSError as exc:
+        temporary.unlink(missing_ok=True)
+        result.warnings.append(f"无法追加内置 MCP Server 到 {target_path}: {exc}")
+        return []
+    result.messages.append(f"已追加内置 MCP Server：{', '.join(added)}")
+    return added
 
 
 def _sync_document(

@@ -16,6 +16,7 @@ from uuid import uuid4
 from pathlib import Path
 
 from mycodingagent.configuration import CONFIG
+from mycodingagent.async_utils import run_daemon_thread
 from mycodingagent.memory.budget import PromptBudgetManager, PromptBudgetSnapshot, estimate_tokens
 from mycodingagent.memory.checkpoint import CheckpointManager, RolloverResult, TurnState
 from mycodingagent.memory.compressor import ContextCompressor, ToolOutputRef, is_reproducible_tool
@@ -150,11 +151,10 @@ class MemoryRuntime:
     async def _run_writer(self) -> None:
         if self._write_queue is None:
             return
-        loop = asyncio.get_running_loop()
         while True:
             task = await self._write_queue.get()
             try:
-                await loop.run_in_executor(None, task.callback)
+                await run_daemon_thread(task.callback)
             except Exception as exc:  # pragma: no cover - defensive logging path
                 self._record_writer_error(task.description, exc)
             finally:
@@ -168,6 +168,20 @@ class MemoryRuntime:
         self._closed = True
         await self.await_pending_rollover()
         await self.drain()
+        await self._stop_writer()
+
+    async def close_for_exit(self) -> None:
+        """Stop background lifecycle work without waiting for a pending rollover."""
+        self._closed = True
+        if self._pending_rollover_task is not None:
+            self._pending_rollover_task.cancel()
+            with contextlib.suppress(asyncio.CancelledError):
+                await self._pending_rollover_task
+            self._pending_rollover_task = None
+        await self.drain()
+        await self._stop_writer()
+
+    async def _stop_writer(self) -> None:
         if self._worker_task is not None:
             self._worker_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -1113,9 +1127,7 @@ class MemoryRuntime:
         system_prompt_source: dict[str, Any] | None,
     ) -> RolloverResult:
         try:
-            loop = asyncio.get_running_loop()
-            snapshot = await loop.run_in_executor(
-                None,
+            snapshot = await run_daemon_thread(
                 lambda: self.create_checkpoint(
                     session_id=session_id,
                     messages=messages,
@@ -1124,8 +1136,7 @@ class MemoryRuntime:
                     usage_ratio=usage_ratio,
                 ),
             )
-            result = await loop.run_in_executor(
-                None,
+            result = await run_daemon_thread(
                 lambda: self.rollover_to_new_session(
                     session_id=session_id,
                     snapshot=snapshot,

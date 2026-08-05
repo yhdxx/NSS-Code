@@ -3,6 +3,8 @@
 .docker-cli/
 .mycodingagent/config.yaml
 .mycodingagent/config.json
+.mycodingagent/artifacts/
+.mycodingagent/state/
 .idea/
 .venv/
 __pycache__/

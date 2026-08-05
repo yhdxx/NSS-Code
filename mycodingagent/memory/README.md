@@ -9,3 +9,7 @@
 - `workspace_checkpoint.py`：保存内容寻址的文件写前快照，并在 hash 冲突检查后执行 rewind。
 
 依赖方向和函数级索引见根目录 `PROJECT_FRAMEWORK.md`。
+
+运行时由组合根把会话与检查点数据库绑定到当前工作区的
+`.mycodingagent/state/sessions.sqlite3`。用户级长期记忆仍使用配置中的全局数据库；项目事实由长期记忆运行时单独写入
+工作区 `.mycodingagent/state/project_memory.sqlite3`，从而让删除项目目录同时删除项目专属状态。

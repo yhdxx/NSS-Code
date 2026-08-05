@@ -496,6 +496,11 @@ class ModelConfig:
     active: str = field(default_factory=lambda: _user_str("model.active", ("MYCODINGAGENT_MODEL_ACTIVE",), "main").strip() or "main")
     providers: dict[str, ModelProviderConfig] = field(default_factory=_load_model_providers)
     profiles: dict[str, ModelProfileConfig] = field(default_factory=_load_model_profiles)
+    research: str = field(
+        default_factory=lambda: _user_str(
+            "model.research", ("MYCODINGAGENT_MODEL_RESEARCH",), ""
+        ).strip()
+    )
     long_term_memory: ModelLongTermMemoryConfig = field(default_factory=_load_model_ltm_config)
     audio: ModelMediaConfig = field(
         default_factory=lambda: _load_model_media_config(
@@ -525,7 +530,12 @@ class ModelConfig:
             return None
         return self.providers.get(provider_key) or ModelProviderConfig.from_raw({}, provider_key=provider_key)
 
-    def validation_errors(self, *, require_long_term_memory: bool = True) -> list[str]:
+    def validation_errors(
+        self,
+        *,
+        require_long_term_memory: bool = True,
+        require_research: bool = True,
+    ) -> list[str]:
         errors: list[str] = []
         checked_providers: set[str] = set()
 
@@ -558,6 +568,13 @@ class ModelConfig:
                     errors.append(f"model.long_term_memory.{label} 指向不存在的 profile：{key}")
                 elif profile is not None:
                     check_provider_api(profile.provider)
+        if require_research:
+            research_key = self.research or self.active
+            research_profile = self.profile(research_key)
+            if research_profile is None:
+                errors.append(f"model.research 指向不存在的 profile：{research_key}")
+            elif research_profile is not None:
+                check_provider_api(research_profile.provider)
         supported_media_providers = {"zhipu", "qwen"}
         for capability, media in (("audio", self.audio), ("vision", self.vision)):
             if media.provider not in supported_media_providers:
@@ -573,7 +590,10 @@ class ModelConfig:
 class ClientConfig:
     """LLM 客户端运行时行为配置：重试、展示、调试和系统提示词。"""
     max_tool_rounds: int = field(
-        default_factory=lambda: _user_int("client.max_tool_rounds", ("MYCODINGAGENT_MAX_TOOL_ROUNDS",), 50)
+        default_factory=lambda: max(
+            1,
+            _user_int("client.max_tool_rounds", ("MYCODINGAGENT_MAX_TOOL_ROUNDS",), 100),
+        )
     )
     max_display_string_chars: int = field(
         default_factory=lambda: _user_int("client.max_display_string_chars", ("MYCODINGAGENT_MAX_DISPLAY_STRING_CHARS",), 12000)
@@ -821,6 +841,7 @@ class SandboxConfig:
         ".ruff_cache",
         ".idea",
         ".skill_runtime",
+        ".mycodingagent",
         "build",
         "dist",
     })
@@ -830,7 +851,6 @@ class SandboxConfig:
 class DockerConfig:
     """Docker 沙箱容器资源限制。"""
     image_env: str = "MYCODINGAGENT_DOCKER_IMAGE"
-    network_env: str = "MYCODINGAGENT_DOCKER_NETWORK"
     build_network_env: str = "MYCODINGAGENT_DOCKER_BUILD_NETWORK"
     cpus_env: str = "MYCODINGAGENT_DOCKER_CPUS"
     memory_env: str = "MYCODINGAGENT_DOCKER_MEMORY"
@@ -838,9 +858,6 @@ class DockerConfig:
     pull_timeout_env: str = "MYCODINGAGENT_DOCKER_PULL_TIMEOUT"
     image: str = field(
         default_factory=lambda: _user_str("docker.image", ("MYCODINGAGENT_DOCKER_IMAGE",), "mycodingagent-sandbox:py312")
-    )
-    network: str = field(
-        default_factory=lambda: _user_str("docker.network", ("MYCODINGAGENT_DOCKER_NETWORK",), "bridge")
     )
     build_network: str = field(
         default_factory=lambda: _user_str("docker.build_network", ("MYCODINGAGENT_DOCKER_BUILD_NETWORK",), "host")
@@ -1156,6 +1173,159 @@ class MilvusConfig:
 
 
 @dataclass(frozen=True)
+class SearchConfig:
+    """SearXNG search and public static-page retrieval configuration."""
+
+    enabled: bool = field(
+        default_factory=lambda: _user_bool("search.enabled", ("MYCODINGAGENT_SEARCH_ENABLED",), True)
+    )
+    endpoint: str = field(
+        default_factory=lambda: _user_str(
+            "search.endpoint",
+            ("MYCODINGAGENT_SEARCH_ENDPOINT",),
+            "",
+        )
+    )
+    image: str = field(
+        default_factory=lambda: _user_str(
+            "search.image", ("MYCODINGAGENT_SEARCH_IMAGE",), "searxng/searxng:latest"
+        )
+    )
+    timeout: float = field(
+        default_factory=lambda: max(
+            0.1,
+            _user_float("search.timeout", ("MYCODINGAGENT_SEARCH_TIMEOUT",), 20.0),
+        )
+    )
+    max_results: int = field(
+        default_factory=lambda: max(
+            1,
+            min(20, _user_int("search.max_results", ("MYCODINGAGENT_SEARCH_MAX_RESULTS",), 10)),
+        )
+    )
+    max_query_chars: int = field(
+        default_factory=lambda: max(
+            50,
+            _user_int("search.max_query_chars", ("MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS",), 500),
+        )
+    )
+    language: str = field(
+        default_factory=lambda: _user_str("search.language", ("MYCODINGAGENT_SEARCH_LANGUAGE",), "zh-CN")
+    )
+    safesearch: int = field(
+        default_factory=lambda: max(
+            0,
+            min(2, _user_int("search.safesearch", ("MYCODINGAGENT_SEARCH_SAFESEARCH",), 0)),
+        )
+    )
+    fetch_max_bytes: int = field(
+        default_factory=lambda: max(
+            1024,
+            _user_int("search.fetch_max_bytes", ("MYCODINGAGENT_FETCH_MAX_BYTES",), 2_000_000),
+        )
+    )
+    fetch_max_chars: int = field(
+        default_factory=lambda: max(
+            1000,
+            _user_int("search.fetch_max_chars", ("MYCODINGAGENT_FETCH_MAX_CHARS",), 50_000),
+        )
+    )
+    max_redirects: int = field(
+        default_factory=lambda: max(
+            0,
+            min(10, _user_int("search.max_redirects", ("MYCODINGAGENT_FETCH_MAX_REDIRECTS",), 5)),
+        )
+    )
+
+
+@dataclass(frozen=True)
+class ResearchConfig:
+    """Isolated web research agent limits."""
+
+    enabled: bool = field(
+        default_factory=lambda: _user_bool("research.enabled", ("MYCODINGAGENT_RESEARCH_ENABLED",), True)
+    )
+    max_tool_rounds: int = field(
+        default_factory=lambda: max(
+            1,
+            min(
+                100,
+                _user_int(
+                    "research.max_tool_rounds",
+                    ("MYCODINGAGENT_RESEARCH_MAX_TOOL_ROUNDS",),
+                    100,
+                ),
+            ),
+        )
+    )
+    max_sources: int = field(
+        default_factory=lambda: max(
+            1,
+            min(5, _user_int("research.max_sources", ("MYCODINGAGENT_RESEARCH_MAX_SOURCES",), 5)),
+        )
+    )
+    max_findings: int = field(
+        default_factory=lambda: max(
+            1,
+            min(50, _user_int("research.max_findings", ("MYCODINGAGENT_RESEARCH_MAX_FINDINGS",), 20)),
+        )
+    )
+    max_summary_chars: int = field(
+        default_factory=lambda: max(
+            500,
+            min(20_000, _user_int("research.max_summary_chars", ("MYCODINGAGENT_RESEARCH_MAX_SUMMARY_CHARS",), 6000)),
+        )
+    )
+    fetch_max_chars_per_source: int = field(
+        default_factory=lambda: max(
+            1000,
+            min(6000, _user_int("research.fetch_max_chars_per_source", ("MYCODINGAGENT_RESEARCH_FETCH_MAX_CHARS",), 6000)),
+        )
+    )
+
+
+@dataclass(frozen=True)
+class NetworkConfig:
+    """Runtime-managed outbound network policy for agent tools."""
+
+    enabled: bool = field(
+        default_factory=lambda: _user_bool("network.enabled", ("MYCODINGAGENT_NETWORK_ENABLED",), True)
+    )
+    upstream_proxy: str = field(
+        default_factory=lambda: _user_str(
+            "network.upstream_proxy", ("MYCODINGAGENT_NETWORK_UPSTREAM_PROXY",), "auto"
+        ).strip()
+    )
+    allow_domains: tuple[str, ...] = field(
+        default_factory=lambda: _user_list(
+            "network.allow_domains", ("MYCODINGAGENT_NETWORK_ALLOW_DOMAINS",), ("*",)
+        )
+    )
+    deny_domains: tuple[str, ...] = field(
+        default_factory=lambda: _user_list(
+            "network.deny_domains", ("MYCODINGAGENT_NETWORK_DENY_DOMAINS",), ()
+        )
+    )
+    connect_timeout: float = field(
+        default_factory=lambda: max(
+            0.1,
+            _user_float("network.connect_timeout", ("MYCODINGAGENT_NETWORK_CONNECT_TIMEOUT",), 10.0),
+        )
+    )
+    idle_timeout: float = field(
+        default_factory=lambda: max(
+            1.0,
+            _user_float("network.idle_timeout", ("MYCODINGAGENT_NETWORK_IDLE_TIMEOUT",), 300.0),
+        )
+    )
+    ca_bundle: str = field(
+        default_factory=lambda: _user_str(
+            "network.ca_bundle", ("MYCODINGAGENT_NETWORK_CA_BUNDLE",), ""
+        ).strip()
+    )
+
+
+@dataclass(frozen=True)
 class MCPConfig:
     """MCP Server 连接与权限配置。"""
     enabled: bool = field(
@@ -1196,6 +1366,9 @@ class AppConfig:
     skills: SkillConfig = field(default_factory=SkillConfig)
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     milvus: MilvusConfig = field(default_factory=MilvusConfig)
+    search: SearchConfig = field(default_factory=SearchConfig)
+    research: ResearchConfig = field(default_factory=ResearchConfig)
+    network: NetworkConfig = field(default_factory=NetworkConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
 
 

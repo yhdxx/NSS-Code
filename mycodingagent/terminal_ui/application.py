@@ -17,7 +17,7 @@ from prompt_toolkit.filters import Condition
 from prompt_toolkit.formatted_text import FormattedText
 from prompt_toolkit.input.defaults import create_input
 from prompt_toolkit.key_binding import KeyBindings
-from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, Window
+from prompt_toolkit.layout import ConditionalContainer, HSplit, Layout, VSplit, Window, WindowAlign
 from prompt_toolkit.layout.controls import BufferControl, FormattedTextControl
 from prompt_toolkit.layout.dimension import Dimension
 from prompt_toolkit.output.defaults import create_output
@@ -124,6 +124,7 @@ class TerminalApplication:
         self._status = ""
         self._activity_status = ""
         self._mode_status = ""
+        self._smart_search_enabled = True
         self._shift_tab_handler: Callable[[], bool] | None = None
         self._cancel_event: asyncio.Event | None = None
         self._selection_options: list[str] = []
@@ -236,6 +237,10 @@ class TerminalApplication:
 
     def set_interaction_mode(self, mode: str) -> None:
         self._mode_status = "Plan" if mode == "plan" else ""
+        self._refresh_status()
+
+    def set_smart_search_enabled(self, enabled: bool) -> None:
+        self._smart_search_enabled = bool(enabled)
         self._refresh_status()
 
     def bind_shift_tab_handler(self, handler: Callable[[], bool] | None) -> None:
@@ -452,10 +457,21 @@ class TerminalApplication:
             filter=Condition(lambda: bool(self._message_queue.visible_messages)),
         )
         status_window = ConditionalContainer(
-            Window(
-                FormattedTextControl(self._formatted_status),
-                height=1,
-                style="class:status",
+            VSplit(
+                [
+                    Window(
+                        FormattedTextControl(self._formatted_status),
+                        height=1,
+                        style="class:status",
+                    ),
+                    Window(
+                        FormattedTextControl(self._formatted_smart_search_status),
+                        height=1,
+                        width=Dimension(min=0, preferred=18, max=18),
+                        align=WindowAlign.RIGHT,
+                        style="class:status",
+                    ),
+                ]
             ),
             filter=Condition(self._has_status),
         )
@@ -882,8 +898,12 @@ class TerminalApplication:
             return FormattedText([("", f" [{self._selection_index + 1}/{len(self._selection_options)}] {selected}")])
         return FormattedText([("", f" {self._status}")])
 
+    def _formatted_smart_search_status(self) -> FormattedText:
+        state = "开启" if self._smart_search_enabled else "关闭"
+        return FormattedText([("", f"智能搜索（{state}） ")])
+
     def _has_status(self) -> bool:
-        return bool(self._selection_options or self._status)
+        return True
 
     def _focus_input(self) -> None:
         if self._application is not None:

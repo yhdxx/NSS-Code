@@ -8,6 +8,7 @@
 
 # model:
 #   active: "main"
+#   research: "memory_search"
 #   providers:
 #     deepseek:
 #       api: ""                   # 环境变量：MYCODINGAGENT_MODEL_PROVIDER_DEEPSEEK_API / DEEPSEEK_API_KEY
@@ -25,7 +26,7 @@
 #     search: "memory_search"
 
 # client:
-#   max_tool_rounds: 50            # 环境变量：MYCODINGAGENT_MAX_TOOL_ROUNDS
+#   max_tool_rounds: 100           # 环境变量：MYCODINGAGENT_MAX_TOOL_ROUNDS
 #   max_display_string_chars: 12000
 #   max_tool_output_chars: 20000
 #   api_max_retries: 3             # 环境变量：MYCODINGAGENT_API_MAX_RETRIES
@@ -97,7 +98,6 @@
 
 # docker:
 #   image: "mycodingagent-sandbox:py312"  # 环境变量：MYCODINGAGENT_DOCKER_IMAGE
-#   network: "bridge"              # 环境变量：MYCODINGAGENT_DOCKER_NETWORK
 #   build_network: "host"          # 环境变量：MYCODINGAGENT_DOCKER_BUILD_NETWORK
 #   cpus: "2"                      # 环境变量：MYCODINGAGENT_DOCKER_CPUS
 #   memory: "1g"                   # 环境变量：MYCODINGAGENT_DOCKER_MEMORY
@@ -106,6 +106,36 @@
 #   max_timeout: 600              # 环境变量：MYCODINGAGENT_DOCKER_MAX_TIMEOUT
 #   check_timeout: 30             # 环境变量：MYCODINGAGENT_DOCKER_CHECK_TIMEOUT
 #   pull_timeout: 300             # 环境变量：MYCODINGAGENT_DOCKER_PULL_TIMEOUT
+
+# network:
+#   enabled: true                 # 环境变量：MYCODINGAGENT_NETWORK_ENABLED
+#   upstream_proxy: "auto"        # auto/direct/HTTP(S)/SOCKS5 URL
+#   allow_domains: ["*"]          # 环境变量：MYCODINGAGENT_NETWORK_ALLOW_DOMAINS
+#   deny_domains: []              # 环境变量：MYCODINGAGENT_NETWORK_DENY_DOMAINS
+#   connect_timeout: 10.0
+#   idle_timeout: 300.0
+#   ca_bundle: ""
+
+# search:
+#   enabled: true                 # 环境变量：MYCODINGAGENT_SEARCH_ENABLED
+#   endpoint: ""                  # 空值使用会话私有 SearXNG；非空连接自定义服务
+#   image: "searxng/searxng:latest"
+#   timeout: 20.0                 # 环境变量：MYCODINGAGENT_SEARCH_TIMEOUT
+#   max_results: 10               # 环境变量：MYCODINGAGENT_SEARCH_MAX_RESULTS
+#   max_query_chars: 500          # 环境变量：MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS
+#   language: "zh-CN"             # 环境变量：MYCODINGAGENT_SEARCH_LANGUAGE
+#   safesearch: 0                 # 环境变量：MYCODINGAGENT_SEARCH_SAFESEARCH
+#   fetch_max_bytes: 2000000      # 环境变量：MYCODINGAGENT_FETCH_MAX_BYTES
+#   fetch_max_chars: 50000        # 环境变量：MYCODINGAGENT_FETCH_MAX_CHARS
+#   max_redirects: 5              # 环境变量：MYCODINGAGENT_FETCH_MAX_REDIRECTS
+
+# research:
+#   enabled: true
+#   max_tool_rounds: 100
+#   max_sources: 5
+#   max_findings: 20
+#   max_summary_chars: 6000
+#   fetch_max_chars_per_source: 6000
 
 # skills:
 #   small_count: 8                 # 环境变量：MYCODINGAGENT_SKILL_SMALL_COUNT

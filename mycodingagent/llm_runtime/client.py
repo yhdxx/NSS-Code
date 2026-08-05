@@ -3,11 +3,7 @@ from __future__ import annotations  # 允许在类型注解中使用尚未定义
 import asyncio  # 提供异步事件循环、异步子进程等待等能力，本文件用它运行 async 主流程。
 import hashlib  # 为 PromptDebug 生成稳定短哈希，避免打印原始 prompt 内容。
 import json  # 负责解析模型生成的工具参数 JSON，以及把参数格式化成终端可读文本。
-import os  # 读取环境变量、清理代理环境变量，保证 API 客户端和本地工具按预期运行。
 from dataclasses import dataclass, replace  # 用轻量数据类保存流式返回过程中尚未拼完整的工具调用。
-
-for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:  # 遍历常见代理变量名，避免外部代理影响 DeepSeek/OpenAI 兼容接口连接。
-    os.environ.pop(env_key, None)  # 从当前进程环境中删除代理变量；不存在时返回 None，不抛异常。
 
 from typing import Any  # `Any` 用在 OpenAI 消息、工具 schema 等动态 JSON 结构的类型标注中。
 
@@ -507,14 +503,20 @@ async def execute_local_tool(
     tool = registry.get(tool_name)
     if tool is None:
         return ToolExecution(f"错误：未知工具 {tool_name}", is_error=True)
-
-    return await execute_tool(
-        tool,
-        args,
-        cancel_event=cancel_event,
-        execution_recorder=execution_recorder,
-        session_id=session_id,
-    )
+    bind_cancel_event = getattr(tool, "bind_cancel_event", None)
+    if callable(bind_cancel_event):
+        bind_cancel_event(cancel_event)
+    try:
+        return await execute_tool(
+            tool,
+            args,
+            cancel_event=cancel_event,
+            execution_recorder=execution_recorder,
+            session_id=session_id,
+        )
+    finally:
+        if callable(bind_cancel_event):
+            bind_cancel_event(None)
 
 
 async def append_project_graph_bootstrap_if_needed(
@@ -610,6 +612,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     cancel_event: asyncio.Event | None = None,
     follow_up_event: FollowUpSignal | None = None,
     plan_runtime: PlanRuntime | None = None,
+    network_access: Any | None = None,
 ) -> tuple[str, list[dict[str, Any]]]:  # 返回 `(最终模型文本, 更新后的消息历史)`，供 CLI 继续保持上下文。
     # `messages` 在工具调用后的完整结构示例：  # 展示本函数维护的对话历史长什么样。
     # [  # 消息历史是一个有序数组，顺序就是模型看到的上下文顺序。
@@ -733,6 +736,13 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         interaction_mode=plan_runtime.mode.value if plan_runtime is not None else InteractionMode.NORMAL.value,
         tool_policy=tool_policy.runtime_payload() if plan_runtime is not None else None,
         plan=_plan_runtime_context(plan_runtime),
+        network_routing={
+            "policy": network_access.runtime_payload() if network_access is not None else None,
+            "ResearchWeb": "由隔离子智能体完成文本网页研究，返回带来源 URL 的总结",
+            "FetchUrl": "读取已知 URL 的静态文本网页；动态页面和图片使用 browser_* 工具",
+            "Playwright browser_* tools": "处理 JavaScript、页面交互、截图和本地 UI 验证",
+            "Workspace UI": "Bash 与 browser_* 共享会话级工作区网络。项目服务必须监听 0.0.0.0；browser_navigate 可以使用 http://localhost:<port>，Runtime 会映射到本会话工作区容器。",
+        },
     ).build()
     round_messages = list(messages)
     current_tools = await build_round_tools(tools, core_tool_schemas)  # 本轮工具列表在整轮内保持稳定，利于 prompt 缓存命中。

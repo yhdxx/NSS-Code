@@ -6,11 +6,6 @@
 # 4. 单次任务里智能体可以循环调用工具 `agent.loop()`，但存在循环轮次上限，防止死循环。
 # 5. 每次将工具调用结果返回模型。
 # 6. 重复循环，直到模型 `finish_reason` 为 `stop`，结束当前任务。
-import os  # 导入当前模块需要的依赖。
-
-for env_key in ["http_proxy", "https_proxy", "all_proxy", "HTTP_PROXY", "HTTPS_PROXY", "ALL_PROXY"]:  # 遍历集合中的元素。
-    os.environ.pop(env_key, None)  # 执行当前步骤的业务逻辑。
-
 import asyncio  # 导入当前模块需要的依赖。
 import json
 import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
@@ -22,6 +17,7 @@ import pyfiglet  # 导入当前模块需要的依赖。
 from mycodingagent.approval import ApprovalRuntime
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.code_intelligence import ProjectGraphRuntime, ProjectGraphService, WorkspaceCodeIndex
+from mycodingagent.workspace_runtime import WorkspaceRuntime
 from mycodingagent.terminal_ui.application import TerminalApplication, TerminalCancelled
 from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.commands import CommandContext
@@ -29,8 +25,14 @@ from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration.bootstrap import USER_CONFIG_PATH, USER_CONFIG_README_PATH
 from mycodingagent.configuration.settings import CONFIG
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
+from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.media_runtime import MediaModelRuntime
+from mycodingagent.search_runtime import SearchRuntime, SearXNGServiceRuntime
+from mycodingagent.research_runtime import ResearchRuntime
+from mycodingagent.network_access import NetworkAccessRuntime
+from mycodingagent.managed_network import ManagedNetworkRuntime
 from mycodingagent.memory import MemoryRuntime
+from mycodingagent.memory.stores import SQLiteMemoryStore
 from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的 SKILL，并按需动态暴露给模型。
 from mycodingagent.sqlite_utils import IncompatibleSchemaError
 from mycodingagent.tool_runtime import create_default_registry  # 导入当前模块需要的依赖。
@@ -46,10 +48,12 @@ from mycodingagent.tool_runtime.command_policy import (
     SubmitBashLowRisk,
 )
 from mycodingagent.tool_runtime.file_state_cache import FileStateCache  # 共享文件读取状态，判断用户是否修改了模型已读文件。
+from mycodingagent.tool_runtime.playwright_direct import register_discovered_playwright_tools
 from mycodingagent.tool_runtime.mcp_discovery import register_mcp_discovery_tools
 from mycodingagent.tool_runtime.mcp_execution import register_mcp_execution_tools
 from mycodingagent.tool_runtime.workspace_change_tracker import WorkspaceChangeTracker  # 监听工作区文件变化并过滤模型自身写入。
 from mycodingagent.workspace.lease import WorkspaceLease, WorkspaceLeaseError
+from mycodingagent.workspace.state import workspace_state_dir, workspace_state_path
 from mycodingagent.mcp_integration import MCPClientManager, MCPConfigLoader
 from mycodingagent.mcp_integration.cache import MCPMetadataCache
 from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprovalHook, MCPToolApprovalHook
@@ -59,6 +63,7 @@ from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.work_mode import WorkMode, WorkModeManager
 from mycodingagent.plan_runtime import CreatePlan, PlanRuntime, UpdatePlanStep
+from mycodingagent.app.shutdown import close_local_resources, spawn_runtime_cleanup
 
 
 class StartupConfigurationError(RuntimeError):
@@ -117,7 +122,10 @@ async def main() -> int:  # 定义异步函数，供事件循环调用。
 async def _run(terminal: TerminalApplication) -> None:
     model_manager = ModelManager()
     config_errors = [
-        *model_manager.validation_errors(require_long_term_memory=CONFIG.long_term_memory.enabled),
+        *model_manager.validation_errors(
+            require_long_term_memory=CONFIG.long_term_memory.enabled,
+            require_research=CONFIG.research.enabled,
+        ),
         *CONFIG.embedding.validation_errors(),
         *CONFIG.approval.validation_errors(),
     ]
@@ -137,7 +145,27 @@ async def _run(terminal: TerminalApplication) -> None:
         return  # Bash 环境无法准备时直接退出，避免后续模型调用命令全部失败。
     print(image_result.output, flush=True)  # 镜像已就绪时打印确认信息。
 
-    media_runtime = MediaModelRuntime(CONFIG.model, sandbox_root=get_sandbox_root())
+    workspace_root = get_sandbox_root()
+    media_runtime = MediaModelRuntime(CONFIG.model, sandbox_root=workspace_root)
+    network_access = NetworkAccessRuntime(enabled=CONFIG.network.enabled)
+    managed_network = ManagedNetworkRuntime(
+        CONFIG.network,
+        network_access,
+        workspace_root=workspace_root,
+    )
+    network_status = await managed_network.initialize()
+    if not network_status.ready:
+        print(f"Runtime 托管网络未就绪：{network_status.reason}", flush=True)
+        await media_runtime.close()
+        await model_manager.close()
+        return
+    print(
+        "Runtime 托管网络已就绪："
+        f"公网{'开启' if network_access.enabled else '关闭'}，"
+        f"上游代理={managed_network.display_upstream()}，容器直连已禁用。",
+        flush=True,
+    )
+    terminal.set_smart_search_enabled(network_access.enabled)
     audio_availability = media_runtime.audio_availability()
     vision_availability = media_runtime.vision_availability()
     if not audio_availability.enabled:
@@ -145,17 +173,65 @@ async def _run(terminal: TerminalApplication) -> None:
     if not vision_availability.enabled:
         print(f"视觉识别工具未启用：{vision_availability.reason}", flush=True)
 
-    workspace_lease = WorkspaceLease(get_sandbox_root(), CONFIG.memory.db_path.parent)
+    project_state_dir = workspace_state_dir(workspace_root)
+    workspace_runtime = WorkspaceRuntime(workspace_root, managed_network)
+    workspace_lease = WorkspaceLease(workspace_root, project_state_dir)
     if CONFIG.sandbox.workspace_lease_enabled:
         try:
             workspace_lease.acquire()
         except WorkspaceLeaseError:
+            await managed_network.close()
+            await media_runtime.close()
             await model_manager.close()
             raise
+    workspace_runtime_error = await workspace_runtime.initialize()
+    if not workspace_runtime_error:
+        workspace_runtime_error = await workspace_runtime.ensure_container()
+    if workspace_runtime_error:
+        print(f"工作区运行容器未就绪：{workspace_runtime_error}", flush=True)
+    search_runtime = SearchRuntime(
+        CONFIG.search,
+        network_access=network_access,
+        proxy_url=managed_network.proxy_url,
+    )
+    searxng_service = SearXNGServiceRuntime(
+        CONFIG.search,
+        managed_network,
+        workspace_root=workspace_root,
+    )
+    print("检查会话 SearXNG 搜索服务...", flush=True)
+    searxng_result = await searxng_service.ensure_started()
+    if searxng_result.ready:
+        search_runtime.set_endpoint(
+            searxng_result.endpoint,
+            route="managed_local" if searxng_result.managed else "public",
+        )
+        status = "已启动" if searxng_result.managed else "已连接"
+        print(f"会话 SearXNG 搜索服务{status}。", flush=True)
+    else:
+        search_runtime.set_service_error(searxng_result.reason)
+        print(f"会话 SearXNG 搜索服务不可用：{searxng_result.reason}", flush=True)
+    research_runtime = (
+        ResearchRuntime(
+            config=CONFIG.research,
+            search_runtime=search_runtime,
+            provider_getter=model_manager.research_provider,
+        )
+        if CONFIG.research.enabled
+        else None
+    )
     file_state_cache = FileStateCache()  # 记录模型读过的文件，用于识别已读文件的外部变更。
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
     workspace_tracker.start()  # 启动后台监听线程；不可用时静默降级为不提示。
-    memory_runtime = MemoryRuntime(model=model_manager.active_model, workspace_root=str(get_sandbox_root())) if CONFIG.memory.enabled else None
+    memory_runtime = (
+        MemoryRuntime(
+            model=model_manager.active_model,
+            workspace_root=str(workspace_root),
+            store=SQLiteMemoryStore(workspace_state_path(workspace_root, "sessions.sqlite3")),
+        )
+        if CONFIG.memory.enabled
+        else None
+    )
 
     def current_plan_session_id() -> str:
         if memory_runtime is None:
@@ -171,11 +247,11 @@ async def _run(terminal: TerminalApplication) -> None:
     )
     approval_runtime = ApprovalRuntime(CONFIG.approval.mode)
     code_index = WorkspaceCodeIndex(
-        get_sandbox_root(), CONFIG.memory.db_path.with_name("code_index.sqlite3")
+        workspace_root, workspace_state_path(workspace_root, "code_index.sqlite3")
     )
     project_graph = ProjectGraphService(
-        get_sandbox_root(),
-        CONFIG.memory.db_path.with_name("project_graph.sqlite3"),
+        workspace_root,
+        workspace_state_path(workspace_root, "project_graph.sqlite3"),
         code_index,
     )
     requested_work_mode = (
@@ -267,10 +343,13 @@ async def _run(terminal: TerminalApplication) -> None:
             classify_bash_policy,
         ),
         media_runtime=media_runtime,
+        search_runtime=search_runtime,
+        research_runtime=research_runtime,
+        workspace_runtime=None if workspace_runtime_error else workspace_runtime,
     )
     registry.register(CreatePlan(plan_runtime))
     registry.register(UpdatePlanStep(plan_runtime))
-    multi_agent_store = MultiAgentStore()
+    multi_agent_store = MultiAgentStore(workspace_state_path(workspace_root, "multi_agent.sqlite3"))
     long_term_memory_runtime = None
     if memory_runtime is not None and CONFIG.long_term_memory.enabled:
         long_term_memory_runtime = LongTermMemoryRuntime(
@@ -278,6 +357,8 @@ async def _run(terminal: TerminalApplication) -> None:
             registry=registry,
             model_manager=model_manager,
             user_id=CONFIG.skills.user_id,
+            store=SQLiteLongTermMemoryStore(workspace_state_path(workspace_root, "project_memory.sqlite3")),
+            global_store=SQLiteLongTermMemoryStore(CONFIG.memory.db_path),
         )
     base_tool_schemas = registry.get_all_schemas("openai")  # 保存启动时已有的核心工具 schema；后续每轮保持稳定。
     skill_runtime = SkillRuntime(  # 同时加载内置预设 SKILL 和额外 SKILL 目录；不再自动监听当前工作区 skills 目录。
@@ -287,6 +368,7 @@ async def _run(terminal: TerminalApplication) -> None:
     )  # 结束上方的多行结构。
     await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_tool/skill 工具执行入口。
     mcp_manager: MCPClientManager | None = None
+    playwright_direct_tool_names: set[str] = set()
     capability_router: CapabilityRouter | None = None
     if CONFIG.mcp.enabled:
         mcp_manager = MCPClientManager(
@@ -294,28 +376,55 @@ async def _run(terminal: TerminalApplication) -> None:
                 project_path=CONFIG.mcp.project_config_path,
                 user_path=CONFIG.mcp.user_config_path,
             ),
-            metadata_cache=MCPMetadataCache(CONFIG.memory.db_path.with_name("mcp_cache.sqlite3")),
+            metadata_cache=MCPMetadataCache(workspace_state_path(workspace_root, "mcp_cache.sqlite3")),
             launch_hook=(
                 CLILaunchApprovalHook(terminal, approval_runtime=approval_runtime)
                 if sys.stdin.isatty()
                 else None
             ),
+            network_access=network_access,
+            network_runtime=managed_network,
+            playwright_network="" if workspace_runtime_error else workspace_runtime.network_name,
+            playwright_output_dir=(
+                None if workspace_runtime_error else workspace_runtime.playwright_output_dir
+            ),
+            playwright_output_container_path=str(workspace_runtime.playwright_output_container_path),
+            workspace_root=workspace_root,
         )
         try:
             await mcp_manager.initialize()
         except ValueError as exc:
             print(f"MCP 配置错误：{exc}", flush=True)
         capability_router = CapabilityRouter(skill_runtime=skill_runtime, mcp_manager=mcp_manager)
+        mcp_approval_hook = (
+            CLIApprovalHook(terminal, approval_runtime=approval_runtime)
+            if sys.stdin.isatty()
+            else MCPToolApprovalHook()
+        )
+        if "playwright" in mcp_manager.server_configs:
+            summary = await mcp_manager.refresh_server("playwright")
+            if summary is not None and summary.available:
+                count = register_discovered_playwright_tools(
+                    registry,
+                    manager=mcp_manager,
+                    policy=MCPToolPermissionPolicy(),
+                    approval_hook=mcp_approval_hook,
+                )
+                playwright_direct_tool_names = {
+                    tool.name
+                    for tool in registry.list_tools()
+                    if bool(getattr(tool, "is_playwright_tool", False))
+                }
+                print(f"已加载 Playwright 直接工具：{count} 个", flush=True)
+            else:
+                error = summary.error if summary is not None else "无法初始化"
+                print(f"Playwright 直接工具未加载：{error}", flush=True)
         register_mcp_discovery_tools(registry, manager=mcp_manager, router=capability_router)
         register_mcp_execution_tools(
             registry,
             manager=mcp_manager,
             policy=MCPToolPermissionPolicy(),
-            approval_hook=(
-                CLIApprovalHook(terminal, approval_runtime=approval_runtime)
-                if sys.stdin.isatty()
-                else MCPToolApprovalHook()
-            ),
+            approval_hook=mcp_approval_hook,
         )
         print(f"已配置 MCP Server：{mcp_manager.server_count()} 个", flush=True)
     else:
@@ -351,7 +460,17 @@ async def _run(terminal: TerminalApplication) -> None:
         for schema in registry.get_all_schemas("openai")
         if schema.get("name") in discovery_tool_names
     ]
-    core_tool_schemas = base_tool_schemas + skill_management_tool_schemas + discovery_tool_schemas
+    playwright_direct_tool_schemas = [
+        schema
+        for schema in registry.get_all_schemas("openai")
+        if schema.get("name") in playwright_direct_tool_names
+    ]
+    core_tool_schemas = (
+        base_tool_schemas
+        + playwright_direct_tool_schemas
+        + skill_management_tool_schemas
+        + discovery_tool_schemas
+    )
     tools = client.format_openai_tools(core_tool_schemas)  # 固定核心工具 schema；动态能力推荐进入 Runtime Context。
     messages = client.create_initial_messages(
         registry,
@@ -435,6 +554,8 @@ async def _run(terminal: TerminalApplication) -> None:
                         project_graph_runtime=project_graph_runtime,
                         plan_runtime=plan_runtime,
                         approval_runtime=approval_runtime,
+                        network_access=network_access,
+                        mcp_manager=mcp_manager,
                         terminal=terminal,
                     ),
                 )
@@ -498,6 +619,7 @@ async def _run(terminal: TerminalApplication) -> None:
                         cancel_event=turn_cancel,
                         follow_up_event=terminal.follow_up_signal,
                         plan_runtime=plan_runtime,
+                        network_access=network_access,
                     )  # 结束上方的多行结构。
                 finally:
                     terminal.bind_cancel_event(None)
@@ -531,27 +653,48 @@ async def _run(terminal: TerminalApplication) -> None:
                 if mcp_user_rounds % CONFIG.mcp.reconnect_server_step == 0:
                     mcp_manager.schedule_reconnect_unavailable_servers()
     finally:  # 执行无论是否异常都需要收尾的逻辑。
+        session_id = ""
         if long_term_memory_runtime is not None and memory_runtime is not None:
-            session_id = memory_runtime.get_current_session_id()
+            session_id = memory_runtime.get_current_session_id() or ""
             if session_id and messages:
                 memory_runtime.save_messages_now(session_id, messages)
-                await memory_runtime.drain()
                 long_term_memory_runtime.schedule_deferred_extraction(session_id)
-            await long_term_memory_runtime.close()
-        if memory_runtime is not None:
-            await memory_runtime.close()
-        if mcp_manager is not None:
-            await mcp_manager.close()
-        await media_runtime.close()
-        skill_runtime.close()  # 停止 SKILL 文件监听线程。
-        await project_graph_runtime.close()
+
         workspace_tracker.unsubscribe(project_graph_runtime.mark_dirty)
         workspace_tracker.close()  # 停止工作区文件监听线程。
+        skill_runtime.close()  # 停止 SKILL 文件监听线程。
         if CONFIG.sandbox.workspace_lease_enabled:
             workspace_lease.release()
-        # 退出时关闭连接
-        await model_manager.close()  # 执行当前步骤的业务逻辑。
-        print("\n连接已关闭，再见！")  # 执行当前步骤的业务逻辑。
+        workspace_runtime.detach()
+        graph_task = project_graph_runtime.begin_shutdown()
+
+        cleanup_started = spawn_runtime_cleanup(
+            runtime_id=managed_network.runtime_id,
+            network_name=managed_network.network_name,
+            workspace_root=workspace_root,
+        )
+        resources = [
+            ("managed_network", managed_network.close_local()),
+            ("searxng_client", searxng_service.close_client()),
+            ("media_runtime", media_runtime.close()),
+            ("search_runtime", search_runtime.close()),
+            ("model_manager", model_manager.close()),
+        ]
+        if long_term_memory_runtime is not None:
+            resources.append(("long_term_memory", long_term_memory_runtime.close()))
+        if memory_runtime is not None:
+            resources.append(("memory_runtime", memory_runtime.close_for_exit()))
+        if mcp_manager is not None:
+            resources.append(("mcp_manager", mcp_manager.close()))
+        if graph_task is not None:
+            resources.append(("project_graph", graph_task))
+        close_errors = await close_local_resources(resources)
+        if CONFIG.client.debug:
+            for error in close_errors:
+                print(f"退出清理提示：{error}", file=sys.stderr, flush=True)
+            if not cleanup_started:
+                print("退出清理提示：无法启动 Docker 后台清理进程。", file=sys.stderr, flush=True)
+        print("\n会话已保存，后台资源正在清理。再见！")
 
 if __name__ == "__main__":  # 根据条件决定是否执行后续分支。
     raise SystemExit(asyncio.run(main()))  # 执行当前步骤的业务逻辑。
