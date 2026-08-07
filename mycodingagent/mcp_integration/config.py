@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import json
 import os
+import re
 from dataclasses import dataclass, field
 from pathlib import Path
 from typing import Any
@@ -24,6 +25,7 @@ class MCPServerConfig:
     transport: str = "stdio"
     url: str = ""
     headers: dict[str, str] = field(default_factory=dict)
+    required_env: tuple[str, ...] = ()
     startup_timeout: float = 20.0
     call_timeout: float = 60.0
     sandbox: bool = False
@@ -71,17 +73,64 @@ class MCPConfigLoader:
         project_path: Path | None = None,
         user_path: Path | None = None,
         env_path_var: str = "MYCODINGAGENT_MCP_CONFIG",
+        secret_overrides: dict[str, str] | None = None,
     ) -> None:
         self.project_path = project_path or Path.cwd() / ".mycodingagent" / "mcp.json"
         self.user_path = user_path or Path.home() / ".mycodingagent" / "mcp.json"
         self.env_path_var = env_path_var
+        self.secret_overrides = {
+            str(key): str(value)
+            for key, value in (secret_overrides or {}).items()
+            if str(key).strip() and str(value).strip()
+        }
 
     def load(self) -> dict[str, MCPServerConfig]:
         merged: dict[str, MCPServerConfig] = {}
         for path in self.config_paths():
             loaded = self._load_path(path)
             merged.update(loaded)
-        return {name: config for name, config in merged.items() if not config.disabled}
+        return {
+            name: config
+            for name, config in merged.items()
+            if not config.disabled and self.has_required_env(config)
+        }
+
+    def has_required_env(self, config: MCPServerConfig) -> bool:
+        return all(bool(self.resolve_env_value(name, config=config)) for name in config.required_env)
+
+    def resolve_env_value(self, name: str, *, config: MCPServerConfig) -> str:
+        configured = str(config.env.get(name, "")).strip()
+        if configured and configured != f"${{{name}}}":
+            return configured
+        override = self.secret_overrides.get(name, "").strip()
+        if override:
+            return override
+        return os.getenv(name, "").strip()
+
+    def resolve_headers(self, config: MCPServerConfig) -> dict[str, str]:
+        return {
+            key: self.resolve_template(value, config=config)
+            for key, value in config.headers.items()
+        }
+
+    def resolve_env(self, config: MCPServerConfig) -> dict[str, str]:
+        return {
+            key: self.resolve_template(value, config=config)
+            for key, value in config.env.items()
+        }
+
+    def resolve_template(self, value: str, *, config: MCPServerConfig) -> str:
+        return _ENV_TEMPLATE.sub(
+            lambda match: self.resolve_env_value(match.group(1), config=config),
+            str(value),
+        )
+
+    def secret_values(self, config: MCPServerConfig) -> tuple[str, ...]:
+        values = {
+            self.resolve_env_value(name, config=config)
+            for name in config.required_env
+        }
+        return tuple(value for value in values if value)
 
     def config_paths(self) -> list[Path]:
         paths = [self.user_path, self.project_path]
@@ -135,6 +184,7 @@ def _server_config_from_dict(name: str, data: dict[str, Any]) -> MCPServerConfig
         transport=transport,
         url=url,
         headers={str(key): str(value) for key, value in dict(data.get("headers", {})).items()},
+        required_env=_string_tuple(data.get("required_env", ())),
         startup_timeout=max(0.1, float(data.get("startup_timeout", 20.0))),
         call_timeout=max(0.1, float(data.get("call_timeout", 60.0))),
         sandbox=sandbox,
@@ -180,3 +230,6 @@ def _permission_config(value: Any) -> MCPPermissionConfig:
         dangerous_tools=_string_tuple(value.get("dangerous_tools", ())),
         readonly_by_default=bool(value.get("readonly_by_default", False)),
     )
+
+
+_ENV_TEMPLATE = re.compile(r"\$\{([A-Za-z_][A-Za-z0-9_]*)\}")

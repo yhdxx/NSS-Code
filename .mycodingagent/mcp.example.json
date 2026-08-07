@@ -47,7 +47,7 @@
     },
     "playwright": {
       "disabled": false,
-      "_comment": "Microsoft Playwright MCP，默认启用并在启动时加载为直接 browser_* 工具。Docker 首次自动拉取镜像，后续复用本地缓存；bash scripts/install.sh --with-web-tools 可预拉取 Playwright 和 SearXNG 镜像。",
+      "_comment": "Microsoft Playwright MCP，默认启用并在启动时加载为直接 browser_* 工具。Docker 首次自动拉取镜像，后续复用本地缓存；bash scripts/install.sh --with-web-tools 可预拉取 Playwright 镜像。",
       "transport": "stdio",
       "sandbox": true,
       "image": "mcr.microsoft.com/playwright/mcp",
@@ -96,6 +96,29 @@
           "browser_install"
         ],
         "readonly_by_default": false
+      }
+    },
+    "tavily": {
+      "disabled": false,
+      "_comment": "Tavily 官方远程 MCP。API Key 优先从 config.json 的 search.tavily_api_key 注入，也可使用 MYCODINGAGENT_TAVILY_API_KEY 或 TAVILY_API_KEY。缺少 Key 时 Runtime 不加载此 Server。",
+      "transport": "streamable_http",
+      "url": "https://mcp.tavily.com/mcp/",
+      "headers": {
+        "Authorization": "Bearer ${TAVILY_API_KEY}"
+      },
+      "required_env": ["TAVILY_API_KEY"],
+      "auto_start": true,
+      "network": true,
+      "workspace_access": "none",
+      "description": "使用 Tavily 搜索互联网并提取公开网页内容",
+      "tags": ["tavily", "search", "web", "research"],
+      "aliases": ["网络搜索", "网页搜索"],
+      "keywords": ["搜索互联网", "查找最新资料", "网络检索", "网页提取", "来源引用"],
+      "startup_timeout": 20,
+      "call_timeout": 60,
+      "permissions": {
+        "read_tools": ["tavily-search", "tavily-extract"],
+        "readonly_by_default": true
       }
     },
     "remote-http": {

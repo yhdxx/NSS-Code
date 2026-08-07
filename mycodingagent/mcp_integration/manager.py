@@ -16,11 +16,16 @@ from mycodingagent.mcp_integration.execution import normalize_mcp_result
 from mycodingagent.mcp_integration.models import MCPExecutionResult, MCPItemSummary, MCPServerSummary
 from mycodingagent.mcp_integration.hooks import MCPServerLaunchHook, MCPServerLaunchRequest
 from mycodingagent.configuration import CONFIG
-from mycodingagent.network_access import NetworkAccessRuntime, is_local_http_url
+from mycodingagent.network_access import (
+    NetworkAccessRuntime,
+    is_local_http_url,
+    requires_external_network,
+)
 from mycodingagent.managed_network import ManagedNetworkRuntime
 
 
 DIRECT_TOOL_ONLY_SERVERS = frozenset({"playwright"})
+SESSION_CLOSE_TIMEOUT_SECONDS = 5.0
 
 
 class MCPClientManager:
@@ -58,8 +63,11 @@ class MCPClientManager:
         self._states: dict[str, str] = {}
         self._failures: dict[str, int] = {}
         self._next_retry_at: dict[str, float] = {}
+        self._closing = False
+        self._close_lock = asyncio.Lock()
 
     async def initialize(self) -> None:
+        self._closing = False
         self.reload_config()
 
     def reload_config(self) -> None:
@@ -69,6 +77,11 @@ class MCPClientManager:
         self._states = {name: self._states.get(name, "configured") for name in self.server_configs}
 
     async def close(self) -> None:
+        if self._closing and not self._sessions and (
+            self._reconnect_task is None or self._reconnect_task.done()
+        ):
+            return
+        self._closing = True
         if self._reconnect_task is not None and not self._reconnect_task.done():
             self._reconnect_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
@@ -76,8 +89,7 @@ class MCPClientManager:
         # MCP stdio sessions use AnyIO cancel scopes whose exits must remain
         # ordered within the task that entered them.
         for server in list(self._sessions):
-            with contextlib.suppress(asyncio.CancelledError):
-                await self._close_session(server)
+            await self._close_session(server)
 
     async def apply_network_policy(self) -> None:
         for server in list(self._sessions):
@@ -100,6 +112,24 @@ class MCPClientManager:
             for summary in self.metadata_cache.servers()
             if not self.is_direct_tool_server(summary.name)
         ]
+
+    def network_servers(self) -> list[str]:
+        return sorted(
+            name
+            for name, config in self.server_configs.items()
+            if requires_external_network(config)
+        )
+
+    def network_permission(self, server: str) -> bool:
+        config = self.server_configs.get(server)
+        return bool(config is not None and self.network_access.allows_mcp(config))
+
+    def set_network_permission(self, server: str, enabled: bool) -> bool:
+        config = self.server_configs.get(server)
+        if config is None or not requires_external_network(config):
+            return False
+        self.network_access.set_mcp_enabled(server, enabled)
+        return True
 
     @staticmethod
     def is_direct_tool_server(server: str) -> bool:
@@ -127,7 +157,7 @@ class MCPClientManager:
             self._failures[server] = 0
             self._next_retry_at.pop(server, None)
         except Exception as exc:
-            await self._mark_server_unavailable(server, str(exc))
+            await self._mark_server_unavailable(server, self._error_message(server, exc))
         entry = self.metadata_cache.get(server)
         return entry.summary() if entry is not None else None
 
@@ -190,9 +220,10 @@ class MCPClientManager:
                 timeout=self.server_configs[server].call_timeout,
             )
         except Exception as exc:
+            message = self._error_message(server, exc)
             if not _is_mcp_operation_error(exc):
-                await self._mark_server_unavailable(server, str(exc))
-            return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP 工具调用失败：{exc}", content_type="error")
+                await self._mark_server_unavailable(server, message)
+            return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP 工具调用失败：{message}", content_type="error")
         normalized = self._normalize_result(
             server=server,
             operation="tool",
@@ -215,9 +246,10 @@ class MCPClientManager:
                 session.read_resource(uri), timeout=self.server_configs[server].call_timeout
             )
         except Exception as exc:
+            message = self._error_message(server, exc)
             if not _is_mcp_operation_error(exc):
-                await self._mark_server_unavailable(server, str(exc))
-            return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP 资源读取失败：{exc}", content_type="error")
+                await self._mark_server_unavailable(server, message)
+            return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP 资源读取失败：{message}", content_type="error")
         return self._normalize_result(server=server, operation="resource", name=uri, result=result)
 
     async def get_prompt(self, server: str, prompt: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
@@ -233,9 +265,10 @@ class MCPClientManager:
                 timeout=self.server_configs[server].call_timeout,
             )
         except Exception as exc:
+            message = self._error_message(server, exc)
             if not _is_mcp_operation_error(exc):
-                await self._mark_server_unavailable(server, str(exc))
-            return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"获取 MCP Prompt 失败：{exc}", content_type="error")
+                await self._mark_server_unavailable(server, message)
+            return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"获取 MCP Prompt 失败：{message}", content_type="error")
         return self._normalize_result(server=server, operation="prompt", name=prompt, result=result)
 
     def _normalize_result(self, *, server: str, operation: str, name: str, result: Any) -> MCPExecutionResult:
@@ -254,7 +287,18 @@ class MCPClientManager:
     def unavailable_servers(self) -> list[str]:
         return self.metadata_cache.unavailable_servers()
 
+    def _error_message(self, server: str, exc: Exception) -> str:
+        message = str(exc)
+        config = self.server_configs.get(server)
+        if config is None:
+            return message
+        for secret in self.config_loader.secret_values(config):
+            message = message.replace(secret, "[REDACTED]")
+        return message
+
     def schedule_reconnect_unavailable_servers(self) -> asyncio.Task | None:
+        if self._closing:
+            return None
         if not self.unavailable_servers():
             return None
         if self._reconnect_task is not None and not self._reconnect_task.done():
@@ -265,6 +309,8 @@ class MCPClientManager:
     async def reconnect_unavailable_servers(self) -> list[MCPServerSummary]:
         restored: list[MCPServerSummary] = []
         for server in self.unavailable_servers():
+            if self._closing:
+                break
             if time.monotonic() < self._next_retry_at.get(server, 0.0):
                 continue
             summary = await self.refresh_server(server)
@@ -281,12 +327,17 @@ class MCPClientManager:
         return await self.refresh_server(server)
 
     async def _ensure_session(self, server: str) -> Any:
+        if self._closing:
+            raise RuntimeError("MCP Manager 正在关闭，拒绝新的 MCP 调用")
         existing = self._sessions.get(server)
         if existing is not None:
             return existing
         config = self.server_configs[server]
-        if not self.network_access.allows_mcp(config):
-            raise PermissionError(f"智能搜索已关闭，禁止连接外网 MCP Server：{server}")
+        sandboxed_network_stdio = (
+            config.transport == "stdio" and config.sandbox and config.network
+        )
+        if not self.network_access.allows_mcp(config) and not sandboxed_network_stdio:
+            raise PermissionError(f"网络访问已关闭，禁止连接外网 MCP Server：{server}")
         if config.transport == "stdio" and config.network and not config.sandbox:
             raise PermissionError(
                 f"联网 stdio MCP Server 必须启用 sandbox，避免绕过 Runtime 网络策略：{server}"
@@ -322,11 +373,11 @@ class MCPClientManager:
                     raise RuntimeError("远程 MCP 缺少 Runtime 托管网络")
                 http_client = await stack.enter_async_context(
                     httpx.AsyncClient(
-                        headers=config.headers,
+                        headers=self.config_loader.resolve_headers(config),
                         timeout=config.call_timeout,
                         trust_env=False,
                         proxy=(
-                            self.network_runtime.proxy_url
+                            self.network_runtime.proxy_url_for_mcp(server)
                             if self.network_runtime and not is_local_http_url(config.url)
                             else None
                         ),
@@ -337,12 +388,12 @@ class MCPClientManager:
                 )
             else:
                 env = os.environ.copy()
-                for key, value in config.env.items():
+                for key, value in self.config_loader.resolve_env(config).items():
                     if value:
                         env[key] = value
                 env.setdefault("npm_config_cache", "/tmp/mycodingagent-npm-cache")
                 if config.network and self.network_runtime is not None:
-                    env.update(self.network_runtime.proxy_environment)
+                    env.update(self.network_runtime.proxy_environment_for_mcp(server))
                 if config.sandbox:
                     docker_args = self._sandboxed_stdio_args(config)
                     params = StdioServerParameters(command="docker", args=docker_args, env=env)
@@ -360,12 +411,29 @@ class MCPClientManager:
             raise
 
     async def _close_session(self, server: str) -> None:
-        self._sessions.pop(server, None)
-        contexts = self._session_contexts.pop(server, None)
-        if contexts is None:
-            return
-        with contextlib.suppress(Exception):
-            await contexts.aclose()
+        async with self._close_lock:
+            self._sessions.pop(server, None)
+            contexts = self._session_contexts.pop(server, None)
+            if contexts is None:
+                return
+            try:
+                # AsyncExitStack owns AnyIO cancel scopes created while the
+                # session was opened. Keep its exit in this task rather than
+                # moving it into a detached asyncio.Task.
+                async with asyncio.timeout(SESSION_CLOSE_TIMEOUT_SECONDS):
+                    await contexts.aclose()
+            except asyncio.TimeoutError:
+                return
+            except asyncio.CancelledError:
+                current_task = asyncio.current_task()
+                if current_task is not None and current_task.cancelling():
+                    raise
+                # A stdio MCP may cancel its AnyIO task group as it exits. It
+                # is expected during shutdown and must not escape to Python's
+                # interpreter-finalization path.
+                return
+            except BaseException:
+                return
 
     def _sandboxed_stdio_args(self, config: MCPServerConfig) -> list[str]:
         network_name = (
@@ -425,7 +493,7 @@ class MCPClientManager:
         for key in config.env:
             args.extend(["--env", key])
         if config.network and self.network_runtime is not None:
-            for key, value in self.network_runtime.proxy_environment.items():
+            for key, value in self.network_runtime.proxy_environment_for_mcp(config.name).items():
                 args.extend(["--env", f"{key}={value}"])
         args.append(config.image or CONFIG.docker.image)
         if not config.image_entrypoint:
@@ -437,7 +505,7 @@ class MCPClientManager:
             args.extend(
                 [
                     "--proxy-server",
-                    self.network_runtime.proxy_url,
+                    self.network_runtime.proxy_url_for_mcp(config.name),
                     "--proxy-bypass",
                     "<-loopback>,mycodingagent-devserver",
                 ]

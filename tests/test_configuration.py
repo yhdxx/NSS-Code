@@ -54,9 +54,13 @@ def _config_probe(config_path: Path, *, extra_env: dict[str, str] | None = None)
     env.pop("MYCODINGAGENT_MODEL_AUDIO_MODEL", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_PROVIDER", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_MODEL", None)
-    env.pop("MYCODINGAGENT_SEARCH_ENABLED", None)
-    env.pop("MYCODINGAGENT_SEARCH_ENDPOINT", None)
-    env.pop("MYCODINGAGENT_SEARCH_MAX_RESULTS", None)
+    env.pop("MYCODINGAGENT_TAVILY_API_KEY", None)
+    env.pop("TAVILY_API_KEY", None)
+    env.pop("MYCODINGAGENT_WEB_FETCH_ENABLED", None)
+    env.pop("MYCODINGAGENT_WEB_FETCH_TIMEOUT", None)
+    env.pop("MYCODINGAGENT_WEB_FETCH_MAX_BYTES", None)
+    env.pop("MYCODINGAGENT_WEB_FETCH_MAX_CHARS", None)
+    env.pop("MYCODINGAGENT_WEB_FETCH_MAX_REDIRECTS", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -93,9 +97,9 @@ def _workspace_config_probe(workspace: Path, home: Path, *, extra_env: dict[str,
     env.pop("MYCODINGAGENT_MODEL_AUDIO_MODEL", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_PROVIDER", None)
     env.pop("MYCODINGAGENT_MODEL_VISION_MODEL", None)
-    env.pop("MYCODINGAGENT_SEARCH_ENABLED", None)
-    env.pop("MYCODINGAGENT_SEARCH_ENDPOINT", None)
-    env.pop("MYCODINGAGENT_SEARCH_MAX_RESULTS", None)
+    env.pop("MYCODINGAGENT_TAVILY_API_KEY", None)
+    env.pop("TAVILY_API_KEY", None)
+    env.pop("MYCODINGAGENT_WEB_FETCH_ENABLED", None)
     env.pop("MYCODINGAGENT_MEMORY_DB_PATH", None)
     env.pop("MYCODINGAGENT_STATE_DIR", None)
     env.pop("XDG_STATE_HOME", None)
@@ -132,16 +136,16 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'mcp_user_config_path': str(CONFIG.mcp.user_config_path),\n"
         "  'approval_mode': CONFIG.approval.mode,\n"
         "  'max_tool_rounds': CONFIG.client.max_tool_rounds,\n"
-        "  'research_max_tool_rounds': CONFIG.research.max_tool_rounds,\n"
-        "  'research_max_sources': CONFIG.research.max_sources,\n"
-        "  'research_fetch_max_chars': CONFIG.research.fetch_max_chars_per_source,\n"
         "  'audio_provider': CONFIG.model.audio.provider,\n"
         "  'audio_model': CONFIG.model.audio.model,\n"
         "  'vision_provider': CONFIG.model.vision.provider,\n"
         "  'vision_model': CONFIG.model.vision.model,\n"
-        "  'search_enabled': CONFIG.search.enabled,\n"
-        "  'search_endpoint': CONFIG.search.endpoint,\n"
-        "  'search_max_results': CONFIG.search.max_results,\n"
+        "  'tavily_api_key': CONFIG.search.tavily_api_key,\n"
+        "  'web_fetch_enabled': CONFIG.web_fetch.enabled,\n"
+        "  'web_fetch_timeout': CONFIG.web_fetch.timeout,\n"
+        "  'web_fetch_max_bytes': CONFIG.web_fetch.max_bytes,\n"
+        "  'web_fetch_max_chars': CONFIG.web_fetch.max_chars,\n"
+        "  'web_fetch_max_redirects': CONFIG.web_fetch.max_redirects,\n"
         "  'network_enabled': CONFIG.network.enabled,\n"
         "  'network_upstream_proxy': CONFIG.network.upstream_proxy,\n"
         "  'session_activation_reward': CONFIG.skills.session_activation_reward,\n"
@@ -244,27 +248,15 @@ def test_max_tool_rounds_defaults_to_100_and_supports_user_override(tmp_path):
     assert _config_probe(custom_path)["max_tool_rounds"] == 240
 
 
-def test_research_max_tool_rounds_defaults_to_100_and_is_capped(tmp_path):
-    missing_path = tmp_path / "missing.json"
-    custom_path = tmp_path / "custom.json"
-    oversized_path = tmp_path / "oversized.json"
-    missing_path.write_text("{}", encoding="utf-8")
-    custom_path.write_text(json.dumps({"research": {"max_tool_rounds": 40}}), encoding="utf-8")
-    oversized_path.write_text(json.dumps({"research": {"max_tool_rounds": 240}}), encoding="utf-8")
-
-    assert _config_probe(missing_path)["research_max_tool_rounds"] == 100
-    assert _config_probe(custom_path)["research_max_tool_rounds"] == 40
-    assert _config_probe(oversized_path)["research_max_tool_rounds"] == 100
-
-
-def test_research_source_and_page_limits_are_hard_capped(tmp_path):
+def test_web_fetch_limits_are_loaded_and_capped(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text(
         json.dumps(
             {
-                "research": {
-                    "max_sources": 20,
-                    "fetch_max_chars_per_source": 50000,
+                "web_fetch": {
+                    "max_bytes": 500,
+                    "max_chars": 500,
+                    "max_redirects": 50,
                 }
             }
         ),
@@ -273,8 +265,9 @@ def test_research_source_and_page_limits_are_hard_capped(tmp_path):
 
     config = _config_probe(config_path)
 
-    assert config["research_max_sources"] == 5
-    assert config["research_fetch_max_chars"] == 6000
+    assert config["web_fetch_max_bytes"] == 1024
+    assert config["web_fetch_max_chars"] == 1000
+    assert config["web_fetch_max_redirects"] == 10
 
 
 def test_media_model_defaults_and_environment_overrides(tmp_path):
@@ -302,7 +295,7 @@ def test_media_model_defaults_and_environment_overrides(tmp_path):
     assert overridden["vision_model"] == "qwen3-vl-flash"
 
 
-def test_search_defaults_and_environment_overrides(tmp_path):
+def test_tavily_and_web_fetch_defaults_and_environment_overrides(tmp_path):
     config_path = tmp_path / "config.json"
     config_path.write_text("{}", encoding="utf-8")
 
@@ -310,20 +303,36 @@ def test_search_defaults_and_environment_overrides(tmp_path):
     overridden = _config_probe(
         config_path,
         extra_env={
-            "MYCODINGAGENT_SEARCH_ENABLED": "false",
-            "MYCODINGAGENT_SEARCH_ENDPOINT": "http://127.0.0.1:9999/search",
-            "MYCODINGAGENT_SEARCH_MAX_RESULTS": "6",
+            "MYCODINGAGENT_TAVILY_API_KEY": "config-fallback-key",
+            "TAVILY_API_KEY": "generic-fallback-key",
+            "MYCODINGAGENT_WEB_FETCH_ENABLED": "false",
+            "MYCODINGAGENT_WEB_FETCH_TIMEOUT": "7.5",
         },
     )
 
-    assert defaults["search_enabled"] is True
-    assert defaults["search_endpoint"] == ""
-    assert defaults["search_max_results"] == 10
+    assert defaults["tavily_api_key"] == ""
+    assert defaults["web_fetch_enabled"] is True
+    assert defaults["web_fetch_timeout"] == 20
     assert defaults["network_enabled"] is True
     assert defaults["network_upstream_proxy"] == "auto"
-    assert overridden["search_enabled"] is False
-    assert overridden["search_endpoint"] == "http://127.0.0.1:9999/search"
-    assert overridden["search_max_results"] == 6
+    assert overridden["tavily_api_key"] == "config-fallback-key"
+    assert overridden["web_fetch_enabled"] is False
+    assert overridden["web_fetch_timeout"] == 7.5
+
+
+def test_tavily_config_value_overrides_environment_fallback(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text(
+        json.dumps({"search": {"tavily_api_key": "config-secret"}}),
+        encoding="utf-8",
+    )
+
+    data = _config_probe(
+        config_path,
+        extra_env={"MYCODINGAGENT_TAVILY_API_KEY": "environment-secret"},
+    )
+
+    assert data["tavily_api_key"] == "config-secret"
 
 
 def test_empty_config_string_falls_back_to_environment_variable(tmp_path):

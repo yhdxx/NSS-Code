@@ -496,11 +496,6 @@ class ModelConfig:
     active: str = field(default_factory=lambda: _user_str("model.active", ("MYCODINGAGENT_MODEL_ACTIVE",), "main").strip() or "main")
     providers: dict[str, ModelProviderConfig] = field(default_factory=_load_model_providers)
     profiles: dict[str, ModelProfileConfig] = field(default_factory=_load_model_profiles)
-    research: str = field(
-        default_factory=lambda: _user_str(
-            "model.research", ("MYCODINGAGENT_MODEL_RESEARCH",), ""
-        ).strip()
-    )
     long_term_memory: ModelLongTermMemoryConfig = field(default_factory=_load_model_ltm_config)
     audio: ModelMediaConfig = field(
         default_factory=lambda: _load_model_media_config(
@@ -534,7 +529,6 @@ class ModelConfig:
         self,
         *,
         require_long_term_memory: bool = True,
-        require_research: bool = True,
     ) -> list[str]:
         errors: list[str] = []
         checked_providers: set[str] = set()
@@ -568,13 +562,6 @@ class ModelConfig:
                     errors.append(f"model.long_term_memory.{label} 指向不存在的 profile：{key}")
                 elif profile is not None:
                     check_provider_api(profile.provider)
-        if require_research:
-            research_key = self.research or self.active
-            research_profile = self.profile(research_key)
-            if research_profile is None:
-                errors.append(f"model.research 指向不存在的 profile：{research_key}")
-            elif research_profile is not None:
-                check_provider_api(research_profile.provider)
         supported_media_providers = {"zhipu", "qwen"}
         for capability, media in (("audio", self.audio), ("vision", self.vision)):
             if media.provider not in supported_media_providers:
@@ -1198,112 +1185,55 @@ class MilvusConfig:
 
 @dataclass(frozen=True)
 class SearchConfig:
-    """SearXNG search and public static-page retrieval configuration."""
+    """Optional Tavily MCP search credential."""
+
+    tavily_api_key: str = field(
+        default_factory=lambda: _user_str(
+            "search.tavily_api_key",
+            ("MYCODINGAGENT_TAVILY_API_KEY", "TAVILY_API_KEY"),
+            "",
+        ).strip()
+    )
+
+
+@dataclass(frozen=True)
+class WebFetchConfig:
+    """Static HTTP/HTTPS page retrieval limits."""
 
     enabled: bool = field(
-        default_factory=lambda: _user_bool("search.enabled", ("MYCODINGAGENT_SEARCH_ENABLED",), True)
-    )
-    endpoint: str = field(
-        default_factory=lambda: _user_str(
-            "search.endpoint",
-            ("MYCODINGAGENT_SEARCH_ENDPOINT",),
-            "",
-        )
-    )
-    image: str = field(
-        default_factory=lambda: _user_str(
-            "search.image", ("MYCODINGAGENT_SEARCH_IMAGE",), "searxng/searxng:latest"
+        default_factory=lambda: _user_bool(
+            "web_fetch.enabled", ("MYCODINGAGENT_WEB_FETCH_ENABLED",), True
         )
     )
     timeout: float = field(
         default_factory=lambda: max(
             0.1,
-            _user_float("search.timeout", ("MYCODINGAGENT_SEARCH_TIMEOUT",), 20.0),
+            _user_float("web_fetch.timeout", ("MYCODINGAGENT_WEB_FETCH_TIMEOUT",), 20.0),
         )
     )
-    max_results: int = field(
-        default_factory=lambda: max(
-            1,
-            min(20, _user_int("search.max_results", ("MYCODINGAGENT_SEARCH_MAX_RESULTS",), 10)),
-        )
-    )
-    max_query_chars: int = field(
-        default_factory=lambda: max(
-            50,
-            _user_int("search.max_query_chars", ("MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS",), 500),
-        )
-    )
-    language: str = field(
-        default_factory=lambda: _user_str("search.language", ("MYCODINGAGENT_SEARCH_LANGUAGE",), "zh-CN")
-    )
-    safesearch: int = field(
-        default_factory=lambda: max(
-            0,
-            min(2, _user_int("search.safesearch", ("MYCODINGAGENT_SEARCH_SAFESEARCH",), 0)),
-        )
-    )
-    fetch_max_bytes: int = field(
+    max_bytes: int = field(
         default_factory=lambda: max(
             1024,
-            _user_int("search.fetch_max_bytes", ("MYCODINGAGENT_FETCH_MAX_BYTES",), 2_000_000),
+            _user_int("web_fetch.max_bytes", ("MYCODINGAGENT_WEB_FETCH_MAX_BYTES",), 2_000_000),
         )
     )
-    fetch_max_chars: int = field(
+    max_chars: int = field(
         default_factory=lambda: max(
             1000,
-            _user_int("search.fetch_max_chars", ("MYCODINGAGENT_FETCH_MAX_CHARS",), 50_000),
+            _user_int("web_fetch.max_chars", ("MYCODINGAGENT_WEB_FETCH_MAX_CHARS",), 50_000),
         )
     )
     max_redirects: int = field(
         default_factory=lambda: max(
             0,
-            min(10, _user_int("search.max_redirects", ("MYCODINGAGENT_FETCH_MAX_REDIRECTS",), 5)),
-        )
-    )
-
-
-@dataclass(frozen=True)
-class ResearchConfig:
-    """Isolated web research agent limits."""
-
-    enabled: bool = field(
-        default_factory=lambda: _user_bool("research.enabled", ("MYCODINGAGENT_RESEARCH_ENABLED",), True)
-    )
-    max_tool_rounds: int = field(
-        default_factory=lambda: max(
-            1,
             min(
-                100,
+                10,
                 _user_int(
-                    "research.max_tool_rounds",
-                    ("MYCODINGAGENT_RESEARCH_MAX_TOOL_ROUNDS",),
-                    100,
+                    "web_fetch.max_redirects",
+                    ("MYCODINGAGENT_WEB_FETCH_MAX_REDIRECTS",),
+                    5,
                 ),
             ),
-        )
-    )
-    max_sources: int = field(
-        default_factory=lambda: max(
-            1,
-            min(5, _user_int("research.max_sources", ("MYCODINGAGENT_RESEARCH_MAX_SOURCES",), 5)),
-        )
-    )
-    max_findings: int = field(
-        default_factory=lambda: max(
-            1,
-            min(50, _user_int("research.max_findings", ("MYCODINGAGENT_RESEARCH_MAX_FINDINGS",), 20)),
-        )
-    )
-    max_summary_chars: int = field(
-        default_factory=lambda: max(
-            500,
-            min(20_000, _user_int("research.max_summary_chars", ("MYCODINGAGENT_RESEARCH_MAX_SUMMARY_CHARS",), 6000)),
-        )
-    )
-    fetch_max_chars_per_source: int = field(
-        default_factory=lambda: max(
-            1000,
-            min(6000, _user_int("research.fetch_max_chars_per_source", ("MYCODINGAGENT_RESEARCH_FETCH_MAX_CHARS",), 6000)),
         )
     )
 
@@ -1391,7 +1321,7 @@ class AppConfig:
     embedding: EmbeddingConfig = field(default_factory=EmbeddingConfig)
     milvus: MilvusConfig = field(default_factory=MilvusConfig)
     search: SearchConfig = field(default_factory=SearchConfig)
-    research: ResearchConfig = field(default_factory=ResearchConfig)
+    web_fetch: WebFetchConfig = field(default_factory=WebFetchConfig)
     network: NetworkConfig = field(default_factory=NetworkConfig)
     mcp: MCPConfig = field(default_factory=MCPConfig)
 

@@ -44,6 +44,7 @@ class CommandSpec:
     usage: str = ""
     examples: tuple[str, ...] = ()
     usages: tuple[tuple[str, str], ...] = ()
+    allow_arguments: bool = False
 
     def names(self) -> tuple[str, ...]:
         return (self.name, *self.aliases)
@@ -88,6 +89,8 @@ class CommandRegistry:
             for name in spec.names():
                 if stripped == name:
                     return spec, ""
+                if spec.allow_arguments and stripped.startswith(name + " "):
+                    return spec, stripped[len(name):].strip()
         return None
 
     async def execute(self, text: str, context: CommandContext) -> CommandResult:

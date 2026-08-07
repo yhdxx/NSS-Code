@@ -7,7 +7,8 @@ stdio server 可显式开启 Docker 隔离；宿主启动、网络、工作区�
 镜像 ENTRYPOINT、独立 CPU/内存/PID/共享内存限制和 host 映射。MCP 图片结果统一保存到工作区
 `.mycodingagent/artifacts/mcp/`，供 `AnalyzeImage` 继续处理。
 
-MCP 配置模板见根目录 `.mycodingagent/mcp.example.json`。完整字段说明、加载顺序、按场景可复制示例、GitHub token
-、Playwright Headless Chromium 和 Streamable HTTP 示例见 `docs/mcp.md`，模板中的说明字段统一使用中文。
+MCP 配置模板见根目录 `.mycodingagent/mcp.example.json`。完整字段说明、加载顺序、Tavily 密钥惰性注入、GitHub
+token、Playwright Headless Chromium 和 Streamable HTTP 示例见 `docs/mcp.md`。缺少 `required_env` 时对应 Server
+不会进入能力目录；密钥模板只在建立连接时解析。
 
 依赖方向和函数级索引见根目录 `PROJECT_FRAMEWORK.md`。

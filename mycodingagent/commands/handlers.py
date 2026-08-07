@@ -18,7 +18,12 @@ from mycodingagent.terminal_ui.checkpoint_selector import (
     select_rewind_scope_interactively,
 )
 from mycodingagent.terminal_ui.history import render_conversation_history
-from mycodingagent.terminal_ui.application import TerminalCancelled, request_selection, request_text
+from mycodingagent.terminal_ui.application import (
+    TerminalCancelled,
+    request_network_permissions,
+    request_selection,
+    request_text,
+)
 from mycodingagent.terminal_ui.output import clear_terminal
 from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
@@ -151,11 +156,16 @@ def build_command_registry() -> CommandRegistry:
     )
     registry.register(
         CommandSpec(
-            name="/search",
-            aliases=("search", "智能搜索"),
-            description="开启或关闭外网搜索与网络 MCP 连接",
-            usages=(("", "交互选择开启或关闭；localhost 始终允许"),),
-            handler=handle_search_command,
+            name="/network",
+            aliases=("network", "网络访问"),
+            description="开启或关闭 Agent 工具的公网访问",
+            usages=(
+                ("", "编辑各 MCP Server 的会话级网络权限"),
+                (" on|off", "切换 Agent 工具的全局公网权限"),
+                (" on|off <server>", "切换指定 MCP Server 的网络权限"),
+            ),
+            allow_arguments=True,
+            handler=handle_network_command,
         )
     )
     registry.register(
@@ -282,34 +292,59 @@ async def handle_approval_command(context: CommandContext, arguments: str) -> Co
     return CommandResult(messages=context.messages)
 
 
-async def handle_search_command(context: CommandContext, arguments: str) -> CommandResult:
-    if arguments.strip():
-        print("用法：/search", flush=True)
-        return CommandResult(messages=context.messages)
+async def handle_network_command(context: CommandContext, arguments: str) -> CommandResult:
     runtime = context.network_access
     if runtime is None:
-        print("智能搜索运行时未启用。", flush=True)
+        print("网络访问运行时未启用。", flush=True)
         return CommandResult(messages=context.messages)
-    options = [
-        "开启 - 允许联网搜索与外网 MCP 连接",
-        "关闭 - 禁止外网，仅保留 localhost:port",
-    ]
-    selected = await request_selection(
-        f"当前智能搜索：{'开启' if runtime.enabled else '关闭'}。请选择：",
-        options,
-    )
-    if selected is None:
-        print("已取消智能搜索切换。", flush=True)
-        return CommandResult(messages=context.messages)
-    await runtime.set_enabled_async(selected == 0)
+    parts = arguments.split()
+    if parts:
+        action = parts[0].lower()
+        if action not in {"on", "off"} or len(parts) > 2:
+            print("用法：/network [on|off] [server]", flush=True)
+            return CommandResult(messages=context.messages)
+        enabled = action == "on"
+        if len(parts) == 1:
+            await runtime.set_enabled_async(enabled)
+            if context.terminal is not None:
+                context.terminal.set_network_enabled(runtime.enabled)
+            message = (
+                "网络访问已开启：未单独关闭的 Agent 工具可以访问公网。"
+                if enabled
+                else "网络访问已关闭：仅显式开启的 MCP Server 可访问公网；localhost:port 仍可访问。"
+            )
+            print(message, flush=True)
+        else:
+            server = parts[1]
+            manager = context.mcp_manager
+            if manager is None or not manager.set_network_permission(server, enabled):
+                print(f"未找到需要公网访问的 MCP Server：{server}", flush=True)
+                return CommandResult(messages=context.messages)
+            print(
+                f"MCP Server {server} 的网络权限已{'开启' if enabled else '关闭'}。",
+                flush=True,
+            )
+    else:
+        manager = context.mcp_manager
+        if manager is None:
+            print("MCP 运行时未启用。", flush=True)
+            return CommandResult(messages=context.messages)
+        servers = manager.network_servers()
+        if not servers:
+            print("当前没有需要公网访问的 MCP Server。", flush=True)
+            return CommandResult(messages=context.messages)
+        selected = await request_network_permissions(
+            "MCP Server 网络权限",
+            [(server, manager.network_permission(server)) for server in servers],
+        )
+        if selected is None:
+            print("已取消 MCP 网络权限修改。", flush=True)
+            return CommandResult(messages=context.messages)
+        for server, enabled in selected.items():
+            manager.set_network_permission(server, enabled)
+        print("MCP Server 网络权限已更新。", flush=True)
     if context.mcp_manager is not None:
         await context.mcp_manager.apply_network_policy()
-    if context.terminal is not None:
-        context.terminal.set_smart_search_enabled(runtime.enabled)
-    if runtime.enabled:
-        print("智能搜索已开启：允许联网搜索与外网 MCP 连接。", flush=True)
-    else:
-        print("智能搜索已关闭：搜索与 GitHub 等外网 MCP 连接已禁用；localhost:port 仍可访问。", flush=True)
     return CommandResult(messages=context.messages)
 
 

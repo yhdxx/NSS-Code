@@ -30,7 +30,7 @@ usage() {
   --skip-lsp     不安装或探测语言服务器
   --upgrade      安装必要依赖，并询问是否安装可选分析工具
   --launcher-only 只安装用户级 myAgent 启动命令
-  --with-web-tools 预拉取 Playwright MCP 与 SearXNG 镜像
+  --with-web-tools 预拉取 Playwright MCP 镜像
   -h, --help     显示帮助
 
 环境变量：
@@ -218,8 +218,6 @@ if ((SKIP_DOCKER == 0)); then
     if ((WITH_WEB_TOOLS == 1)); then
         log "拉取 Playwright MCP Headless Chromium 镜像"
         docker pull mcr.microsoft.com/playwright/mcp
-        log "拉取 SearXNG 搜索镜像"
-        docker pull searxng/searxng:latest
     fi
 else
     log "已跳过 Docker 沙箱镜像构建"

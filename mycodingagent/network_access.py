@@ -2,17 +2,18 @@ from __future__ import annotations
 
 import ipaddress
 import inspect
-from dataclasses import dataclass
+from dataclasses import dataclass, field
 from typing import Any, Awaitable, Callable
 from urllib.parse import urlsplit
 
 
 @dataclass
 class NetworkAccessRuntime:
-    """Own the process-level permission for external search and network MCP access."""
+    """Own the process-level permission for external tool network access."""
 
     enabled: bool = True
     _change_hook: Callable[[bool], Awaitable[None] | None] | None = None
+    _mcp_overrides: dict[str, bool] = field(default_factory=dict)
 
     def set_enabled(self, enabled: bool) -> None:
         self.enabled = bool(enabled)
@@ -32,21 +33,32 @@ class NetworkAccessRuntime:
         return self.enabled or is_local_http_url(url)
 
     def allows_mcp(self, config: Any) -> bool:
-        if self.enabled:
+        if not requires_external_network(config):
             return True
-        if str(getattr(config, "name", "")).strip().lower() == "playwright":
-            return True
-        if _is_github_server(config):
-            return False
-        if str(getattr(config, "transport", "stdio")) == "streamable_http":
-            return is_local_http_url(str(getattr(config, "url", "")))
-        return not bool(getattr(config, "network", False))
+        name = str(getattr(config, "name", "")).strip()
+        if name in self._mcp_overrides:
+            return self._mcp_overrides[name]
+        return self.enabled
+
+    def set_mcp_enabled(self, server: str, enabled: bool) -> None:
+        name = server.strip()
+        if name:
+            self._mcp_overrides[name] = bool(enabled)
+
+    def mcp_enabled(self, config: Any) -> bool:
+        return self.allows_mcp(config)
+
+    def allows_external_client(self, server: str = "") -> bool:
+        name = server.strip()
+        if name and name in self._mcp_overrides:
+            return self._mcp_overrides[name]
+        return self.enabled
 
     def runtime_payload(self) -> dict[str, Any]:
         return {
-            "smart_search": "enabled" if self.enabled else "disabled",
             "external_network": "allowed" if self.enabled else "denied",
             "localhost": "allowed",
+            "mcp_overrides": dict(sorted(self._mcp_overrides.items())),
         }
 
 
@@ -65,10 +77,7 @@ def is_local_http_url(url: str) -> bool:
         return False
 
 
-def _is_github_server(config: Any) -> bool:
-    values = {
-        str(getattr(config, "name", "")),
-        *[str(item) for item in getattr(config, "tags", ())],
-        *[str(item) for item in getattr(config, "aliases", ())],
-    }
-    return any(value.strip().lower() in {"github", "gh"} for value in values)
+def requires_external_network(config: Any) -> bool:
+    if str(getattr(config, "transport", "stdio")) == "streamable_http":
+        return not is_local_http_url(str(getattr(config, "url", "")))
+    return bool(getattr(config, "network", False))

@@ -1,6 +1,7 @@
 from __future__ import annotations  # 延迟解析类型注解，允许在运行时更轻量地处理 `Path | None` 等注解。
 
 import asyncio  # 使用异步子进程启动 Docker，并用事件循环等待命令完成或超时。
+import json
 import os  # 读取环境变量、获取当前用户 UID/GID，保证容器内文件权限和宿主工作区一致。
 import shutil  # 检查宿主机是否安装了 docker 可执行文件。
 import tempfile
@@ -35,6 +36,7 @@ DOCKER_PULL_TIMEOUT_ENV = CONFIG.docker.pull_timeout_env  # 控制启动阶段�
 DEFAULT_DOCKER_PULL_TIMEOUT = CONFIG.docker.pull_timeout  # 默认允许 Docker pull 等待 30 分钟，适应首次下载 Python 镜像的耗时。
 DOCKER_CONFIG_DIRNAME = ".docker-cli"  # Docker CLI 需要可写配置目录；不要默认写入只读 HOME。
 LOCAL_SANDBOX_IMAGE_REPOSITORY = "mycodingagent-sandbox"  # 默认本地沙箱镜像仓库名；缺失时从 Dockerfile.sandbox 构建。
+DOCKER_SWAP_LIMIT_WARNING = "Your kernel does not support swap limit capabilities"
 
 
 def get_docker_image() -> str:  # 返回 Bash 工具统一使用的 Docker 镜像名，启动预拉取和后续执行都走同一来源。
@@ -51,6 +53,46 @@ def docker_subprocess_env() -> dict[str, str]:  # 为所有 Docker CLI 子进程
     docker_config.mkdir(parents=True, exist_ok=True)
     env["DOCKER_CONFIG"] = str(docker_config)
     return env
+
+
+async def check_docker_swap_limit_support() -> str | None:
+    """Return an advisory notice when Docker cannot enforce swap limits."""
+    if shutil.which("docker") is None:
+        return None
+    try:
+        process = await asyncio.create_subprocess_exec(
+            "docker",
+            "info",
+            "--format",
+            "{{json .SwapLimit}}\n{{json .Warnings}}",
+            stdout=asyncio.subprocess.PIPE,
+            stderr=asyncio.subprocess.PIPE,
+            env=docker_subprocess_env(),
+        )
+        stdout, stderr = await asyncio.wait_for(process.communicate(), timeout=DOCKER_CHECK_TIMEOUT)
+    except (OSError, asyncio.TimeoutError):
+        return None
+    if process.returncode != 0:
+        return None
+
+    warning_text = stderr.decode(errors="replace")
+    lines = stdout.decode(errors="replace").splitlines()
+    try:
+        swap_limit = json.loads(lines[0]) if lines else None
+    except json.JSONDecodeError:
+        swap_limit = None
+    try:
+        warnings = json.loads(lines[1]) if len(lines) > 1 else []
+    except json.JSONDecodeError:
+        warnings = []
+    if isinstance(warnings, list):
+        warning_text += "\n" + "\n".join(str(item) for item in warnings)
+    if swap_limit is not False and DOCKER_SWAP_LIMIT_WARNING.lower() not in warning_text.lower():
+        return None
+    return (
+        "Docker 未启用 swap limit 能力；沙箱的物理内存限制仍然生效，"
+        "但无法单独限制 swap。若需要完整资源隔离，请在宿主机启用 cgroup memory/swap controller。"
+    )
 
 
 async def _read_limited_stream(

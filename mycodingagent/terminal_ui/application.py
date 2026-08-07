@@ -124,11 +124,13 @@ class TerminalApplication:
         self._status = ""
         self._activity_status = ""
         self._mode_status = ""
-        self._smart_search_enabled = True
+        self._network_enabled = True
         self._shift_tab_handler: Callable[[], bool] | None = None
         self._cancel_event: asyncio.Event | None = None
         self._selection_options: list[str] = []
         self._selection_index = 0
+        self._selection_toggle_labels: list[str] = []
+        self._selection_toggle_states: list[bool] = []
         self._plan_selection_preview = ""
         self._stream_active = False
         self._stream_label = "模型"
@@ -239,8 +241,8 @@ class TerminalApplication:
         self._mode_status = "Plan" if mode == "plan" else ""
         self._refresh_status()
 
-    def set_smart_search_enabled(self, enabled: bool) -> None:
-        self._smart_search_enabled = bool(enabled)
+    def set_network_enabled(self, enabled: bool) -> None:
+        self._network_enabled = bool(enabled)
         self._refresh_status()
 
     def bind_shift_tab_handler(self, handler: Callable[[], bool] | None) -> None:
@@ -435,6 +437,50 @@ class TerminalApplication:
             return None
         return selected if 0 <= selected < len(options_before_clear) else None
 
+    async def select_network_permissions(
+        self,
+        prompt: str,
+        entries: list[tuple[str, bool]],
+    ) -> dict[str, bool] | None:
+        if not entries:
+            return {}
+        if not self.is_tty:
+            return None
+        self._plan_selection_preview = prompt.rstrip()
+        self._selection_toggle_labels = [name for name, _enabled in entries]
+        self._selection_toggle_states = [enabled for _name, enabled in entries]
+        self._refresh_toggle_options()
+        self._selection_index = 0
+        self._invalidate()
+        try:
+            await self.read_prompt(
+                None,
+                prompt_header="使用 ↑/↓ 选择，← 关闭，→ 开启，Enter 保存，Esc 取消",
+                preserve_selection=True,
+            )
+        except (TerminalCancelled, EOFError):
+            return None
+        finally:
+            labels = self._selection_toggle_labels
+            states = self._selection_toggle_states
+            self._plan_selection_preview = ""
+            self._selection_options = []
+            self._selection_toggle_labels = []
+            self._selection_toggle_states = []
+            self._selection_index = 0
+            self._invalidate()
+        return dict(zip(labels, states, strict=True))
+
+    def _refresh_toggle_options(self) -> None:
+        self._selection_options = [
+            f"{name:<24} {'网络权限已开启' if enabled else '网络权限已关闭'}"
+            for name, enabled in zip(
+                self._selection_toggle_labels,
+                self._selection_toggle_states,
+                strict=True,
+            )
+        ]
+
     def _build_application(self) -> None:
         key_bindings = KeyBindings()
         self._input_buffer = Buffer(multiline=True)
@@ -465,7 +511,7 @@ class TerminalApplication:
                         style="class:status",
                     ),
                     Window(
-                        FormattedTextControl(self._formatted_smart_search_status),
+                        FormattedTextControl(self._formatted_network_status),
                         height=1,
                         width=Dimension(min=0, preferred=18, max=18),
                         align=WindowAlign.RIGHT,
@@ -648,6 +694,24 @@ class TerminalApplication:
             if self._selection_options:
                 self._selection_index = (self._selection_index + 1) % len(self._selection_options)
                 event.app.invalidate()
+
+        @key_bindings.add("left")
+        def disable_selected_network(event: Any) -> None:
+            if not self._selection_toggle_states:
+                event.current_buffer.cursor_left(count=1)
+                return
+            self._selection_toggle_states[self._selection_index] = False
+            self._refresh_toggle_options()
+            event.app.invalidate()
+
+        @key_bindings.add("right")
+        def enable_selected_network(event: Any) -> None:
+            if not self._selection_toggle_states:
+                event.current_buffer.cursor_right(count=1)
+                return
+            self._selection_toggle_states[self._selection_index] = True
+            self._refresh_toggle_options()
+            event.app.invalidate()
 
         @key_bindings.add("c-d")
         def eof(event: Any) -> None:
@@ -898,9 +962,9 @@ class TerminalApplication:
             return FormattedText([("", f" [{self._selection_index + 1}/{len(self._selection_options)}] {selected}")])
         return FormattedText([("", f" {self._status}")])
 
-    def _formatted_smart_search_status(self) -> FormattedText:
-        state = "开启" if self._smart_search_enabled else "关闭"
-        return FormattedText([("", f"智能搜索（{state}） ")])
+    def _formatted_network_status(self) -> FormattedText:
+        state = "开启" if self._network_enabled else "关闭"
+        return FormattedText([("", f"网络访问（{state}） ")])
 
     def _has_status(self) -> bool:
         return True
@@ -1014,6 +1078,21 @@ async def request_selection(prompt: str, options: list[str]) -> int | None:
     except (EOFError, KeyboardInterrupt, ValueError):
         return None
     return selected if 0 <= selected < len(options) else None
+
+
+async def request_network_permissions(
+    prompt: str,
+    entries: list[tuple[str, bool]],
+) -> dict[str, bool] | None:
+    terminal = current_terminal()
+    if terminal is not None:
+        return await terminal.select_network_permissions(prompt, entries)
+    if not entries:
+        return {}
+    print(prompt, flush=True)
+    for name, enabled in entries:
+        print(f"  {name:<24} {'网络权限已开启' if enabled else '网络权限已关闭'}", flush=True)
+    return None
 
 
 async def request_plan_selection(preview: str, options: list[str]) -> int | None:

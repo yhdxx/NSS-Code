@@ -11,6 +11,7 @@ import json
 import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
 import traceback
 from pathlib import Path
+from typing import Any, Awaitable
 
 import pyfiglet  # 导入当前模块需要的依赖。
 
@@ -27,8 +28,7 @@ from mycodingagent.configuration.settings import CONFIG
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.media_runtime import MediaModelRuntime
-from mycodingagent.search_runtime import SearchRuntime, SearXNGServiceRuntime
-from mycodingagent.research_runtime import ResearchRuntime
+from mycodingagent.web_fetch_runtime import WebFetchRuntime
 from mycodingagent.network_access import NetworkAccessRuntime
 from mycodingagent.managed_network import ManagedNetworkRuntime
 from mycodingagent.memory import MemoryRuntime
@@ -36,7 +36,11 @@ from mycodingagent.memory.stores import SQLiteMemoryStore
 from mycodingagent.skill_runtime import SkillRuntime  # 管理开发者提供的 SKILL，并按需动态暴露给模型。
 from mycodingagent.sqlite_utils import IncompatibleSchemaError
 from mycodingagent.tool_runtime import create_default_registry  # 导入当前模块需要的依赖。
-from mycodingagent.tool_runtime.bash import ensure_docker_image, get_docker_image  # 启动时确保 Bash 工具使用的 Docker 镜像已在本地可用。
+from mycodingagent.tool_runtime.bash import (
+    check_docker_swap_limit_support,
+    ensure_docker_image,
+    get_docker_image,
+)
 from mycodingagent.tool_runtime.base import get_sandbox_root  # 读取当前沙盒根目录，供工作区变更监听使用。
 from mycodingagent.tool_runtime.command_policy import CLICommandApprovalHook  # 高危 Bash 命令执行前征求用户同意。
 from mycodingagent.tool_runtime.command_policy import (
@@ -63,7 +67,11 @@ from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.work_mode import WorkMode, WorkModeManager
 from mycodingagent.plan_runtime import CreatePlan, PlanRuntime, UpdatePlanStep
-from mycodingagent.app.shutdown import close_local_resources, spawn_runtime_cleanup
+from mycodingagent.app.shutdown import (
+    close_with_network_dependency,
+    spawn_runtime_cleanup,
+    spawn_stale_runtime_cleanup,
+)
 
 
 class StartupConfigurationError(RuntimeError):
@@ -124,7 +132,6 @@ async def _run(terminal: TerminalApplication) -> None:
     config_errors = [
         *model_manager.validation_errors(
             require_long_term_memory=CONFIG.long_term_memory.enabled,
-            require_research=CONFIG.research.enabled,
         ),
         *CONFIG.embedding.validation_errors(),
         *CONFIG.approval.validation_errors(),
@@ -144,6 +151,9 @@ async def _run(terminal: TerminalApplication) -> None:
         await model_manager.close()
         return  # Bash 环境无法准备时直接退出，避免后续模型调用命令全部失败。
     print(image_result.output, flush=True)  # 镜像已就绪时打印确认信息。
+    swap_limit_notice = await check_docker_swap_limit_support()
+    if swap_limit_notice:
+        print(f"Docker 资源限制提示：{swap_limit_notice}", flush=True)
 
     workspace_root = get_sandbox_root()
     media_runtime = MediaModelRuntime(CONFIG.model, sandbox_root=workspace_root)
@@ -165,7 +175,7 @@ async def _run(terminal: TerminalApplication) -> None:
         f"上游代理={managed_network.display_upstream()}，容器直连已禁用。",
         flush=True,
     )
-    terminal.set_smart_search_enabled(network_access.enabled)
+    terminal.set_network_enabled(network_access.enabled)
     audio_availability = media_runtime.audio_availability()
     vision_availability = media_runtime.vision_availability()
     if not audio_availability.enabled:
@@ -184,41 +194,19 @@ async def _run(terminal: TerminalApplication) -> None:
             await media_runtime.close()
             await model_manager.close()
             raise
+        spawn_stale_runtime_cleanup(
+            workspace_root=workspace_root,
+            excluded_runtime_ids=(managed_network.runtime_id, workspace_runtime.runtime_id),
+        )
     workspace_runtime_error = await workspace_runtime.initialize()
     if not workspace_runtime_error:
         workspace_runtime_error = await workspace_runtime.ensure_container()
     if workspace_runtime_error:
         print(f"工作区运行容器未就绪：{workspace_runtime_error}", flush=True)
-    search_runtime = SearchRuntime(
-        CONFIG.search,
+    web_fetch_runtime = WebFetchRuntime(
+        CONFIG.web_fetch,
         network_access=network_access,
         proxy_url=managed_network.proxy_url,
-    )
-    searxng_service = SearXNGServiceRuntime(
-        CONFIG.search,
-        managed_network,
-        workspace_root=workspace_root,
-    )
-    print("检查会话 SearXNG 搜索服务...", flush=True)
-    searxng_result = await searxng_service.ensure_started()
-    if searxng_result.ready:
-        search_runtime.set_endpoint(
-            searxng_result.endpoint,
-            route="managed_local" if searxng_result.managed else "public",
-        )
-        status = "已启动" if searxng_result.managed else "已连接"
-        print(f"会话 SearXNG 搜索服务{status}。", flush=True)
-    else:
-        search_runtime.set_service_error(searxng_result.reason)
-        print(f"会话 SearXNG 搜索服务不可用：{searxng_result.reason}", flush=True)
-    research_runtime = (
-        ResearchRuntime(
-            config=CONFIG.research,
-            search_runtime=search_runtime,
-            provider_getter=model_manager.research_provider,
-        )
-        if CONFIG.research.enabled
-        else None
     )
     file_state_cache = FileStateCache()  # 记录模型读过的文件，用于识别已读文件的外部变更。
     workspace_tracker = WorkspaceChangeTracker(get_sandbox_root(), file_state_cache)  # 监听工作区内已读文件的外部变更。
@@ -343,8 +331,7 @@ async def _run(terminal: TerminalApplication) -> None:
             classify_bash_policy,
         ),
         media_runtime=media_runtime,
-        search_runtime=search_runtime,
-        research_runtime=research_runtime,
+        web_fetch_runtime=web_fetch_runtime if CONFIG.web_fetch.enabled else None,
         workspace_runtime=None if workspace_runtime_error else workspace_runtime,
     )
     registry.register(CreatePlan(plan_runtime))
@@ -378,6 +365,7 @@ async def _run(terminal: TerminalApplication) -> None:
             config_loader=MCPConfigLoader(
                 project_path=CONFIG.mcp.project_config_path,
                 user_path=CONFIG.mcp.user_config_path,
+                secret_overrides={"TAVILY_API_KEY": CONFIG.search.tavily_api_key},
             ),
             metadata_cache=MCPMetadataCache(workspace_state_path(workspace_root, "mcp_cache.sqlite3")),
             launch_hook=(
@@ -670,27 +658,35 @@ async def _run(terminal: TerminalApplication) -> None:
         workspace_runtime.detach()
         graph_task = project_graph_runtime.begin_shutdown()
 
+        resources: list[tuple[str, Awaitable[Any]]] = []
+        # MCP only depends on the proxy. All other local resources can close
+        # concurrently with MCP, keeping exit latency bounded by the slowest
+        # independent cleanup rather than the sum of their durations.
+        resources.extend(
+            [
+                ("media_runtime", media_runtime.close()),
+                ("web_fetch_runtime", web_fetch_runtime.close()),
+                ("model_manager", model_manager.close()),
+            ]
+        )
+        if long_term_memory_runtime is not None:
+            resources.append(("long_term_memory", long_term_memory_runtime.close()))
+        if memory_runtime is not None:
+            resources.append(("memory_runtime", memory_runtime.close_for_exit()))
+        if graph_task is not None:
+            resources.append(("project_graph", graph_task))
+        # Stop proxy traffic as soon as MCP is closed. Other resources keep
+        # closing concurrently and do not delay either dependency edge.
+        close_errors = await close_with_network_dependency(
+            mcp_close=mcp_manager.close() if mcp_manager is not None else None,
+            independent_resources=resources,
+            network_resources=[("managed_network", managed_network.close_local())],
+        )
         cleanup_started = spawn_runtime_cleanup(
             runtime_id=managed_network.runtime_id,
             network_name=managed_network.network_name,
             workspace_root=workspace_root,
         )
-        resources = [
-            ("managed_network", managed_network.close_local()),
-            ("searxng_client", searxng_service.close_client()),
-            ("media_runtime", media_runtime.close()),
-            ("search_runtime", search_runtime.close()),
-            ("model_manager", model_manager.close()),
-        ]
-        if long_term_memory_runtime is not None:
-            resources.append(("long_term_memory", long_term_memory_runtime.close()))
-        if memory_runtime is not None:
-            resources.append(("memory_runtime", memory_runtime.close_for_exit()))
-        if mcp_manager is not None:
-            resources.append(("mcp_manager", mcp_manager.close()))
-        if graph_task is not None:
-            resources.append(("project_graph", graph_task))
-        close_errors = await close_local_resources(resources)
         if CONFIG.client.debug:
             for error in close_errors:
                 print(f"退出清理提示：{error}", file=sys.stderr, flush=True)

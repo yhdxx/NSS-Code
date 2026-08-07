@@ -1,5 +1,6 @@
 .codex/
 .agents/
+.claude/
 .docker-cli/
 .mycodingagent/config.yaml
 .mycodingagent/config.json

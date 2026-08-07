@@ -45,10 +45,10 @@ Eclipse JDT Language Server。缺少某个外部工具链时，脚本会给出�
 bash scripts/install.sh --with-web-tools
 ```
 
-该选项只预拉取 Microsoft Playwright MCP 与 SearXNG 镜像。`myAgent` 启动时会为每个会话创建私有 Docker 网络、
-托管出口代理和独立 SearXNG 容器。退出时 Runtime 先同步保存会话并释放工作区租约，再由独立后台清理进程回收本
-会话的容器和网络，因此 Docker 删除不会阻塞终端退出。Playwright 默认作为内置浏览器工具启用；首次使用会自动
-拉取镜像，后续启动复用 Docker 本地镜像缓存。
+该选项只预拉取 Microsoft Playwright MCP 镜像。`myAgent` 启动时会为每个会话创建私有 Docker 网络和托管出口
+代理。退出时 Runtime 先同步保存会话并释放工作区租约，再由独立后台清理进程回收本会话的容器和网络，因此
+Docker 删除不会阻塞终端退出。Playwright 默认作为内置浏览器工具启用；首次使用会自动拉取镜像，后续启动复用
+Docker 本地镜像缓存。网络搜索通过用户配置 API Key 的 Tavily 远程 MCP 按需连接，不需要本地搜索容器。
 
 Runtime 自动读取宿主进程的 HTTP/HTTPS/ALL proxy（也支持 SOCKS5），容器只连接绑定在会话网关上的托管代理。
 因此宿主代理只监听 `127.0.0.1` 也可以使用，无需开启 Allow LAN。
@@ -121,8 +121,8 @@ Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和�
 2. 工作区运行容器与 `FileStateCache`，前者承载 Bash 和持久开发服务，后者记录模型已读取文件的内容和版本。
 3. `WorkspaceChangeTracker`，监听用户在 Agent 外部修改文件。
 4. `MemoryRuntime`，负责会话持久化、上下文虚拟化、检查点和恢复。
-5. `SearXNGServiceRuntime` 启动当前会话私有搜索服务；`ResearchRuntime` 用无状态子智能体隔离搜索与网页正文，`SearchRuntime` 负责底层搜索、静态网页读取和出口限制。
-6. 核心工具注册表，注册文件、Shell、记忆、MCP、Skill、`ResearchWeb`、`FetchUrl`、音频转写和多图视觉分析等工具。
+5. `WebFetchRuntime` 提供受网络门禁约束的静态网页读取；Tavily 搜索作为可选 MCP Server 仅在配置 API Key 时进入能力目录。
+6. 核心工具注册表，注册文件、Shell、记忆、MCP、Skill、`FetchUrl`、音频转写和多图视觉分析等工具。
 7. `MCPClientManager`，加载 MCP server 配置并进行 discovery。
 8. 启动时从 Playwright 容器读取当前工具清单，并把全部 `browser_*` 能力直接注册到模型 Tool Schema；模型侧不需要 Playwright MCP discovery。
 9. `SkillRuntime`，扫描 Skill、更新索引、启动文件监听和 LRFU 缓存。
@@ -156,7 +156,7 @@ Code 中的后续文件变化会去抖并异步刷新，刷新过程默认静默
 
 内置命令包括：
 
-- `/search`：交互开启或关闭 Agent 工具公网权限。默认开启；关闭后 Search、Fetch、Bash、Playwright 和联网 MCP 都不能访问公网，但 Playwright/Fetch 仍可访问当前会话的 `localhost:<port>` 开发服务。
+- `/network on|off`：切换 Agent 工具的全局公网权限；`/network on|off <server>` 为指定 MCP Server 设置会话级覆盖。无参数 `/network` 打开权限表，使用上下键选择 Server、左右键关闭或开启。localhost 始终允许。
 - `/plan`：进入 Plan 模式；保持固定 system message 和工具 schema，通过 Runtime Context 注入规划要求和工具权限，并在提交计划后显示交互式审批面板。
 - `/resume`：恢复历史会话，并加载消息、LRFU 快照、文件状态。
 - `/fork`：从历史会话分叉出新会话。
@@ -234,7 +234,7 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 
 ```text
 核心工具（文件读写、Glob/Grep、Bash、ask_user）
-  + 固定网页工具（ResearchWeb / FetchUrl）
+  + 固定网页工具（FetchUrl）
   + MCP 固定 discovery/execution tools
   + Skill 固定入口（search_skill / list_dynamic_skills / invoke_skill 等）
   + 上下文恢复工具
@@ -335,16 +335,14 @@ Bash(command)
 网络访问不通过 `Bash` 旁路开放。默认路由按能力逐级升级：
 
 ```text
-ResearchWeb -> FetchUrl -> browser_* -> AnalyzeImage
-隔离文本研究    静态正文    JS/交互/下载      图片理解或多图比较
+Tavily MCP -> FetchUrl -> browser_* -> AnalyzeImage
+网络搜索       静态正文    JS/交互/下载      图片理解或多图比较
 ```
 
-`ResearchWeb` 每次创建无状态、只读的研究上下文，只向主模型返回文本总结、结论和来源 URL；搜索结果、网页正文和
-研究过程不会写入主会话。它不能检索、查看、分析或返回图片，但可以定位包含目标图片的网站并返回网页 URL，之后由
-主模型使用 `browser_*` 访问或下载图片。`FetchUrl` 继续用于读取主模型已知 URL 的静态文本，并在每次重定向后重新
-校验地址。正常研究路径只搜索一次，再并发批量读取最多 5 个来源，每页正文最多 6000 字符；获得足以回答核心问题的
-可靠证据后立即提交，来源冲突或次要信息缺失写入限制说明。最后两个内部轮次只允许提交结果，避免研究子智能体继续
-漫游搜索。动态页面、交互、截图和本地 UI 验证交给独立 Playwright 容器；图片可再传给 `AnalyzeImage`。
+配置 Tavily API Key 后，Capability Router 可按需推荐 `tavily-search` 和 `tavily-extract`；启动阶段只加载未解析的
+Server 元数据，第一次 discovery 或调用时才连接官方远程 MCP。没有 Key 时 Tavily 不进入 Server 列表或能力推荐。
+`FetchUrl` 独立读取模型已知 URL 的静态文本，并在每次重定向后重新校验地址，不依赖 Tavily。动态页面、交互、截图
+和本地 UI 验证交给独立 Playwright 容器；图片可再传给 `AnalyzeImage`。
 
 公网请求使用上游代理时由上游解析域名，Runtime 仍强制执行域名 allow/deny 和 IP 字面量安全检查；direct 模式
 额外校验宿主 DNS 的全部解析结果。策略拒绝、上游失败和超时会返回明确错误码，不以空连接代替错误响应。
@@ -353,9 +351,10 @@ Playwright 生成的截图、PDF 等文件统一保存在
 `<workspace>/.mycodingagent/artifacts/playwright/<runtime-id>/`。每个 Runtime 只挂载和扫描自己的目录，工具结果返回
 工作区相对路径；绝对路径和包含 `..` 的输出路径会被拒绝，避免写出工作区或读取其他会话的输出。
 
-终端右下角始终显示 `智能搜索（开启/关闭）`。执行 `/search` 只改变 Runtime Context 和执行门禁，不修改
-system prompt 或 tool schema。关闭后 Runtime 代理拒绝 Search、Fetch、Bash、Playwright 和联网 MCP 的公网连接，
-但保留当前会话 `localhost:<port>` 开发服务；已经建立的公网隧道会立即取消。
+终端右下角始终显示 `网络访问（开启/关闭）`。执行 `/network on|off` 只改变 Runtime Context 和执行门禁，不修改
+system prompt 或 tool schema。全局关闭后 Runtime 拒绝 Fetch、Bash、Playwright 和联网 MCP 的公网连接，但保留
+当前会话 `localhost:<port>` 开发服务；已建立且不再获准的 MCP 连接会立即关闭。`/network on github` 等命令可为
+单个 MCP Server 建立会话级例外。
 
 ### 6.2.1 会话内开发服务器
 
@@ -366,7 +365,7 @@ Runtime 在项目加载阶段自动创建工作区运行容器；模型不会看
 `http://localhost:<port>`；Runtime 会把它解析到当前会话的工作区容器，也兼容显式地址
 `http://mycodingagent-devserver:<port>`。
 
-工作区容器、Playwright 与 SearXNG 位于当前会话专有 internal Docker network，不映射宿主机端口。Runtime 退出时
+工作区容器、Playwright 与联网 stdio MCP 位于当前会话专有 internal Docker network，不映射宿主机端口。Runtime 退出时
 按 runtime label 启动独立后台清理进程，终止本会话创建的持久进程并删除容器和 network；主 CLI 不等待 Docker，
 也不会误清理其他会话或把容器管理职责交给模型。持久命令日志保存在
 `.mycodingagent/artifacts/services/<runtime-id>/<service-id>.log`。普通 Bash 超时或用户按 Esc 只终止当前前台命令，
@@ -714,7 +713,7 @@ mycodingagent/
 ├── managed_network.py      # 会话私有网络、出口代理和 localhost 映射
 ├── memory/                 # 会话、上下文虚拟化、检查点、恢复
 ├── relevance/              # LRFU 等排序算法
-├── search_runtime/         # SearXNG 搜索与静态网页读取
+├── web_fetch_runtime/      # 受控静态网页读取
 ├── skill_runtime/          # Skill 发现、索引、路由和反馈
 ├── terminal_ui/            # 终端输入和会话选择
 ├── tool_runtime/           # 工具实现和注册表
@@ -724,7 +723,6 @@ mycodingagent/multi_agent/   # 多智能体编排、上下文、工具权限和�
 skills/                     # Skill 插件资产根目录
 ├── fixed/                  # 每轮 system prompt 注入 name + description 卡片
 └── Dynamic/                # 动态检索、LRFU 与长期记忆沉淀 Skill
-infra/searxng/              # 会话私有 SearXNG 配置模板
 tests/                      # 单元、集成和评测测试
 ```
 
@@ -744,8 +742,8 @@ PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/
 PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_llm_runtime_client.py tests/test_command_policy.py
 ```
 
-网页搜索、MCP 容器和安装脚本：
+网页读取、Tavily MCP 和安装脚本：
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_search_runtime.py tests/test_mcp_capabilities.py tests/test_install_scripts.py
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_web_fetch_runtime.py tests/test_mcp_capabilities.py tests/test_install_scripts.py
 ```

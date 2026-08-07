@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import base64
 import json
 import os
 from pathlib import Path
@@ -77,6 +78,27 @@ def test_proxy_environment_contains_upper_and_lower_case_without_credentials(tmp
     assert env["HTTP_PROXY"] == "http://172.30.0.1:3128"
     assert env["http_proxy"] == env["HTTP_PROXY"]
     assert env["NO_PROXY"] == "mycodingagent-devserver"
+
+
+def test_mcp_proxy_identity_allows_one_server_while_global_network_is_off(tmp_path):
+    runtime = _runtime(tmp_path, enabled=False)
+    runtime.gateway = "172.30.0.1"
+    runtime.proxy_port = 3128
+    runtime.access.set_mcp_enabled("github", True)
+    proxy_url = runtime.proxy_url_for_mcp("github")
+    credentials = proxy_url.split("@", 1)[0].removeprefix("http://")
+    header = (
+        b"CONNECT github.com:443 HTTP/1.1\r\n"
+        + b"Proxy-Authorization: Basic "
+        + base64.b64encode(credentials.encode("utf-8"))
+        + b"\r\n\r\n"
+    )
+
+    client = runtime._network_client(header)
+
+    assert client == "github"
+    assert runtime.access.allows_external_client(client)
+    assert not runtime.access.allows_external_client("tavily")
 
 
 def test_disabling_access_cancels_active_public_connections(tmp_path):

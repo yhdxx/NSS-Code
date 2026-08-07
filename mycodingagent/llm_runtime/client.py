@@ -750,7 +750,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         plan=_plan_runtime_context(plan_runtime),
         network_routing={
             "policy": network_access.runtime_payload() if network_access is not None else None,
-            "ResearchWeb": "由隔离子智能体完成文本网页研究，返回带来源 URL 的总结",
             "FetchUrl": "读取已知 URL 的静态文本网页；动态页面和图片使用 browser_* 工具",
             "Playwright browser_* tools": "处理 JavaScript、页面交互、截图和本地 UI 验证",
             "Workspace UI": "Bash 与 browser_* 共享会话级工作区网络。项目服务必须监听 0.0.0.0；browser_navigate 可以使用 http://localhost:<port>，Runtime 会映射到本会话工作区容器。",

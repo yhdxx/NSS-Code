@@ -74,7 +74,6 @@ def test_media_tool_calls_render_as_reads_and_have_processing_status(capsys):
                 sources=["before.png", "after.png"],
                 query="比较界面变化",
             ),
-            _call("ResearchWeb", instruction="研究 Playwright MCP"),
             _call("FetchUrl", url="https://playwright.dev/python/"),
         ]
     )
@@ -83,11 +82,9 @@ def test_media_tool_calls_render_as_reads_and_have_processing_status(capsys):
     assert "• Explored" in output
     assert "Transcribe meeting.wav" in output
     assert "Analyze 2 image(s): 比较界面变化" in output
-    assert "Research 研究 Playwright MCP" in output
     assert "Fetch https://playwright.dev/python/" in output
     assert tool_status_message("TranscribeAudio") == "正在处理音频中"
     assert tool_status_message("AnalyzeImage") == "正在处理图片中"
-    assert tool_status_message("ResearchWeb") == "正在检索并整理资料中"
     assert tool_status_message("FetchUrl") == "正在读取网页中"
 
 

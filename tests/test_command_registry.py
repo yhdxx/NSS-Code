@@ -120,6 +120,23 @@ def test_command_registry_executes_only_exact_command():
     assert not model_input.handled
 
 
+def test_command_registry_allows_arguments_only_for_opted_in_command():
+    registry = CommandRegistry()
+    registry.register(
+        CommandSpec(
+            name="/network",
+            description="网络权限",
+            handler=noop_handler,
+            allow_arguments=True,
+        )
+    )
+
+    result = asyncio.run(registry.execute("/network on github", CommandContext(None, None, [])))
+
+    assert result.handled
+    assert result.messages == [{"role": "user", "content": "on github"}]
+
+
 def test_approval_command_switches_process_runtime(monkeypatch, capsys):
     runtime = ApprovalRuntime()
     messages = [{"role": "system", "content": "system"}]
@@ -137,7 +154,7 @@ def test_approval_command_switches_process_runtime(monkeypatch, capsys):
     assert "包括高危操作" in capsys.readouterr().out
 
 
-def test_search_command_disables_external_access_and_updates_terminal(monkeypatch, capsys):
+def test_network_command_disables_external_access_and_updates_terminal(capsys):
     from mycodingagent.network_access import NetworkAccessRuntime
 
     class FakeMCPManager:
@@ -151,13 +168,8 @@ def test_search_command_disables_external_access_and_updates_terminal(monkeypatc
         def __init__(self) -> None:
             self.enabled = True
 
-        def set_smart_search_enabled(self, enabled: bool) -> None:
+        def set_network_enabled(self, enabled: bool) -> None:
             self.enabled = enabled
-
-    async def choose_off(_prompt, _options):
-        return 1
-
-    monkeypatch.setattr(handlers, "request_selection", choose_off)
     runtime = NetworkAccessRuntime()
     manager = FakeMCPManager()
     terminal = FakeTerminal()
@@ -171,13 +183,82 @@ def test_search_command_disables_external_access_and_updates_terminal(monkeypatc
         terminal=terminal,
     )
 
-    result = asyncio.run(handlers.handle_search_command(context, ""))
+    result = asyncio.run(handlers.handle_network_command(context, "off"))
 
     assert result.messages is messages
     assert runtime.enabled is False
     assert manager.applied is True
     assert terminal.enabled is False
     assert "localhost:port 仍可访问" in capsys.readouterr().out
+
+
+def test_network_command_enables_one_mcp_server_while_global_network_is_off(capsys):
+    from mycodingagent.network_access import NetworkAccessRuntime
+
+    class FakeMCPManager:
+        def __init__(self) -> None:
+            self.permissions = {"github": False}
+            self.applied = False
+
+        def set_network_permission(self, server: str, enabled: bool) -> bool:
+            if server not in self.permissions:
+                return False
+            self.permissions[server] = enabled
+            return True
+
+        async def apply_network_policy(self) -> None:
+            self.applied = True
+
+    runtime = NetworkAccessRuntime(enabled=False)
+    manager = FakeMCPManager()
+    context = CommandContext(None, None, [], network_access=runtime, mcp_manager=manager)
+
+    asyncio.run(handlers.handle_network_command(context, "on github"))
+
+    assert manager.permissions["github"] is True
+    assert manager.applied is True
+    assert "github 的网络权限已开启" in capsys.readouterr().out
+
+
+def test_network_command_applies_interactive_mcp_permission_table(monkeypatch):
+    from mycodingagent.network_access import NetworkAccessRuntime
+
+    class FakeMCPManager:
+        def __init__(self) -> None:
+            self.permissions = {"github": False, "tavily": True}
+            self.applied = False
+
+        def network_servers(self) -> list[str]:
+            return ["github", "tavily"]
+
+        def network_permission(self, server: str) -> bool:
+            return self.permissions[server]
+
+        def set_network_permission(self, server: str, enabled: bool) -> bool:
+            self.permissions[server] = enabled
+            return True
+
+        async def apply_network_policy(self) -> None:
+            self.applied = True
+
+    async def edit_permissions(_prompt, entries):
+        assert entries == [("github", False), ("tavily", True)]
+        return {"github": True, "tavily": False}
+
+    monkeypatch.setattr(handlers, "request_network_permissions", edit_permissions)
+    manager = FakeMCPManager()
+    context = CommandContext(
+        None,
+        None,
+        [],
+        network_access=NetworkAccessRuntime(enabled=False),
+        mcp_manager=manager,
+    )
+
+    asyncio.run(handlers.handle_network_command(context, ""))
+
+    assert manager.permissions == {"github": True, "tavily": False}
+    assert manager.applied is True
 
 
 def test_plan_command_queues_skill_for_the_next_user_query(capsys):

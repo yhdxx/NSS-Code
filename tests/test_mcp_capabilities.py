@@ -216,6 +216,162 @@ def test_mcp_config_supports_streamable_http_and_fail_closed_defaults(tmp_path):
     assert server.permissions.readonly_by_default is False
 
 
+def test_tavily_server_is_filtered_when_required_key_is_missing(tmp_path, monkeypatch):
+    monkeypatch.delenv("TAVILY_API_KEY", raising=False)
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "tavily": {
+                        "transport": "streamable_http",
+                        "url": "https://mcp.tavily.com/mcp/",
+                        "headers": {"Authorization": "Bearer ${TAVILY_API_KEY}"},
+                        "required_env": ["TAVILY_API_KEY"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+
+    servers = MCPConfigLoader(project_path=config, user_path=tmp_path / "missing").load()
+
+    assert "tavily" not in servers
+
+
+def test_tavily_key_is_injected_only_when_connection_values_are_resolved(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "environment-secret")
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "tavily": {
+                        "transport": "streamable_http",
+                        "url": "https://mcp.tavily.com/mcp/",
+                        "headers": {"Authorization": "Bearer ${TAVILY_API_KEY}"},
+                        "required_env": ["TAVILY_API_KEY"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    loader = MCPConfigLoader(
+        project_path=config,
+        user_path=tmp_path / "missing",
+        secret_overrides={"TAVILY_API_KEY": "config-secret"},
+    )
+
+    server = loader.load()["tavily"]
+
+    assert server.headers["Authorization"] == "Bearer ${TAVILY_API_KEY}"
+    assert loader.resolve_headers(server)["Authorization"] == "Bearer config-secret"
+    assert "config-secret" not in json.dumps(server.__dict__, default=str)
+
+
+def test_tavily_key_does_not_change_metadata_cache_hash(tmp_path):
+    config = MCPServerConfig(
+        name="tavily",
+        transport="streamable_http",
+        url="https://mcp.tavily.com/mcp/",
+        headers={"Authorization": "Bearer ${TAVILY_API_KEY}"},
+        required_env=("TAVILY_API_KEY",),
+    )
+    first = MCPConfigLoader(secret_overrides={"TAVILY_API_KEY": "first-secret"})
+    second = MCPConfigLoader(secret_overrides={"TAVILY_API_KEY": "second-secret"})
+
+    assert first.resolve_headers(config) != second.resolve_headers(config)
+    cache_path = tmp_path / "mcp.sqlite3"
+    cache = MCPMetadataCache(cache_path)
+    cache.sync_configs({"tavily": config})
+    cache.update_discovery("tavily", tools=[MCPItemSummary(name="tavily-search")])
+    raw_cache = cache_path.read_bytes()
+    assert b"first-secret" not in raw_cache
+    assert b"second-secret" not in raw_cache
+
+
+def test_tavily_environment_key_is_used_as_fallback(tmp_path, monkeypatch):
+    monkeypatch.setenv("TAVILY_API_KEY", "environment-secret")
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "tavily": {
+                        "transport": "streamable_http",
+                        "url": "https://mcp.tavily.com/mcp/",
+                        "headers": {"Authorization": "Bearer ${TAVILY_API_KEY}"},
+                        "required_env": ["TAVILY_API_KEY"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    loader = MCPConfigLoader(project_path=config, user_path=tmp_path / "missing")
+
+    server = loader.load()["tavily"]
+
+    assert loader.resolve_headers(server)["Authorization"] == "Bearer environment-secret"
+
+
+def test_mcp_initialize_keeps_tavily_lazy(tmp_path, monkeypatch):
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "tavily": {
+                        "transport": "streamable_http",
+                        "url": "https://mcp.tavily.com/mcp/",
+                        "headers": {"Authorization": "Bearer ${TAVILY_API_KEY}"},
+                        "required_env": ["TAVILY_API_KEY"],
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = MCPClientManager(
+        config_loader=MCPConfigLoader(
+            project_path=config,
+            user_path=tmp_path / "missing",
+            secret_overrides={"TAVILY_API_KEY": "secret"},
+        )
+    )
+
+    async def fail_if_connected(_server):
+        raise AssertionError("initialize must not connect Tavily")
+
+    monkeypatch.setattr(manager, "_ensure_session", fail_if_connected)
+
+    asyncio.run(manager.initialize())
+
+    assert "tavily" in manager.server_configs
+    assert manager._sessions == {}
+
+
+def test_tavily_secret_is_redacted_from_mcp_errors():
+    config = MCPServerConfig(
+        name="tavily",
+        transport="streamable_http",
+        url="https://mcp.tavily.com/mcp/",
+        required_env=("TAVILY_API_KEY",),
+    )
+    manager = MCPClientManager(
+        config_loader=MCPConfigLoader(
+            secret_overrides={"TAVILY_API_KEY": "private-secret"}
+        )
+    )
+    manager.server_configs["tavily"] = config
+
+    message = manager._error_message("tavily", RuntimeError("failed private-secret"))
+
+    assert message == "failed [REDACTED]"
+
+
 def test_mcp_config_loads_browser_container_options(tmp_path):
     config = tmp_path / "mcp.json"
     config.write_text(
@@ -357,13 +513,13 @@ def test_playwright_creates_nested_output_parent_inside_runtime_directory(tmp_pa
     assert (output_dir / "screens").is_dir()
 
 
-def test_network_policy_blocks_github_but_keeps_browser_for_localhost():
+def test_network_policy_blocks_all_external_mcp_but_allows_explicit_server_override():
     access = NetworkAccessRuntime(enabled=False)
+    github = MCPServerConfig(name="github", command="docker", network=True)
+    playwright = MCPServerConfig(name="playwright", command="node", network=True)
 
-    assert not access.allows_mcp(MCPServerConfig(name="github", command="docker"))
-    assert access.allows_mcp(
-        MCPServerConfig(name="playwright", command="node", network=True)
-    )
+    assert not access.allows_mcp(github)
+    assert not access.allows_mcp(playwright)
     assert access.allows_mcp(
         MCPServerConfig(
             name="local",
@@ -371,13 +527,18 @@ def test_network_policy_blocks_github_but_keeps_browser_for_localhost():
             url="http://localhost:9000/mcp",
         )
     )
+    access.set_mcp_enabled("github", True)
+    assert access.allows_mcp(github)
+    assert not access.allows_mcp(playwright)
 
 
 def test_manager_rejects_external_mcp_before_connecting():
     manager = MCPClientManager(network_access=NetworkAccessRuntime(enabled=False))
-    manager.server_configs["github"] = MCPServerConfig(name="github", command="docker")
+    manager.server_configs["github"] = MCPServerConfig(
+        name="github", command="docker", network=True
+    )
 
-    with pytest.raises(PermissionError, match="智能搜索已关闭"):
+    with pytest.raises(PermissionError, match="网络访问已关闭"):
         asyncio.run(manager._ensure_session("github"))
 
 
@@ -1133,3 +1294,45 @@ def test_mcp_tool_call_requires_rediscovery_when_live_metadata_changes(tmp_path,
 
     assert result.is_error is True
     assert payload["error_code"] == "mcp_tool_metadata_changed"
+
+
+def test_mcp_manager_close_is_idempotent_and_rejects_new_sessions():
+    class FakeContexts:
+        def __init__(self):
+            self.closed = 0
+
+        async def aclose(self):
+            self.closed += 1
+
+    manager = MCPClientManager()
+    contexts = FakeContexts()
+    manager._sessions["github"] = object()
+    manager._session_contexts["github"] = contexts
+
+    async def scenario():
+        await manager.close()
+        await manager.close()
+        with pytest.raises(RuntimeError, match="正在关闭"):
+            await manager._ensure_session("github")
+
+    asyncio.run(scenario())
+
+    assert contexts.closed == 1
+    assert manager._sessions == {}
+    assert manager._session_contexts == {}
+
+
+def test_mcp_manager_close_cancels_a_stuck_context(monkeypatch):
+    class StuckContexts:
+        async def aclose(self):
+            await asyncio.Event().wait()
+
+    manager = MCPClientManager()
+    manager._sessions["github"] = object()
+    manager._session_contexts["github"] = StuckContexts()
+    monkeypatch.setattr("mycodingagent.mcp_integration.manager.SESSION_CLOSE_TIMEOUT_SECONDS", 0.01)
+
+    asyncio.run(manager.close())
+
+    assert manager._sessions == {}
+    assert manager._session_contexts == {}

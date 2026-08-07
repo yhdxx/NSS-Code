@@ -46,12 +46,47 @@ def test_background_output_does_not_corrupt_active_prompt() -> None:
     asyncio.run(scenario())
 
 
-def test_smart_search_status_is_always_rendered_with_current_state() -> None:
+def test_network_status_is_always_rendered_with_current_state() -> None:
     terminal = TerminalApplication()
 
-    assert "智能搜索（开启）" in str(terminal._formatted_smart_search_status())
-    terminal.set_smart_search_enabled(False)
-    assert "智能搜索（关闭）" in str(terminal._formatted_smart_search_status())
+    assert "网络访问（开启）" in str(terminal._formatted_network_status())
+    terminal.set_network_enabled(False)
+    assert "网络访问（关闭）" in str(terminal._formatted_network_status())
+
+
+def test_network_permission_table_supports_arrow_key_toggles() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            task = asyncio.create_task(
+                terminal.select_network_permissions(
+                    "MCP Server 网络权限",
+                    [("github", False), ("tavily", True)],
+                )
+            )
+            await asyncio.sleep(0.05)
+            os.write(master_fd, b"\x1b[C")
+            os.write(master_fd, b"\x1b[B")
+            os.write(master_fd, b"\x1b[D")
+            os.write(master_fd, b"\r")
+
+            assert await asyncio.wait_for(task, timeout=2.0) == {
+                "github": True,
+                "tavily": False,
+            }
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
 
 
 def test_slash_opens_hint_without_completing_until_arrow_selection_is_confirmed() -> None:

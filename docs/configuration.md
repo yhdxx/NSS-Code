@@ -50,8 +50,8 @@ myAgent
 | `sandbox` | Docker 沙箱工作区设置 |
 | `docker` | Docker 容器资源限制 |
 | `network` | 会话托管网络、上游代理和公网域名策略 |
-| `search` | SearXNG 搜索与静态网页读取限制 |
-| `research` | 无状态网页研究子智能体及结果上限 |
+| `search` | Tavily MCP 搜索凭证 |
+| `web_fetch` | 静态网页读取开关与响应限制 |
 | `skills` | Skill 发现、索引、路由、LRFU |
 | `embedding` | 嵌入模型配置（provider/model/api_key 等） |
 | `milvus` | Milvus 向量数据库连接 |
@@ -229,58 +229,41 @@ myAgent
 | `network.idle_timeout` | `MYCODINGAGENT_NETWORK_IDLE_TIMEOUT` | `300` | 空闲隧道超时秒数 |
 | `network.ca_bundle` | `MYCODINGAGENT_NETWORK_CA_BUNDLE` | `""` | HTTPS 上游代理使用的自定义 CA bundle 路径 |
 
-每个 CLI 会话都会创建独立的 Docker internal 网络。Bash、Playwright、SearXNG 和联网 stdio MCP 不能直接访问
+每个 CLI 会话都会创建独立的 Docker internal 网络。Bash、Playwright 和联网 stdio MCP 不能直接访问
 公网，只能连接绑定在当前网络网关上的 Runtime forward proxy。代理始终执行 allow/deny 规则并拒绝非公网 IP
 字面量；direct 模式还会使用宿主 DNS 校验解析结果，配置上游代理时由上游负责域名解析，避免宿主 DNS 污染误判。
 私网、链路本地、回环和云元数据地址默认拒绝，唯一的回环例外是当前会话工作区容器中的开发服务。
 
 `upstream_proxy=auto` 可以复用只监听宿主 `127.0.0.1` 的代理，用户无需开启 Allow LAN。上游不可达时请求
-fail closed，不会偷偷回退到直连。LLM、音频/视觉 API、镜像拉取和安装属于控制面，不受 `/search` 开关影响。
+fail closed，不会偷偷回退到直连。LLM、音频/视觉 API、镜像拉取和安装属于控制面，不受 `/network` 开关影响。
 
-### 4.10 `search` — 网页研究的底层搜索与静态读取
-
-| JSON 路径 | 环境变量 | 默认值 | 说明 |
-|-----------|----------|--------|------|
-| `search.enabled` | `MYCODINGAGENT_SEARCH_ENABLED` | `true` | 是否启用研究子智能体的底层搜索和主模型 `FetchUrl` |
-| `search.endpoint` | `MYCODINGAGENT_SEARCH_ENDPOINT` | `""` | 空值表示由 Runtime 启动会话私有 SearXNG；非空表示自定义端点 |
-| `search.image` | `MYCODINGAGENT_SEARCH_IMAGE` | `"searxng/searxng:latest"` | 会话私有 SearXNG 镜像 |
-| `search.timeout` | `MYCODINGAGENT_SEARCH_TIMEOUT` | `20` | 搜索和静态网页请求超时（秒） |
-| `search.max_results` | `MYCODINGAGENT_SEARCH_MAX_RESULTS` | `10` | 单次搜索最多返回的去重结果数 |
-| `search.max_query_chars` | `MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS` | `500` | 搜索词最大字符数 |
-| `search.language` | `MYCODINGAGENT_SEARCH_LANGUAGE` | `"zh-CN"` | 默认搜索语言 |
-| `search.safesearch` | `MYCODINGAGENT_SEARCH_SAFESEARCH` | `0` | SearXNG SafeSearch 等级 |
-| `search.fetch_max_bytes` | `MYCODINGAGENT_FETCH_MAX_BYTES` | `2000000` | `FetchUrl` 最大流式下载字节数 |
-| `search.fetch_max_chars` | `MYCODINGAGENT_FETCH_MAX_CHARS` | `50000` | `FetchUrl` 最大返回字符数 |
-| `search.max_redirects` | `MYCODINGAGENT_FETCH_MAX_REDIRECTS` | `5` | 最大重定向次数；每跳都会重新校验公网地址 |
-
-空 `search.endpoint` 时，Runtime 为当前会话启动独立 SearXNG，配置写入工作区
-`.mycodingagent/state/network/<runtime-id>/`，容器不发布宿主端口并在退出时删除。非空 endpoint 只连接，不由
-Runtime 管理；公网端点仍经过托管代理。需要 JavaScript、页面交互、截图或 UI 验证时使用 Playwright。
-
-主模型不直接获得底层 `SearchWeb`。它调用 `ResearchWeb` 后，由无状态研究子智能体搜索、读取网页并提交带引用的
-文本总结，原始搜索结果和网页正文不会进入主会话。默认流程只搜索一次，再并发批量读取最多 5 个来源；每页正文最多
-6000 字符。至少一个可靠来源足以覆盖核心问题时立即提交，来源冲突、部分读取失败和次要信息缺失写入限制说明；最后
-两个内部轮次只暴露提交工具。`FetchUrl` 仍提供给主模型读取明确 URL 的静态文本。
-
-### 4.11 `research` — 无状态网页研究子智能体
+### 4.10 `search` — Tavily 网络搜索
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `model.research` | `MYCODINGAGENT_MODEL_RESEARCH` | `model.active` | 研究子智能体使用的模型 profile；模板显式使用 `memory_search` |
-| `research.enabled` | `MYCODINGAGENT_RESEARCH_ENABLED` | `true` | 是否注册 `ResearchWeb` |
-| `research.max_tool_rounds` | `MYCODINGAGENT_RESEARCH_MAX_TOOL_ROUNDS` | `100` | 单次研究最多内部工具轮次，与主推理模型单次任务默认上限一致，最大为 100 |
-| `research.max_sources` | `MYCODINGAGENT_RESEARCH_MAX_SOURCES` | `5` | 单次研究最多登记并批量读取的来源数，最大为 5 |
-| `research.max_findings` | `MYCODINGAGENT_RESEARCH_MAX_FINDINGS` | `20` | 最终最多事实结论数 |
-| `research.max_summary_chars` | `MYCODINGAGENT_RESEARCH_MAX_SUMMARY_CHARS` | `6000` | 返回主模型的总结字符上限 |
-| `research.fetch_max_chars_per_source` | `MYCODINGAGENT_RESEARCH_FETCH_MAX_CHARS` | `6000` | 子智能体读取每个来源的正文字符上限，最大为 6000 |
+| `search.tavily_api_key` | `MYCODINGAGENT_TAVILY_API_KEY`、`TAVILY_API_KEY` | `""` | Tavily API Key；JSON 值优先，其次两个环境变量 |
 
-`ResearchWeb` 只能返回文本总结和来源 URL，不能检索、查看、分析或返回图片。它可以定位包含目标图片的网站并返回
-网页 URL，主模型随后使用 `browser_*` 访问并下载图片。所有 finding 必须引用研究过程中实际读取过的来源；网页正文
-按不可信数据处理，不能改变研究任务、权限或输出格式。
+Tavily 使用 `.mycodingagent/mcp.json` 中的官方远程 Streamable HTTP Server。模板保留
+`Authorization: Bearer ${TAVILY_API_KEY}`，真实 Key 只在首次连接时注入，不进入 MCP metadata cache、Runtime
+Context、启动审批或日志。缺少 Key 时 Tavily Server 会在加载阶段被过滤，不进入能力推荐或工具发现。
 
-进程启动后终端右下角显示 `智能搜索（开启/关闭）`。执行 `/search` 关闭后，代理统一禁止 Search、Fetch、Bash、
-Playwright 和联网 MCP 的公网流量，并断开不再允许的 MCP；Playwright 仍可访问当前会话
-`localhost:<port>` 开发服务。该开关不修改 system prompt 或 tool schema，只通过 Runtime Context 和执行门禁生效。
+启动过程不会连接或发现 Tavily 工具。用户请求与网络检索相关时，Capability Router 推荐该 Server，模型再通过
+MCP discovery 获取 `tavily-search`、`tavily-extract`，随后按现有 discovery gate 调用。
+
+### 4.11 `web_fetch` — 静态网页读取
+
+| JSON 路径 | 环境变量 | 默认值 | 说明 |
+|-----------|----------|--------|------|
+| `web_fetch.enabled` | `MYCODINGAGENT_WEB_FETCH_ENABLED` | `true` | 是否向主模型注册 `FetchUrl` |
+| `web_fetch.timeout` | `MYCODINGAGENT_WEB_FETCH_TIMEOUT` | `20` | 单次静态网页请求超时秒数 |
+| `web_fetch.max_bytes` | `MYCODINGAGENT_WEB_FETCH_MAX_BYTES` | `2000000` | 最大流式下载字节数 |
+| `web_fetch.max_chars` | `MYCODINGAGENT_WEB_FETCH_MAX_CHARS` | `50000` | 最大返回字符数 |
+| `web_fetch.max_redirects` | `MYCODINGAGENT_WEB_FETCH_MAX_REDIRECTS` | `5` | 最大重定向次数；每跳重新校验目标地址 |
+
+`FetchUrl` 不依赖 Tavily API Key，可读取明确 URL 的静态 HTML、JSON 和文本。动态页面、交互、截图或 UI 验证使用
+Playwright。终端右下角显示 `网络访问（开启/关闭）`；`/network off` 关闭 Bash、FetchUrl、Playwright 和联网 MCP
+的公网权限，但保留当前会话的 localhost 开发服务。`/network on|off <server>` 或无参数 `/network` 权限表可为单个
+MCP Server 设置会话级覆盖，权限关闭时活动连接会立即断开。
 
 ### 4.12 `skills` — Skill 路由与检索
 
@@ -398,17 +381,13 @@ system prompt，不参与检索或 LRFU；`Dynamic/` 中的 Skill 参与检索�
 | `MYCODINGAGENT_NETWORK_CONNECT_TIMEOUT` | `network.connect_timeout` | float |
 | `MYCODINGAGENT_NETWORK_IDLE_TIMEOUT` | `network.idle_timeout` | float |
 | `MYCODINGAGENT_NETWORK_CA_BUNDLE` | `network.ca_bundle` | path |
-| `MYCODINGAGENT_SEARCH_ENABLED` | `search.enabled` | bool |
-| `MYCODINGAGENT_SEARCH_ENDPOINT` | `search.endpoint` | string |
-| `MYCODINGAGENT_SEARCH_IMAGE` | `search.image` | string |
-| `MYCODINGAGENT_SEARCH_TIMEOUT` | `search.timeout` | float |
-| `MYCODINGAGENT_SEARCH_MAX_RESULTS` | `search.max_results` | int |
-| `MYCODINGAGENT_SEARCH_MAX_QUERY_CHARS` | `search.max_query_chars` | int |
-| `MYCODINGAGENT_SEARCH_LANGUAGE` | `search.language` | string |
-| `MYCODINGAGENT_SEARCH_SAFESEARCH` | `search.safesearch` | int |
-| `MYCODINGAGENT_FETCH_MAX_BYTES` | `search.fetch_max_bytes` | int |
-| `MYCODINGAGENT_FETCH_MAX_CHARS` | `search.fetch_max_chars` | int |
-| `MYCODINGAGENT_FETCH_MAX_REDIRECTS` | `search.max_redirects` | int |
+| `MYCODINGAGENT_TAVILY_API_KEY` | `search.tavily_api_key` | secret string |
+| `TAVILY_API_KEY` | `search.tavily_api_key` | secret string |
+| `MYCODINGAGENT_WEB_FETCH_ENABLED` | `web_fetch.enabled` | bool |
+| `MYCODINGAGENT_WEB_FETCH_TIMEOUT` | `web_fetch.timeout` | float |
+| `MYCODINGAGENT_WEB_FETCH_MAX_BYTES` | `web_fetch.max_bytes` | int |
+| `MYCODINGAGENT_WEB_FETCH_MAX_CHARS` | `web_fetch.max_chars` | int |
+| `MYCODINGAGENT_WEB_FETCH_MAX_REDIRECTS` | `web_fetch.max_redirects` | int |
 | `MYCODINGAGENT_EMBEDDING_PROVIDER` | `embedding.provider` | string |
 | `MYCODINGAGENT_EMBEDDING_MODEL` | `embedding.model` | string |
 | `MYCODINGAGENT_EMBEDDING_API_KEY` | `embedding.api_key` | string |
@@ -539,8 +518,7 @@ docker compose -f Milvus/docker-compose.yml up -d
 bash scripts/install.sh --with-web-tools
 ```
 
-安装脚本会预拉取 Playwright MCP 和 SearXNG 镜像，不启动共享服务。`myAgent` 会在每次会话中启动并管理私有
-SearXNG。默认配置无需修改：
+安装脚本只预拉取 Playwright MCP 镜像。Tavily 是远程 MCP，不需要本地镜像或会话搜索容器。启用搜索时填写：
 
 ```json
 {
@@ -551,13 +529,13 @@ SearXNG。默认配置无需修改：
     "deny_domains": []
   },
   "search": {
-    "enabled": true,
-    "endpoint": "",
-    "image": "searxng/searxng:latest",
-    "max_results": 10
+    "tavily_api_key": "tvly-..."
   }
 }
 ```
+
+真实 Key 只写入 `~/.mycodingagent/config.json`，不要提交到项目配置。未提供 Key 时 Tavily 不会出现在 Agent 的 MCP
+能力中，`FetchUrl` 和 Playwright 仍按各自配置提供。
 
 Playwright 是默认启用的内置浏览器工具；首次使用自动拉取镜像，后续复用 Docker 本地缓存，不请求 MCP Server
 启动审批。完整 Playwright MCP 权限和容器字段见 `docs/mcp.md`。
@@ -567,7 +545,7 @@ Runtime 在项目加载阶段自动创建 Bash 工作区容器和专用 internal
 宿主机端口；`http://mycodingagent-devserver:<port>` 仍可显式使用。Bash 参数
 `is_persistent_command=true` 用于开发服务器和 watcher：Runtime 将命令放入独立进程组，确认短时间内未退出后返回，
 日志写入 `.mycodingagent/artifacts/services/<runtime-id>/`。普通命令保持 `false` 并等待退出。Esc 和普通命令超时只清理
-当前前台命令。Agent 退出时先同步保存最终消息、停止文件监听并释放工作区租约；持久进程、工作区容器、SearXNG、
+当前前台命令。Agent 退出时先同步保存最终消息、停止文件监听并释放工作区租约；持久进程、工作区容器、
 Playwright/MCP 容器和专用网络由按 runtime label 隔离的后台进程清理，CLI 不等待 Docker 删除，也不向模型提供容器
 管理工具。本地连接和可取消任务并行关闭且有 2 秒总上限；超时信息只在 `client.debug=true` 时显示。
 

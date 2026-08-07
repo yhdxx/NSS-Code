@@ -9,6 +9,8 @@ import json
 import os
 import socket
 import ssl
+import secrets
+import hashlib
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Awaitable, Callable
@@ -22,6 +24,7 @@ from mycodingagent.network_access import NetworkAccessRuntime
 MANAGED_LABEL = "com.mycodingagent.managed"
 RUNTIME_ID_LABEL = "com.mycodingagent.runtime"
 RUNTIME_KIND_LABEL = "com.mycodingagent.kind"
+WORKSPACE_LABEL = "com.mycodingagent.workspace"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 METADATA_HOSTS = frozenset({"169.254.169.254", "metadata.google.internal"})
 
@@ -61,12 +64,14 @@ class ManagedNetworkRuntime:
         self.config = config
         self.access = access
         self.workspace_root = workspace_root.resolve(strict=False)
+        self.workspace_key = hashlib.sha256(str(self.workspace_root).encode("utf-8")).hexdigest()[:16]
         self.runtime_id = runtime_id or uuid4().hex
         self.network_name = f"mycodingagent-network-{self.runtime_id[:12]}"
         self.gateway = ""
         self.proxy_port = 0
         self._server: asyncio.AbstractServer | None = None
         self._connections: set[asyncio.Task[None]] = set()
+        self._client_tokens: dict[str, str] = {}
         self._local_target: Callable[[int], Awaitable[tuple[str, int] | None]] | None = None
         self._network_ready = False
         self.access.bind_change_hook(self.apply_access_policy)
@@ -77,16 +82,36 @@ class ManagedNetworkRuntime:
 
     @property
     def proxy_environment(self) -> dict[str, str]:
+        return self._proxy_environment(self.proxy_url)
+
+    def proxy_url_for_mcp(self, server: str) -> str:
         if not self.proxy_url:
+            return ""
+        name = server.strip()
+        token = next(
+            (value for value, owner in self._client_tokens.items() if owner == name),
+            "",
+        )
+        if not token:
+            token = secrets.token_urlsafe(24)
+            self._client_tokens[token] = name
+        return f"http://mcp:{token}@{self.gateway}:{self.proxy_port}"
+
+    def proxy_environment_for_mcp(self, server: str) -> dict[str, str]:
+        return self._proxy_environment(self.proxy_url_for_mcp(server))
+
+    @staticmethod
+    def _proxy_environment(proxy_url: str) -> dict[str, str]:
+        if not proxy_url:
             return {}
         no_proxy = "mycodingagent-devserver"
         return {
-            "HTTP_PROXY": self.proxy_url,
-            "HTTPS_PROXY": self.proxy_url,
-            "ALL_PROXY": self.proxy_url,
-            "http_proxy": self.proxy_url,
-            "https_proxy": self.proxy_url,
-            "all_proxy": self.proxy_url,
+            "HTTP_PROXY": proxy_url,
+            "HTTPS_PROXY": proxy_url,
+            "ALL_PROXY": proxy_url,
+            "http_proxy": proxy_url,
+            "https_proxy": proxy_url,
+            "all_proxy": proxy_url,
             "NO_PROXY": no_proxy,
             "no_proxy": no_proxy,
         }
@@ -104,6 +129,7 @@ class ManagedNetworkRuntime:
             "network", "create", "--internal", "--driver", "bridge",
             "--label", f"{MANAGED_LABEL}=true",
             "--label", f"{RUNTIME_KIND_LABEL}=managed-network",
+            "--label", f"{WORKSPACE_LABEL}={self.workspace_key}",
             "--label", f"{RUNTIME_ID_LABEL}={self.runtime_id}",
             self.network_name,
         )
@@ -158,6 +184,7 @@ class ManagedNetworkRuntime:
         if tasks:
             await asyncio.gather(*tasks, return_exceptions=True)
         self.proxy_port = 0
+        self._client_tokens.clear()
 
     def display_upstream(self) -> str:
         value = self._selected_upstream("https") or "direct"
@@ -217,9 +244,13 @@ class ManagedNetworkRuntime:
         if len(parts) != 3:
             raise NetworkPolicyError("代理请求行无效", error_code="invalid_proxy_request", status=400)
         method, target, _version = parts
+        network_client = self._network_client(header)
+        header = _without_proxy_authorization(header)
         if method.upper() == "CONNECT":
             host, port = _split_authority(target, 443)
-            remote_reader, remote_writer = await self._open_target(host, port, "https")
+            remote_reader, remote_writer = await self._open_target(
+                host, port, "https", network_client=network_client
+            )
             writer.write(b"HTTP/1.1 200 Connection Established\r\n\r\n")
             await writer.drain()
             await self._relay(reader, writer, remote_reader, remote_writer)
@@ -229,7 +260,12 @@ class ManagedNetworkRuntime:
             await self._respond(writer, 400, "absolute HTTP URL required")
             return
         port = parsed.port or (443 if parsed.scheme == "https" else 80)
-        remote_reader, remote_writer = await self._open_target(parsed.hostname, port, parsed.scheme)
+        remote_reader, remote_writer = await self._open_target(
+            parsed.hostname,
+            port,
+            parsed.scheme,
+            network_client=network_client,
+        )
         upstream = self._selected_upstream(parsed.scheme)
         request_header = header
         path = parsed.path or "/"
@@ -243,7 +279,12 @@ class ManagedNetworkRuntime:
         await self._relay(reader, writer, remote_reader, remote_writer)
 
     async def _open_target(
-        self, host: str, port: int, target_scheme: str
+        self,
+        host: str,
+        port: int,
+        target_scheme: str,
+        *,
+        network_client: str = "",
     ) -> tuple[asyncio.StreamReader, asyncio.StreamWriter]:
         local = host.rstrip(".").lower() in LOCAL_HOSTS
         if local:
@@ -265,7 +306,7 @@ class ManagedNetworkRuntime:
             return await asyncio.wait_for(
                 asyncio.open_connection(resolved[0], resolved[1]), self.config.connect_timeout
             )
-        if not self.access.enabled:
+        if not self.access.allows_external_client(network_client):
             raise NetworkPolicyError("Agent 工具公网权限已关闭", error_code="network_disabled")
         upstream = self._selected_upstream(target_scheme)
         use_direct = not upstream or upstream == "direct" or _matches_no_proxy(host, port)
@@ -278,6 +319,21 @@ class ManagedNetworkRuntime:
         if parsed.scheme in {"socks5", "socks5h", "socks4"}:
             return await self._open_socks(upstream, host, port)
         return await self._open_http_proxy(upstream, host, port)
+
+    def _network_client(self, header: bytes) -> str:
+        prefix = b"proxy-authorization: basic "
+        for line in header.split(b"\r\n"):
+            if not line.lower().startswith(prefix):
+                continue
+            try:
+                decoded = base64.b64decode(line[len(prefix):], validate=True).decode("utf-8")
+                username, token = decoded.split(":", 1)
+            except (ValueError, UnicodeDecodeError):
+                return ""
+            if username != "mcp":
+                return ""
+            return self._client_tokens.get(token, "")
+        return ""
 
     async def _open_socks(
         self, proxy_url: str, host: str, port: int
@@ -489,6 +545,15 @@ def _split_authority(value: str, default_port: int) -> tuple[str, int]:
     if not parsed.hostname:
         raise NetworkPolicyError("CONNECT 目标无效", error_code="invalid_proxy_request", status=400)
     return parsed.hostname, parsed.port or default_port
+
+
+def _without_proxy_authorization(header: bytes) -> bytes:
+    lines = [
+        line
+        for line in header.split(b"\r\n")
+        if not line.lower().startswith(b"proxy-authorization:")
+    ]
+    return b"\r\n".join(lines)
 
 
 def _proxy_scheme(value: str) -> str:

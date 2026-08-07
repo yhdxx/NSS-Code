@@ -32,6 +32,23 @@ Server 均原样保留。配置文件不是合法 JSON 对象时，启动引导�
 }
 ```
 
+## Tavily 网络搜索
+
+模板默认包含官方远程 Tavily MCP。API Key 优先从 `~/.mycodingagent/config.json` 注入：
+
+```json
+{
+  "search": {
+    "tavily_api_key": "tvly-..."
+  }
+}
+```
+
+也可以使用 `MYCODINGAGENT_TAVILY_API_KEY` 或 `TAVILY_API_KEY`。`mcp.json` 中只保留
+`Authorization: Bearer ${TAVILY_API_KEY}` 和 `required_env: ["TAVILY_API_KEY"]`；真实 Key 在第一次连接时才解析。
+缺少 Key 时 Tavily Server 不进入 metadata cache、能力推荐或 discovery。启动阶段只登记 Server 摘要，不发起网络
+连接；模型第一次查询 `tavily-search` 或 `tavily-extract` 时才连接。
+
 ## GitHub MCP
 
 模板使用 GitHub 官方 MCP Server Docker 镜像。先创建 GitHub Personal Access Token，然后在启动 `myAgent` 的同一个 shell 中设置：
@@ -120,9 +137,10 @@ bash scripts/install.sh --with-web-tools
 `http://mycodingagent-devserver:<port>`。`browser_file_upload`、
 `browser_evaluate` 等高风险工具仍按 MCP 审批策略处理。
 
-执行 `/search` 并关闭智能搜索后，Runtime 会拒绝 GitHub 和其他公网 MCP，并取消活动公网隧道。Playwright 保持
-可用，但其公网请求会被代理拒绝，只能访问当前会话的 `localhost:<port>` 开发服务。指向本机回环地址的
-Streamable HTTP MCP 也仍允许连接。
+执行 `/network off` 后，Runtime 会拒绝所有未单独放行的公网 MCP，并关闭其活动连接。使用
+`/network on github` 可在全局关闭时只放行 GitHub；`/network off github` 可在全局开启时单独关闭 GitHub。
+无参数 `/network` 会打开 MCP 权限表，使用上下键选择 Server、左右键切换网络权限、Enter 保存。指向本机回环地址
+的 Streamable HTTP MCP 始终允许连接。
 
 Playwright 截图、PDF 等输出会写入当前工作区
 `.mycodingagent/artifacts/playwright/<runtime-id>/`，工具结果返回工作区相对路径，可继续交给 `AnalyzeImage` 做图片
@@ -138,6 +156,7 @@ Playwright 截图、PDF 等输出会写入当前工作区
 | `transport` | `stdio` 或 `streamable_http` |
 | `command` / `args` | `stdio` Server 的启动命令和参数 |
 | `env` | 追加到 Server 进程的环境变量 |
+| `required_env` | Server 加载所需的密钥名；任一缺失时不向 Agent 暴露该 Server |
 | `url` / `headers` | Streamable HTTP 地址和请求头 |
 | `startup_timeout` | 初始化超时秒数 |
 | `call_timeout` | 单次 MCP 调用超时秒数 |

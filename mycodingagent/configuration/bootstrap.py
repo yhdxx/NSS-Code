@@ -103,14 +103,12 @@ def bootstrap_user_config(*, home: Path | None = None, repo_root: Path | None = 
                 "network.connect_timeout",
                 "network.idle_timeout",
                 "network.ca_bundle",
-                "search.image",
-                "model.research",
-                "research.enabled",
-                "research.max_tool_rounds",
-                "research.max_sources",
-                "research.max_findings",
-                "research.max_summary_chars",
-                "research.fetch_max_chars_per_source",
+                "search.tavily_api_key",
+                "web_fetch.enabled",
+                "web_fetch.timeout",
+                "web_fetch.max_bytes",
+                "web_fetch.max_chars",
+                "web_fetch.max_redirects",
             ),
             result=result,
         )
@@ -175,10 +173,6 @@ def _merge_missing_config_fields(
         ):
             continue
         value = deepcopy(template_parent[leaf])
-        if path == "model.research":
-            model = target.get("model")
-            if isinstance(model, dict):
-                value = str(model.get("active") or value)
         target_parent[leaf] = value
         added.append(path)
     if not added:

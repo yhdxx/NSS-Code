@@ -93,8 +93,7 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     project_graph_service: Any = None,
     bash_policy_evaluator: Any = None,
     media_runtime: Any = None,
-    search_runtime: Any = None,
-    research_runtime: Any = None,
+    web_fetch_runtime: Any = None,
     workspace_runtime: Any = None,
 ) -> ToolRegistry:
     from mycodingagent.tool_runtime.ask_user import AskUser
@@ -167,14 +166,10 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
             registry.register(TranscribeAudio(media_runtime))
         if media_runtime.vision_availability().enabled:
             registry.register(AnalyzeImage(media_runtime))
-    if search_runtime is not None:
-        from mycodingagent.tool_runtime.search_web import FetchUrl
+    if web_fetch_runtime is not None:
+        from mycodingagent.tool_runtime.fetch_url import FetchUrl
 
-        registry.register(FetchUrl(search_runtime))
-    if research_runtime is not None:
-        from mycodingagent.tool_runtime.research_web import ResearchWeb
-
-        registry.register(ResearchWeb(research_runtime))
+        registry.register(FetchUrl(web_fetch_runtime))
     if project_graph_service is not None:
         from mycodingagent.tool_runtime.project_graph import (
             ProjectArchitectureTool,

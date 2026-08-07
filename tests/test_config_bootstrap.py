@@ -41,10 +41,17 @@ def _fake_repo(tmp_path: Path) -> Path:
                             "model": "demo-model",
                         }
                     },
-                    "research": "memory_search",
                     "long_term_memory": {"storage": "main", "search": "main"},
                 },
                 "client": {"max_tool_rounds": 100},
+                "search": {"tavily_api_key": ""},
+                "web_fetch": {
+                    "enabled": True,
+                    "timeout": 20,
+                    "max_bytes": 2000000,
+                    "max_chars": 50000,
+                    "max_redirects": 5,
+                },
             }
         ),
         encoding="utf-8",
@@ -55,6 +62,7 @@ def _fake_repo(tmp_path: Path) -> Path:
                 "servers": {
                     "github": {"disabled": True},
                     "playwright": {"disabled": False, "image": "playwright-mcp"},
+                    "tavily": {"disabled": False, "required_env": ["TAVILY_API_KEY"]},
                 }
             }
         ),
@@ -114,9 +122,18 @@ def test_bootstrap_preserves_existing_valid_config(tmp_path):
     assert result.recreated_invalid_config is False
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["model"]["providers"]["qwen"]["api"] == "keep"
-    assert config["model"]["research"] == "custom"
     assert config["client"]["max_tool_rounds"] == 100
-    assert result.added_config_fields == ["client.max_tool_rounds", "model.research"]
+    assert config["search"]["tavily_api_key"] == ""
+    assert config["web_fetch"]["enabled"] is True
+    assert result.added_config_fields == [
+        "client.max_tool_rounds",
+        "search.tavily_api_key",
+        "web_fetch.enabled",
+        "web_fetch.timeout",
+        "web_fetch.max_bytes",
+        "web_fetch.max_chars",
+        "web_fetch.max_redirects",
+    ]
 
 
 def test_bootstrap_preserves_user_max_tool_rounds(tmp_path):
@@ -133,8 +150,15 @@ def test_bootstrap_preserves_user_max_tool_rounds(tmp_path):
 
     config = json.loads(config_path.read_text(encoding="utf-8"))
     assert config["client"] == {"max_tool_rounds": 240, "debug": True}
-    assert config["model"]["research"] == "memory_search"
-    assert result.added_config_fields == ["model.research"]
+    assert config["search"]["tavily_api_key"] == ""
+    assert result.added_config_fields == [
+        "search.tavily_api_key",
+        "web_fetch.enabled",
+        "web_fetch.timeout",
+        "web_fetch.max_bytes",
+        "web_fetch.max_chars",
+        "web_fetch.max_redirects",
+    ]
 
 
 def test_bootstrap_backs_up_and_recreates_invalid_config(tmp_path):
@@ -188,7 +212,8 @@ def test_bootstrap_appends_missing_builtin_mcp_servers_and_preserves_user_server
         "disabled": False,
         "image": "playwright-mcp",
     }
-    assert result.added_mcp_servers == ["github", "playwright"]
+    assert config["servers"]["tavily"]["required_env"] == ["TAVILY_API_KEY"]
+    assert result.added_mcp_servers == ["github", "playwright", "tavily"]
 
 
 def test_bootstrap_never_overwrites_same_name_user_mcp_server(tmp_path):
@@ -219,7 +244,7 @@ def test_bootstrap_never_overwrites_same_name_user_mcp_server(tmp_path):
         "command": "user-github-server",
         "env": {"CUSTOM": "keep"},
     }
-    assert result.added_mcp_servers == ["playwright"]
+    assert result.added_mcp_servers == ["playwright", "tavily"]
 
 
 def test_bootstrap_mcp_merge_is_idempotent(tmp_path):
@@ -268,9 +293,11 @@ def test_repository_config_template_exposes_external_configuration_fields():
         ("mcp", "enabled"),
         ("mcp", "project_config_path"),
         ("mcp", "user_config_path"),
-        ("search", "enabled"),
-        ("search", "endpoint"),
-        ("search", "max_results"),
+        ("search", "tavily_api_key"),
+        ("web_fetch", "enabled"),
+        ("web_fetch", "timeout"),
+        ("web_fetch", "max_bytes"),
+        ("web_fetch", "max_chars"),
         ("network", "enabled"),
         ("network", "upstream_proxy"),
         ("network", "allow_domains"),
@@ -292,12 +319,24 @@ def test_repository_config_template_exposes_external_configuration_fields():
     }
     assert "api" not in template["model"]["profiles"]["main"]
     assert "network" not in template["docker"]
-    assert template["search"]["endpoint"] == ""
+    assert template["search"]["tavily_api_key"] == ""
     assert template["network"]["allow_domains"] == ["*"]
     assert template["client"]["max_tool_rounds"] == 100
-    assert template["research"]["max_tool_rounds"] == 100
-    assert template["research"]["max_sources"] == 5
-    assert template["research"]["fetch_max_chars_per_source"] == 6000
+    assert template["web_fetch"]["max_redirects"] == 5
+
+
+def test_repository_mcp_template_exposes_lazy_readonly_tavily_server():
+    template = json.loads(
+        (ROOT / ".mycodingagent" / "mcp.example.json").read_text(encoding="utf-8")
+    )
+    tavily = template["servers"]["tavily"]
+
+    assert tavily["url"] == "https://mcp.tavily.com/mcp/"
+    assert tavily["headers"]["Authorization"] == "Bearer ${TAVILY_API_KEY}"
+    assert tavily["required_env"] == ["TAVILY_API_KEY"]
+    assert tavily["auto_start"] is True
+    assert tavily["permissions"]["read_tools"] == ["tavily-search", "tavily-extract"]
+    assert tavily["permissions"]["readonly_by_default"] is True
 
 
 def test_main_bootstrap_creates_config_before_runtime_config_import(tmp_path):

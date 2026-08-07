@@ -29,7 +29,6 @@ READ_LIKE_TOOLS = {
     "ReadFile",
     "TranscribeAudio",
     "AnalyzeImage",
-    "ResearchWeb",
     "FetchUrl",
     "browser_navigate",
     "browser_snapshot",
@@ -54,7 +53,6 @@ STATUS_READ_TOOLS = {
     "ReadFile",
     "TranscribeAudio",
     "AnalyzeImage",
-    "ResearchWeb",
     "FetchUrl",
     "browser_navigate",
     "browser_snapshot",
@@ -155,8 +153,6 @@ def tool_status_message(tool_name: str) -> str:
         return "正在处理音频中"
     if tool_name == "AnalyzeImage":
         return "正在处理图片中"
-    if tool_name == "ResearchWeb":
-        return "正在检索并整理资料中"
     if tool_name == "FetchUrl":
         return "正在读取网页中"
     if tool_name == "browser_navigate":
@@ -564,9 +560,6 @@ def read_call_summary(call: _ToolCallView) -> _ReadSummary:
         count = len(sources) if isinstance(sources, list) else 0
         query = compact_one_line(call.args.get("query"), 100)
         return _ReadSummary("Analyze", f"{count} image(s): {query}")
-    if call.name == "ResearchWeb":
-        instruction = compact_one_line(call.args.get("instruction"), 120)
-        return _ReadSummary("Research", instruction)
     if call.name == "FetchUrl":
         url = compact_one_line(call.args.get("url"), 140)
         return _ReadSummary("Fetch", url)

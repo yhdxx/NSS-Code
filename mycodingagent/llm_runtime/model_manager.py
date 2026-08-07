@@ -75,18 +75,13 @@ class ModelManager:
         key = self.model_config.long_term_memory.search or self.model_config.active
         return self.provider(key)
 
-    def research_provider(self) -> InferenceProvider:
-        return self.provider(self.model_config.research or self.model_config.active)
-
     def validation_errors(
         self,
         *,
         require_long_term_memory: bool = True,
-        require_research: bool = True,
     ) -> list[str]:
         errors = self.model_config.validation_errors(
             require_long_term_memory=require_long_term_memory,
-            require_research=require_research,
         )
         for key, profile in self.model_config.profiles.items():
             if profile.provider and not is_provider_registered(profile.provider):
@@ -201,12 +196,6 @@ def load_model_config(config_path: Path = USER_CONFIG_PATH) -> ModelConfig:
         active=active,
         providers=providers,
         profiles=profiles,
-        research=_raw_env_str(
-            model,
-            "research",
-            ("MYCODINGAGENT_MODEL_RESEARCH",),
-            active,
-        ) or active,
         long_term_memory=ModelLongTermMemoryConfig(
             storage=_raw_env_str(
                 ltm_raw,
