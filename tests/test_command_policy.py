@@ -396,14 +396,17 @@ def test_compound_command_asks_for_approval_once(monkeypatch, tmp_path):
     assert hook.requests[0].risk == "high"
 
 
-def test_classifier_submission_tools_have_no_parameters():
+def test_classifier_submission_tools_require_intent():
     for tool in (
         SubmitBashLowRisk(lambda _level: None),
         SubmitBashApproval(lambda _level: None),
         SubmitBashHighRisk(lambda _level: None),
     ):
         schema = tool.get_schema()
-        assert schema["input_schema"] == {"type": "object", "properties": {}, "additionalProperties": False}
+        input_schema = schema["input_schema"]
+        assert "intent" in input_schema["properties"]
+        assert input_schema["required"] == ["intent"]
+        assert input_schema["properties"]["intent"]["maxLength"] == 240
 
 
 def test_policy_lease_heartbeat_and_owner_release(tmp_path):

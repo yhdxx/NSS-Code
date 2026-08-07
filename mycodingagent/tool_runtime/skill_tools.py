@@ -6,6 +6,7 @@ from pydantic import BaseModel, Field
 
 from mycodingagent.skill_runtime.contracts import SkillService
 from mycodingagent.tool_runtime.base import Tool, ToolResult
+from mycodingagent.tool_contracts import apply_tool_intent_schema
 
 
 class SearchSkillParams(BaseModel):
@@ -238,6 +239,7 @@ class SkillTool(Tool):
 
 def skill_schema_from_record(record) -> dict:
     input_schema = SkillInvocationParams.model_json_schema()
+    apply_tool_intent_schema(input_schema)
     return {
         "name": record.tool_name,
         "description": record.description,

@@ -8,6 +8,7 @@ from pydantic import BaseModel, Field
 from mycodingagent.long_term_memory.models import MemoryScope, MemoryType
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.tool_runtime.base import Tool, ToolResult
+from mycodingagent.tool_contracts import apply_tool_intent_schema
 
 
 MemoryTypeLiteral = Literal["user_profile", "user_preference", "project_fact", "decision"]
@@ -91,6 +92,7 @@ class SubmitLongTermMemoryPatch(Tool):
     def get_schema(self) -> dict[str, Any]:
         schema = self.params_model.model_json_schema()
         schema.pop("title", None)
+        apply_tool_intent_schema(schema)
         return {
             "name": self.name,
             "description": self.description,
@@ -162,6 +164,7 @@ class SubmitLongTermMemoryQueryResult(Tool):
     def get_schema(self) -> dict[str, Any]:
         schema = self.params_model.model_json_schema()
         schema.pop("title", None)
+        apply_tool_intent_schema(schema)
         return {
             "name": self.name,
             "description": self.description,

@@ -8,6 +8,7 @@ from typing import Any, Literal  # 导入当前模块需要的依赖。
 from pydantic import BaseModel  # 导入当前模块需要的依赖。
 
 from mycodingagent.configuration import CONFIG  # 统一读取沙箱路径、输出长度等项目配置。
+from mycodingagent.tool_contracts import apply_tool_intent_schema
 
 SKIP_DIRS = set(CONFIG.sandbox.skip_dirs)  # 保存配置值或中间计算结果。
 
@@ -125,16 +126,7 @@ class Tool(ABC):  # 定义用于封装相关状态和行为的类。
     def get_schema(self) -> dict[str, Any]:  # 定义函数，封装可复用逻辑。
         schema = self.params_model.model_json_schema()  # 保存配置值或中间计算结果。
         schema.pop("title", None)  # 执行当前步骤的业务逻辑。
-        properties = schema.setdefault("properties", {})
-        if isinstance(properties, dict) and "intent" not in properties:
-            properties["intent"] = {
-                "type": "string",
-                "description": "本次工具调用的简短目的；上下文虚拟化时用作紧凑元数据。",
-                "maxLength": 160,
-            }
-        required = schema.setdefault("required", [])
-        if isinstance(required, list) and "intent" not in required:
-            required.append("intent")
+        apply_tool_intent_schema(schema)
         return {  # 返回当前函数的处理结果。
             "name": self.name,  # 提供上方表达式需要的文本内容。
             "description": self.description,  # 提供上方表达式需要的文本内容。

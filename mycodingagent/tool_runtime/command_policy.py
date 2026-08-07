@@ -18,6 +18,7 @@ from mycodingagent.terminal_ui.application import SharedTerminalInput, TerminalC
 from mycodingagent.terminal_ui.output import render_command_approval_request
 from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY, require_component_schema
 from mycodingagent.tool_runtime.base import Tool, ToolResult
+from mycodingagent.tool_contracts import apply_tool_intent_schema
 from pydantic import BaseModel
 
 from mycodingagent.approval import ApprovalRuntime
@@ -137,10 +138,12 @@ class _BashClassificationSubmission(Tool):
         self._sink = sink
 
     def get_schema(self) -> dict[str, object]:
+        input_schema = {"type": "object", "properties": {}, "additionalProperties": False}
+        apply_tool_intent_schema(input_schema)
         return {
             "name": self.name,
             "description": self.description,
-            "input_schema": {"type": "object", "properties": {}, "additionalProperties": False},
+            "input_schema": input_schema,
         }
 
     async def execute(self, params: EmptyBashClassificationParams) -> ToolResult:

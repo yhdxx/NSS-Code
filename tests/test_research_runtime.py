@@ -153,7 +153,9 @@ def test_research_runtime_is_stateless_and_returns_only_structured_summary():
         "SubmitResearchResult",
     }
     for item in first_request.tools:
-        assert "intent" not in item["function"]["parameters"].get("properties", {})
+        parameters = item["function"]["parameters"]
+        assert parameters["properties"]["intent"]["maxLength"] == 240
+        assert "intent" in parameters["required"]
     latest_messages = provider.requests[-1].messages
     assert all(request.tool_choice is None for request in provider.requests)
     allowed_research_tools = {

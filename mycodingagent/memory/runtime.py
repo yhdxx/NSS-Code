@@ -51,6 +51,7 @@ from mycodingagent.memory.message_filters import remove_trailing_incomplete_tool
 from mycodingagent.memory.stores import SQLiteMemoryStore
 from mycodingagent.memory.working_context import WorkingContext
 from mycodingagent.memory.workspace_checkpoint import RewindResult, WorkspaceCheckpointManager
+from mycodingagent.tool_contracts import COLD_ARGUMENT_VIRTUALIZED, MAX_TOOL_INTENT_CHARS
 from mycodingagent.workspace.identity import workspace_fingerprint, workspace_label, workspace_root_text
 
 
@@ -1007,7 +1008,7 @@ class MemoryRuntime:
             kind="current_summary",
             context_id=context_id,
             invocation_kind="revision" if previous else "initial",
-            intent=truncate_one_line(summary, 160),
+            intent=truncate_one_line(summary, MAX_TOOL_INTENT_CHARS),
             args_preview=truncate_one_line(json.dumps({"focus": focus, "reason": reason}, ensure_ascii=False), 500),
             args_hash=stable_hash(json.dumps(payload, ensure_ascii=False, sort_keys=True)),
             short_summary=truncate_one_line(summary, 500),
@@ -1531,20 +1532,140 @@ def render_historical_topology(
             rendered.append(render_historical_tool_message(message, metadata))
             continue
         if role == "assistant" and message.get("tool_calls"):
-            rendered.append(render_historical_assistant_message(message))
+            rendered.append(render_historical_assistant_message(message, metadata_by_call_id))
             continue
         if role in {"user", "assistant"}:
             rendered.append(dict(message))
     return rendered
 
 
-def render_historical_assistant_message(message: dict[str, Any]) -> dict[str, Any]:
+def render_historical_assistant_message(
+    message: dict[str, Any],
+    metadata_by_call_id: dict[str, ToolInvocationMetadata],
+) -> dict[str, Any]:
     rendered: dict[str, Any] = {"role": "assistant"}
     if message.get("content"):
         rendered["content"] = message["content"]
     if message.get("tool_calls"):
-        rendered["tool_calls"] = copy.deepcopy(message["tool_calls"])
+        rendered_calls: list[Any] = []
+        for tool_call in message["tool_calls"]:
+            if not isinstance(tool_call, dict):
+                rendered_calls.append(copy.deepcopy(tool_call))
+                continue
+            rendered_call = copy.deepcopy(tool_call)
+            function = rendered_call.get("function")
+            if not isinstance(function, dict):
+                rendered_calls.append(rendered_call)
+                continue
+            tool_call_id = str(rendered_call.get("id") or "")
+            tool_name = str(function.get("name") or "")
+            raw_arguments = function.get("arguments")
+            metadata = metadata_by_call_id.get(tool_call_id)
+            compacted = compact_cold_tool_arguments(tool_name, raw_arguments, metadata)
+            if compacted is not None:
+                function["arguments"] = compacted
+            rendered_calls.append(rendered_call)
+        rendered["tool_calls"] = rendered_calls
     return rendered
+
+
+def compact_cold_tool_arguments(
+    tool_name: str,
+    raw_arguments: Any,
+    metadata: ToolInvocationMetadata | None,
+) -> str | None:
+    if not isinstance(raw_arguments, str):
+        return None
+    try:
+        arguments = json.loads(raw_arguments) if raw_arguments else {}
+    except json.JSONDecodeError:
+        return None
+    if not isinstance(arguments, dict):
+        return None
+    intent = arguments.get("intent")
+    intent_is_explicit = bool(metadata and metadata.metadata.get("intent_is_explicit"))
+    if not (
+        intent_is_explicit
+        and isinstance(intent, str)
+        and intent.strip()
+        and len(intent) <= MAX_TOOL_INTENT_CHARS
+    ):
+        return None
+
+    compacted = cold_tool_arguments_object(tool_name, arguments, metadata)
+    return json.dumps(compacted, ensure_ascii=False, separators=(",", ":"))
+
+
+def cold_tool_arguments_object(
+    tool_name: str,
+    arguments: dict[str, Any],
+    metadata: ToolInvocationMetadata | None,
+) -> dict[str, Any]:
+    intent = arguments["intent"]
+    if tool_name == "WriteFile":
+        return {
+            key: cold_virtualized_value(value) if key == "content" else copy.deepcopy(value)
+            for key, value in arguments.items()
+            if key in {"file_path", "content", "intent"}
+        }
+    if tool_name == "EditFile":
+        return {
+            key: cold_virtualized_value(value) if key in {"old_string", "new_string"} else copy.deepcopy(value)
+            for key, value in arguments.items()
+            if key in {"file_path", "old_string", "new_string", "intent"}
+        }
+    if tool_name == "Bash":
+        compacted: dict[str, Any] = {"intent": intent}
+        if "command" in arguments:
+            command = arguments["command"]
+            compacted["command"] = (
+                cold_virtualized_value(command)
+                if cold_argument_length(command) > MAX_TOOL_INTENT_CHARS
+                else copy.deepcopy(command)
+            )
+        return compacted
+    if tool_name in {"call_mcp_tool", "read_mcp_resource", "get_mcp_prompt"}:
+        compacted = {"intent": intent}
+        for key in ("server", "tool", "uri", "prompt"):
+            if key in arguments:
+                compacted[key] = cold_maybe_virtualized(arguments[key])
+        if "arguments" in arguments:
+            compacted["arguments"] = cold_maybe_virtualized(arguments["arguments"])
+        return compacted
+    if is_skill_or_plan_tool(tool_name, metadata):
+        large_fields = {"instruction", "context", "objective", "steps", "note"}
+        return {
+            key: cold_maybe_virtualized(value) if key in large_fields else copy.deepcopy(value)
+            for key, value in arguments.items()
+        }
+    return {key: cold_maybe_virtualized(value) for key, value in arguments.items()}
+
+
+def is_skill_or_plan_tool(tool_name: str, metadata: ToolInvocationMetadata | None) -> bool:
+    if metadata is not None and metadata.kind == "skill":
+        return True
+    lowered = tool_name.lower()
+    return "plan" in lowered or lowered == "update_plan_step"
+
+
+def cold_maybe_virtualized(value: Any) -> Any:
+    if cold_argument_length(value) > MAX_TOOL_INTENT_CHARS:
+        return cold_virtualized_value(value)
+    return copy.deepcopy(value)
+
+
+def cold_argument_length(value: Any) -> int:
+    if isinstance(value, str):
+        return len(value)
+    return len(json.dumps(value, ensure_ascii=False, separators=(",", ":"), default=str))
+
+
+def cold_virtualized_value(value: Any) -> Any:
+    if isinstance(value, dict):
+        return {"__virtualized__": COLD_ARGUMENT_VIRTUALIZED}
+    if isinstance(value, list):
+        return [COLD_ARGUMENT_VIRTUALIZED]
+    return COLD_ARGUMENT_VIRTUALIZED
 
 
 def render_historical_tool_message(
@@ -1569,8 +1690,15 @@ def historical_tool_content(metadata: ToolInvocationMetadata | None, message: di
     if metadata is None:
         return (
             "[历史工具输出已虚拟化]\n"
-            "metadata_unavailable: true\n"
-            "recover: 使用周围用户和 Assistant 消息中的关键词调用 SearchSessionHistory。"
+            + json.dumps(
+                {
+                    "status": "unknown",
+                    "context_id": "",
+                    "recover": "使用周围消息中的关键词调用 SearchSessionHistory。",
+                },
+                ensure_ascii=False,
+                sort_keys=True,
+            )
         )
     if metadata.kind == "skill":
         payload = {
@@ -1581,10 +1709,16 @@ def historical_tool_content(metadata: ToolInvocationMetadata | None, message: di
         if metadata.reference_paths:
             payload["reference_paths"] = metadata.reference_paths[:8]
         return "[历史 Skill 输出已省略]\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
-    return (
-        "[历史工具输出已虚拟化]\n"
-        + json.dumps(tool_metadata_prompt_dict(metadata), ensure_ascii=False, sort_keys=True)
-    )
+    payload = {
+        "status": "error" if metadata.is_error else "success",
+        "context_id": metadata.context_id,
+        "recover": (
+            "在 items 中使用此准确 context_id 调用 BatchRecoverContext。"
+            if metadata.context_id
+            else "使用周围消息中的关键词调用 SearchSessionHistory。"
+        ),
+    }
+    return "[历史工具输出已虚拟化]\n" + json.dumps(payload, ensure_ascii=False, sort_keys=True)
 
 
 def tool_metadata_prompt_dict(metadata: ToolInvocationMetadata) -> dict[str, Any]:
@@ -1840,15 +1974,15 @@ def parse_arguments_object(arguments: str) -> dict[str, Any]:
 def extract_tool_intent(tool_name: str, arguments: str, metadata: dict[str, Any]) -> str:
     explicit = metadata.get("intent")
     if explicit:
-        return truncate_one_line(str(explicit), 160)
+        return truncate_one_line(str(explicit), MAX_TOOL_INTENT_CHARS)
     parsed = parse_arguments_object(arguments)
     if parsed.get("intent"):
-        return truncate_one_line(str(parsed["intent"]), 160)
+        return truncate_one_line(str(parsed["intent"]), MAX_TOOL_INTENT_CHARS)
     for key in ("instruction", "query", "command", "file_path", "path", "server", "tool", "uri", "prompt"):
         value = parsed.get(key)
         if value:
-            return truncate_one_line(f"{tool_name}: {value}", 160)
-    return truncate_one_line(f"调用 {tool_name}", 160)
+            return truncate_one_line(f"{tool_name}: {value}", MAX_TOOL_INTENT_CHARS)
+    return truncate_one_line(f"调用 {tool_name}", MAX_TOOL_INTENT_CHARS)
 
 
 def extract_keywords_from_text(text: str) -> list[str]:

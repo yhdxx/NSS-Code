@@ -9,6 +9,7 @@ from mycodingagent.mcp_integration.hooks import MCPToolApprovalHook, USER_DENIED
 from mycodingagent.mcp_integration.manager import MCPClientManager
 from mycodingagent.mcp_integration.models import MCPItemSummary
 from mycodingagent.mcp_integration.policy import MCPApprovalRequest, MCPToolPermissionPolicy
+from mycodingagent.tool_contracts import MAX_TOOL_INTENT_CHARS, apply_tool_intent_schema
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 
 
@@ -47,14 +48,8 @@ class PlaywrightDirectTool(Tool):
     def get_schema(self) -> dict[str, Any]:
         schema = dict(self._remote_schema)
         properties = dict(schema.get("properties") or {})
-        properties.setdefault(
-            "intent",
-            {
-                "type": "string",
-                "description": "本次工具调用的简短目的。",
-                "maxLength": 160,
-            },
-        )
+        apply_tool_intent_schema(schema)
+        properties = schema["properties"]
         required = [str(value) for value in list(schema.get("required") or []) if str(value) != "intent"]
         required.append("intent")
         schema["type"] = "object"
@@ -69,7 +64,7 @@ class PlaywrightDirectTool(Tool):
 
     async def execute(self, params: BaseModel) -> ToolResult:
         values = params.model_dump(exclude={"intent"})
-        intent = str(getattr(params, "intent", "") or self.description[:160])
+        intent = str(getattr(params, "intent", "") or self.description[:MAX_TOOL_INTENT_CHARS])
         config = self._manager.server_configs.get("playwright")
         if config is None:
             return ToolResult("Playwright MCP 未启用。", is_error=True)

@@ -2,7 +2,7 @@ from __future__ import annotations
 
 import json
 from dataclasses import asdict
-from typing import TYPE_CHECKING, Any
+from typing import TYPE_CHECKING, Any, Literal
 
 from pydantic import BaseModel, ConfigDict, Field
 
@@ -18,9 +18,17 @@ MAX_BATCH_RECOVER_TOTAL_CHARS = 60000
 
 
 class BatchRecoverContextItem(BaseModel):
+    model_config = ConfigDict(extra="forbid")
+
     context_id: str = Field(description="可见恢复引用或搜索结果中的准确 context_id，不得猜测")
-    offset: int = Field(default=0, ge=0, description="开始读取的字符偏移量")
-    limit: int = Field(default=12000, ge=1, le=50000, description="该 context_id 最多返回的字符数")
+    section: Literal["arguments", "output", "both"] = Field(
+        default="both",
+        description="恢复原始工具参数、原始工具输出或两者",
+    )
+    arguments_offset: int = Field(default=0, ge=0, description="原始工具参数的字符偏移量")
+    arguments_limit: int = Field(default=12000, ge=1, le=50000, description="最多返回的参数字符数")
+    output_offset: int = Field(default=0, ge=0, description="原始工具输出的字符偏移量")
+    output_limit: int = Field(default=12000, ge=1, le=50000, description="最多返回的输出字符数")
 
 
 class BatchRecoverContextParams(BaseModel):
@@ -39,7 +47,8 @@ class BatchRecoverContext(Tool):
     description = (
         "根据准确的 context_id 恢复一个或多个已存储上下文块。仅当回答依赖当前不可见的历史或虚拟化证据，"
         "并且每个 context_id 都明确来自可见元数据或搜索结果时使用。将所有已知且相关的 context_id 放入 items。"
-        "当前对话中已经显示的证据不要重复恢复。"
+        "使用 section 选择 arguments、output 或 both，并分别用 arguments_offset/arguments_limit 与 "
+        "output_offset/output_limit 分页；当前对话中已经显示的证据不要重复恢复。"
     )
     params_model = BatchRecoverContextParams
     category = "read"
@@ -65,19 +74,18 @@ class BatchRecoverContext(Tool):
                     }
                 )
                 continue
-            effective_limit = min(item.limit, remaining_chars)
             payload = recover_context_payload(
                 self._memory_runtime,
                 context_id=item.context_id,
-                offset=item.offset,
-                limit=effective_limit,
-                requested_limit=item.limit,
+                section=item.section,
+                arguments_offset=item.arguments_offset,
+                arguments_limit=item.arguments_limit,
+                output_offset=item.output_offset,
+                output_limit=item.output_limit,
+                total_limit=remaining_chars,
             )
             payload["index"] = index
-            if payload.get("status") == "ok":
-                total_returned_chars += int(payload.get("returned_chars", 0))
-                if effective_limit < item.limit and payload.get("has_more"):
-                    payload["status"] = "truncated_by_batch_limit"
+            total_returned_chars += int(payload.pop("returned_chars", 0))
             results.append(payload)
 
         errors = [
@@ -404,7 +412,7 @@ class RestoreSession(Tool):
             "snapshot": asdict(snapshot),
             "notice": (
                 "快照仅作为临时工作上下文恢复，未恢复完整的旧 session_messages。"
-                "需要特定的已存储工具输出时，使用 BatchRecoverContext(items=[{context_id, offset, limit}])。"
+                "需要特定的已存储工具调用时，使用 BatchRecoverContext 并分别指定 arguments/output 分页参数。"
             ),
         }
         return ToolResult(output=json.dumps(payload, ensure_ascii=False, indent=2))
@@ -426,9 +434,12 @@ def recover_context_payload(
     memory_runtime: MemoryRuntime,
     *,
     context_id: str,
-    offset: int,
-    limit: int,
-    requested_limit: int | None = None,
+    section: Literal["arguments", "output", "both"],
+    arguments_offset: int,
+    arguments_limit: int,
+    output_offset: int,
+    output_limit: int,
+    total_limit: int,
 ) -> dict[str, Any]:
     context_id = context_id.strip()
     if not context_id:
@@ -437,62 +448,109 @@ def recover_context_payload(
             "status": "invalid_request",
             "error": "必须提供 context_id",
         }
-    metadata = memory_runtime.get_context_metadata(context_id)
-    if metadata is not None:
-        partial = memory_runtime.load_partial_context(context_id, offset=offset, limit=limit)
-        if partial is None:
-            return {
-                "context_id": context_id,
-                "status": "not_found",
-                "error": "未找到可恢复上下文",
-            }
-        chunk, next_offset = partial
-        start = min(max(0, offset), metadata.content_length)
-        return {
-            "context_id": metadata.id,
-            "status": "ok",
-            "owner_session_id": metadata.session_id,
-            "tool_call_id": metadata.tool_call_id,
-            "tool_name": metadata.tool_name,
-            "call_summary": metadata.short_summary,
-            "content_type": metadata.content_type.value,
-            "content_length": metadata.content_length,
-            "reproducible": metadata.reproducible,
-            "offset": start,
-            "requested_limit": requested_limit if requested_limit is not None else limit,
-            "returned_chars": len(chunk),
-            "next_offset": next_offset,
-            "has_more": next_offset is not None,
-            "content": chunk,
-        }
-
     record = memory_runtime.get_tool_output(context_id)
-    if record is None:
+    metadata = memory_runtime.get_context_metadata(context_id)
+    fallback_output = memory_runtime.load_context(context_id) if record is None and metadata is not None else None
+    if record is None and fallback_output is None:
         return {
             "context_id": context_id,
             "status": "not_found",
             "error": "未找到可恢复上下文",
+            "returned_chars": 0,
         }
 
-    output = record.output_text
-    start = min(max(0, offset), len(output))
-    end = min(start + limit, len(output))
-    chunk = output[start:end]
-    has_more = end < len(output)
-    return {
-        "context_id": record.output_id,
+    owner_session_id = record.session_id if record is not None else metadata.session_id
+    tool_call_id = record.tool_call_id if record is not None else metadata.tool_call_id
+    tool_name = record.tool_name if record is not None else metadata.tool_name
+    payload: dict[str, Any] = {
+        "context_id": record.output_id if record is not None else metadata.id,
         "status": "ok",
-        "owner_session_id": record.session_id,
-        "tool_call_id": record.tool_call_id,
-        "tool_name": record.tool_name,
-        "content_length": record.output_size,
-        "reproducible": record.reproducible,
+        "owner_session_id": owner_session_id,
+        "tool_call_id": tool_call_id,
+        "tool_name": tool_name,
+    }
+    remaining = max(0, total_limit)
+    returned_chars = 0
+    truncated_by_batch_limit = False
+    available_sections = 0
+
+    if section in {"arguments", "both"}:
+        if record is None:
+            payload["arguments"] = {
+                "status": "unavailable",
+                "error": "该 context_id 没有已存储的原始工具参数",
+            }
+        else:
+            effective_limit = min(arguments_limit, remaining)
+            arguments_payload = recover_text_section(
+                record.arguments_json,
+                offset=arguments_offset,
+                limit=effective_limit,
+                requested_limit=arguments_limit,
+            )
+            payload["arguments"] = arguments_payload
+            returned = int(arguments_payload["returned_chars"])
+            returned_chars += returned
+            remaining -= returned
+            available_sections += 1
+            if effective_limit < arguments_limit and arguments_payload["has_more"]:
+                truncated_by_batch_limit = True
+
+    if section in {"output", "both"}:
+        if record is not None:
+            output_text = record.output_text
+        else:
+            output_text = fallback_output
+        if output_text is None:
+            payload["output"] = {
+                "status": "unavailable",
+                "error": "该 context_id 没有可恢复的工具输出",
+            }
+        else:
+            effective_limit = min(output_limit, remaining)
+            output_payload = recover_text_section(
+                output_text,
+                offset=output_offset,
+                limit=effective_limit,
+                requested_limit=output_limit,
+            )
+            payload["output"] = output_payload
+            returned = int(output_payload["returned_chars"])
+            returned_chars += returned
+            remaining -= returned
+            available_sections += 1
+            if effective_limit < output_limit and output_payload["has_more"]:
+                truncated_by_batch_limit = True
+
+    if not available_sections:
+        payload["status"] = "unavailable"
+        payload["error"] = "请求的恢复部分不可用"
+    elif truncated_by_batch_limit:
+        payload["status"] = "truncated_by_batch_limit"
+    payload["returned_chars"] = returned_chars
+    return payload
+
+
+def recover_text_section(
+    text: str,
+    *,
+    offset: int,
+    limit: int,
+    requested_limit: int,
+) -> dict[str, Any]:
+    start = min(max(0, offset), len(text))
+    end = min(start + max(0, limit), len(text))
+    chunk = text[start:end]
+    has_more = end < len(text)
+    return {
+        "status": "ok",
+        "original_length": len(text),
+        "chunk": chunk,
         "offset": start,
-        "requested_limit": requested_limit if requested_limit is not None else limit,
+        "requested_limit": requested_limit,
         "returned_chars": len(chunk),
         "next_offset": end if has_more else None,
         "has_more": has_more,
-        "content": chunk,
     }
 
 

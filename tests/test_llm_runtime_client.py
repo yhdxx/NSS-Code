@@ -13,6 +13,8 @@ from mycodingagent.llm_runtime import streaming
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 from mycodingagent.llm_runtime.providers.base import ChatRequest, ModelProfile
 from mycodingagent.llm_runtime.providers.openai_compatible import OpenAICompatibleProvider
+from mycodingagent.llm_runtime.providers.anthropic import AnthropicProvider
+from mycodingagent.llm_runtime.providers.gemini import GeminiProvider
 from mycodingagent.plan_runtime import PlanRuntime, PlanStepStatus, UpdatePlanStep
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
@@ -61,6 +63,54 @@ def _tool_call_chunks(tool_id: str, name: str, arguments: str) -> list[_Chunk]:
         _Chunk(_Delta(tool_calls=[_ToolCallDelta(0, tool_id=tool_id, function=_FunctionDelta(name=name))])),
         _Chunk(_Delta(tool_calls=[_ToolCallDelta(0, function=_FunctionDelta(arguments=arguments))])),
     ]
+
+
+def test_provider_payloads_accept_cold_tool_topology() -> None:
+    arguments = json.dumps(
+        {
+            "file_path": "a.py",
+            "content": "<COLD_ARGUMENT_VIRTUALIZED>",
+            "intent": "写入文件",
+        },
+        ensure_ascii=False,
+    )
+    request = ChatRequest(
+        messages=[
+            {"role": "system", "content": "system"},
+            {"role": "user", "content": "write"},
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": "call_1",
+                        "type": "function",
+                        "function": {"name": "WriteFile", "arguments": arguments},
+                    }
+                ],
+            },
+            {
+                "role": "tool",
+                "tool_call_id": "call_1",
+                "content": '[历史工具输出已虚拟化]\n{"status":"success","context_id":"ctx"}',
+            },
+        ],
+    )
+    profile = ModelProfile(key="test", provider="test", model="test-model", api="test-key")
+
+    anthropic = AnthropicProvider(profile)
+    anthropic_payload = anthropic._payload(request)
+    anthropic_input = anthropic_payload["messages"][1]["content"][0]["input"]
+    assert anthropic_input["content"] == "<COLD_ARGUMENT_VIRTUALIZED>"
+    assert anthropic_payload["messages"][2]["content"][0]["type"] == "tool_result"
+
+    gemini = GeminiProvider(profile)
+    gemini_payload = gemini._payload(request)
+    gemini_args = gemini_payload["contents"][1]["parts"][0]["functionCall"]["args"]
+    assert gemini_args["content"] == "<COLD_ARGUMENT_VIRTUALIZED>"
+    assert gemini_payload["contents"][2]["parts"][0]["functionResponse"]
+
+    asyncio.run(anthropic.close())
+    asyncio.run(gemini.close())
 
 
 class _FakeStream:

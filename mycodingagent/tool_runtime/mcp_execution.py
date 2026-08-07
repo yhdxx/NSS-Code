@@ -8,9 +8,8 @@ from pydantic import BaseModel, Field
 from mycodingagent.mcp_integration.hooks import MCPToolApprovalHook, USER_DENIED_MESSAGE
 from mycodingagent.mcp_integration.manager import MCPClientManager
 from mycodingagent.mcp_integration.policy import MCPApprovalRequest, MCPToolPermissionPolicy
+from mycodingagent.tool_contracts import MAX_TOOL_INTENT_CHARS
 from mycodingagent.tool_runtime.base import Tool, ToolResult
-
-MAX_INTENT_CHARS = 160
 
 
 class CallToolParams(BaseModel):
@@ -171,9 +170,9 @@ def register_mcp_execution_tools(
 
 def _compact_intent(value: str) -> str:
     text = " ".join(str(value or "").split())
-    if len(text) <= MAX_INTENT_CHARS:
+    if len(text) <= MAX_TOOL_INTENT_CHARS:
         return text
-    return text[:MAX_INTENT_CHARS]
+    return text[:MAX_TOOL_INTENT_CHARS]
 
 
 def _discovery_required_result(server: str, tool: str, *, metadata_changed: bool = False) -> ToolResult:

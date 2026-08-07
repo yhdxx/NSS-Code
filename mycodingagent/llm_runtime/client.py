@@ -17,6 +17,7 @@ from mycodingagent.memory.message_filters import (
     persistent_assistant_tool_message,
     remove_trailing_incomplete_tool_call,
 )
+from mycodingagent.tool_contracts import MAX_TOOL_INTENT_CHARS
 from mycodingagent.llm_runtime.context import (
     ContextBudgetState,
     PromptRenderer,
@@ -443,7 +444,7 @@ def parse_tool_arguments(raw_args: str) -> dict[str, Any]:
     return parsed if isinstance(parsed, dict) else {}
 
 
-def compact_tool_metadata_value(value: Any, limit: int = 160) -> str:
+def compact_tool_metadata_value(value: Any, limit: int = MAX_TOOL_INTENT_CHARS) -> str:
     text = " ".join(str(value).split()) if isinstance(value, str) else json.dumps(value, ensure_ascii=False, default=str)
     if len(text) <= limit:
         return text

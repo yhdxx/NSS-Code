@@ -176,8 +176,7 @@ class ResearchRuntime:
 
 
 def _schema(tool: Any) -> dict[str, Any]:
-    parameters = tool.params_model.model_json_schema()
-    parameters.pop("title", None)
+    parameters = tool.get_schema()["input_schema"]
     return {
         "type": "function",
         "function": {

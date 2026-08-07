@@ -42,6 +42,7 @@ from mycodingagent.memory.runtime import (
     ContextMode,
     estimate_raw_uncached_tokens,
     format_compression_report,
+    render_historical_topology,
     render_virtualized_messages,
 )
 from mycodingagent.memory.stores import session_preview
@@ -72,6 +73,7 @@ from mycodingagent.tool_runtime.memory_lookup import (
     SearchSessionHistoryParams,
 )
 from mycodingagent.tool_runtime.memory_lookup import GetRecentConversationTurns
+from mycodingagent.tool_contracts import COLD_ARGUMENT_VIRTUALIZED, MAX_TOOL_INTENT_CHARS
 
 
 class FileStateCacheStub:
@@ -319,6 +321,9 @@ def test_recovery_protocol_forbids_recovering_visible_context(monkeypatch):
         assert "直接依据可见内容回答" in system_prompt
         assert "不要调用 BatchRecoverContext" in system_prompt
         assert "不得编造 context_id" in system_prompt
+        assert "不超过 240 字符" in system_prompt
+        assert "并行调用共享同一份上一轮结果" in system_prompt
+        assert "最后一轮工具调用后若任务已经完成" in system_prompt
 
     asyncio.run(scenario())
 
@@ -995,7 +1000,11 @@ def test_batch_recover_context_returns_current_session_chunk(tmp_path):
     tool = BatchRecoverContext(runtime)
 
     result = asyncio.run(
-        tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id, "offset": 4, "limit": 6}]))
+        tool.execute(
+            BatchRecoverContextParams(
+                items=[{"context_id": output_id, "output_offset": 4, "output_limit": 6}]
+            )
+        )
     )
     payload = json.loads(result.output)
     recovered = payload["results"][0]
@@ -1007,8 +1016,9 @@ def test_batch_recover_context_returns_current_session_chunk(tmp_path):
     assert "arguments_json" not in recovered
     assert "storage_key" not in recovered
     assert "token_count" not in recovered
-    assert recovered["next_offset"] == 10
-    assert recovered["content"] == "456789"
+    assert recovered["arguments"]["chunk"] == '{"file_path":"a.py"}'
+    assert recovered["output"]["next_offset"] == 10
+    assert recovered["output"]["chunk"] == "456789"
 
 
 def test_batch_recover_context_returns_partial_context_metadata(tmp_path):
@@ -1024,7 +1034,18 @@ def test_batch_recover_context_returns_partial_context_metadata(tmp_path):
     tool = BatchRecoverContext(runtime)
 
     result = asyncio.run(
-        tool.execute(BatchRecoverContextParams(items=[{"context_id": output_id, "offset": 4, "limit": 6}]))
+        tool.execute(
+            BatchRecoverContextParams(
+                items=[
+                    {
+                        "context_id": output_id,
+                        "section": "output",
+                        "output_offset": 4,
+                        "output_limit": 6,
+                    }
+                ]
+            )
+        )
     )
     payload = json.loads(result.output)
     recovered = payload["results"][0]
@@ -1032,12 +1053,12 @@ def test_batch_recover_context_returns_partial_context_metadata(tmp_path):
     assert not result.is_error
     assert recovered["context_id"] == output_id
     assert recovered["tool_name"] == "ReadFile"
-    assert recovered["call_summary"] == "ReadFile output for billing.py; 16 chars"
-    assert "short_summary" not in recovered
+    assert "call_summary" not in recovered
     assert "storage_key" not in recovered
     assert "token_count" not in recovered
-    assert recovered["next_offset"] == 10
-    assert recovered["content"] == "456789"
+    assert "arguments" not in recovered
+    assert recovered["output"]["next_offset"] == 10
+    assert recovered["output"]["chunk"] == "456789"
 
 
 def test_batch_recover_context_returns_multiple_results_and_item_errors(tmp_path):
@@ -1063,9 +1084,9 @@ def test_batch_recover_context_returns_multiple_results_and_item_errors(tmp_path
         tool.execute(
             BatchRecoverContextParams(
                 items=[
-                    {"context_id": first_id, "offset": 0, "limit": 5},
+                    {"context_id": first_id, "section": "output", "output_limit": 5},
                     {"context_id": "missing-context"},
-                    {"context_id": second_id},
+                    {"context_id": second_id, "section": "output"},
                 ]
             )
         )
@@ -1078,13 +1099,13 @@ def test_batch_recover_context_returns_multiple_results_and_item_errors(tmp_path
     assert "tool" not in payload
     assert payload["results"][0]["index"] == 0
     assert payload["results"][0]["status"] == "ok"
-    assert payload["results"][0]["content"] == "alpha"
+    assert payload["results"][0]["output"]["chunk"] == "alpha"
     assert "output_id" not in payload["results"][0]
     assert payload["results"][1]["index"] == 1
     assert payload["results"][1]["status"] == "not_found"
     assert payload["results"][2]["index"] == 2
     assert payload["results"][2]["tool_name"] == "Bash"
-    assert payload["results"][2]["content"] == "beta-output"
+    assert payload["results"][2]["output"]["chunk"] == "beta-output"
     assert payload["errors"] == [
         {
             "index": 1,
@@ -1093,6 +1114,67 @@ def test_batch_recover_context_returns_multiple_results_and_item_errors(tmp_path
             "error": "未找到可恢复上下文",
         }
     ]
+
+
+def test_batch_recover_context_caps_arguments_then_output_at_batch_limit(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    arguments = "a" * 40000
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="call_1",
+        tool_name="CustomTool",
+        arguments=arguments,
+        output="o" * 40000,
+    )
+
+    result = asyncio.run(
+        BatchRecoverContext(runtime).execute(
+            BatchRecoverContextParams(
+                items=[
+                    {
+                        "context_id": output_id,
+                        "arguments_limit": 50000,
+                        "output_limit": 50000,
+                    }
+                ]
+            )
+        )
+    )
+    payload = json.loads(result.output)
+    recovered = payload["results"][0]
+
+    assert payload["total_returned_chars"] == 60000
+    assert recovered["status"] == "truncated_by_batch_limit"
+    assert recovered["arguments"]["returned_chars"] == 40000
+    assert recovered["output"]["returned_chars"] == 20000
+    assert recovered["output"]["has_more"] is True
+
+
+def test_batch_recover_context_output_only_fallback_reports_arguments_unavailable(tmp_path):
+    runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
+    session_id = runtime.start_session("test")
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="call_1",
+        tool_name="ReadFile",
+        arguments='{"file_path":"a.py"}',
+        output="fallback output",
+    )
+    asyncio.run(runtime.drain())
+    with runtime.store._connect() as conn:
+        conn.execute("DELETE FROM session_tool_outputs WHERE output_id = ?", (output_id,))
+
+    result = asyncio.run(
+        BatchRecoverContext(runtime).execute(
+            BatchRecoverContextParams(items=[{"context_id": output_id}])
+        )
+    )
+    recovered = json.loads(result.output)["results"][0]
+
+    assert recovered["status"] == "ok"
+    assert recovered["arguments"]["status"] == "unavailable"
+    assert recovered["output"]["chunk"] == "fallback output"
 
 
 def test_search_recoverable_context_finds_metadata(tmp_path):
@@ -1134,7 +1216,7 @@ def test_batch_recover_context_recovers_other_session_with_owner_metadata(tmp_pa
 
     assert not result.is_error
     assert recovered["owner_session_id"] == first_session_id
-    assert recovered["content"] == "secret"
+    assert recovered["output"]["chunk"] == "secret"
 
 
 def test_search_session_history_finds_virtualized_turns(tmp_path):
@@ -1172,6 +1254,7 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
     names = {schema["name"] for schema in schemas}
     output_schema = next(schema for schema in schemas if schema["name"] == "BatchRecoverContext")
     commit_schema = next(schema for schema in schemas if schema["name"] == "CommitWorkingContext")
+    write_schema = next(schema for schema in schemas if schema["name"] == "WriteFile")
 
     assert {
         "CommitWorkingContext",
@@ -1188,6 +1271,14 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
     assert "context_id" not in output_schema["parameters"]["properties"]
     assert "output_id" not in output_schema["parameters"]["properties"]
     assert "reason" in commit_schema["parameters"]["required"]
+    assert "intent" in write_schema["parameters"]["required"]
+    assert write_schema["parameters"]["properties"]["intent"]["maxLength"] == MAX_TOOL_INTENT_CHARS
+    assert write_schema["parameters"]["properties"]["intent"]["minLength"] == 1
+    item_schema = output_schema["parameters"]["$defs"]["BatchRecoverContextItem"]
+    assert "offset" not in item_schema["properties"]
+    assert {"arguments_offset", "arguments_limit", "output_offset", "output_limit"} <= set(
+        item_schema["properties"]
+    )
     assert "summary" not in commit_schema["parameters"]["required"]
     assert "summary" not in commit_schema["parameters"]["properties"]
     assert "commit_note" in commit_schema["parameters"]["properties"]
@@ -1433,7 +1524,8 @@ def test_historical_render_preserves_tool_topology_with_virtualized_outputs(tmp_
     assert "Skill 输出不能通过 BatchRecoverContext 恢复" in rendered[3]["content"]
     assert "历史工具输出已虚拟化" in rendered[4]["content"]
     assert output_id in rendered[4]["content"]
-    assert '"call_summary": "ReadFile: app.py"' in rendered[4]["content"]
+    assert '"status": "success"' in rendered[4]["content"]
+    assert '"tool_name"' not in rendered[4]["content"]
     assert '"output_id"' not in rendered[4]["content"]
     assert '"token_count"' not in rendered[4]["content"]
     assert '"storage_key"' not in rendered[4]["content"]
@@ -1612,7 +1704,8 @@ def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
 
     tool_content = rendered[3]["content"]
     assert "历史工具输出已虚拟化" in tool_content
-    assert '"intent": "读取入口文件"' in tool_content
+    rendered_arguments = json.loads(rendered[2]["tool_calls"][0]["function"]["arguments"])
+    assert rendered_arguments["intent"] == "读取入口文件"
     assert "在 items 中使用此准确 context_id 调用 BatchRecoverContext" in tool_content
     assert "GetStoredToolOutput" not in tool_content
     assert '"output_id"' not in tool_content
@@ -2018,7 +2111,7 @@ def test_recover_context_works_after_session_rollover(tmp_path):
 
     assert not result.is_error
     assert recovered["owner_session_id"] == session_id
-    assert recovered["content"] == "historical content"
+    assert recovered["output"]["chunk"] == "historical content"
 
 
 def test_restore_session_returns_snapshot_not_messages(tmp_path):
@@ -2186,7 +2279,7 @@ def test_recover_context_survives_multiple_rollovers(tmp_path):
     recovered = payload["results"][0]
 
     assert not result.is_error
-    assert recovered["content"] == "first session retained output"
+    assert recovered["output"]["chunk"] == "first session retained output"
 
 
 def test_batch_recover_context_reports_missing_after_owner_session_delete(tmp_path):
@@ -2211,6 +2304,190 @@ def test_batch_recover_context_reports_missing_after_owner_session_delete(tmp_pa
     assert not result.is_error
     assert recovered["status"] == "not_found"
     assert recovered["error"] == "未找到可恢复上下文"
+
+
+def test_cold_tool_arguments_are_compacted_by_tool_semantics_without_mutating_messages():
+    long_text = "x" * (MAX_TOOL_INTENT_CHARS + 1)
+    calls = [
+        ("write", "WriteFile", {"file_path": "a.py", "content": "short", "intent": "写入入口文件"}),
+        (
+            "edit",
+            "EditFile",
+            {"file_path": "a.py", "old_string": "old", "new_string": "new", "intent": "更新入口"},
+        ),
+        ("bash_short", "Bash", {"command": "x" * MAX_TOOL_INTENT_CHARS, "timeout": 30, "intent": "运行短命令"}),
+        ("bash_long", "Bash", {"command": long_text, "timeout": 30, "intent": "运行长命令"}),
+        ("read", "ReadFile", {"file_path": long_text, "offset": 2, "limit": 5, "intent": "读取目标范围"}),
+        (
+            "mcp",
+            "call_mcp_tool",
+            {"server": "docs", "tool": "lookup", "arguments": {"query": long_text}, "intent": "查询文档"},
+        ),
+        (
+            "plan",
+            "create_plan",
+            {"objective": long_text, "steps": [{"text": long_text}], "intent": "创建实施计划"},
+        ),
+        ("skill", "skill_review", {"instruction": long_text, "context": "small", "intent": "执行审查流程"}),
+        (
+            "unknown",
+            "CustomTool",
+            {"payload": {"body": long_text}, "short": "ok", "intent": "处理自定义数据"},
+        ),
+    ]
+    messages: list[dict] = [{"role": "user", "content": "run tools"}]
+    messages.append(
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": call_id,
+                    "type": "function",
+                    "function": {
+                        "name": tool_name,
+                        "arguments": json.dumps(arguments, ensure_ascii=False),
+                    },
+                }
+                for call_id, tool_name, arguments in calls
+            ],
+        }
+    )
+    messages.extend(
+        {
+            "role": "tool",
+            "tool_call_id": call_id,
+            "content": "ok",
+            "metadata": {"tool_name": tool_name},
+        }
+        for call_id, tool_name, _ in calls
+    )
+    messages.append({"role": "assistant", "content": "done"})
+    original = copy.deepcopy(messages)
+
+    rendered = render_historical_topology("session", messages, [])
+    rendered_calls = {
+        call["id"]: json.loads(call["function"]["arguments"])
+        for call in rendered[1]["tool_calls"]
+    }
+
+    assert messages == original
+    assert rendered_calls["write"]["content"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["edit"]["old_string"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["edit"]["new_string"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["bash_short"]["command"] == "x" * MAX_TOOL_INTENT_CHARS
+    assert "timeout" not in rendered_calls["bash_short"]
+    assert rendered_calls["bash_long"]["command"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["read"]["file_path"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["read"]["offset"] == 2
+    assert rendered_calls["mcp"]["server"] == "docs"
+    assert rendered_calls["mcp"]["arguments"] == {"__virtualized__": COLD_ARGUMENT_VIRTUALIZED}
+    assert rendered_calls["plan"]["objective"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["plan"]["steps"] == [COLD_ARGUMENT_VIRTUALIZED]
+    assert rendered_calls["skill"]["instruction"] == COLD_ARGUMENT_VIRTUALIZED
+    assert rendered_calls["skill"]["context"] == "small"
+    assert rendered_calls["unknown"]["payload"] == {"__virtualized__": COLD_ARGUMENT_VIRTUALIZED}
+    assert rendered_calls["unknown"]["short"] == "ok"
+    assert [call["id"] for call in rendered[1]["tool_calls"]] == [call[0] for call in calls]
+
+
+def test_cold_tool_arguments_without_explicit_intent_preserve_full_arguments():
+    arguments = {"command": "x" * 1000}
+    messages = [
+        {"role": "user", "content": "run"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "call",
+                    "type": "function",
+                    "function": {"name": "Bash", "arguments": json.dumps(arguments)},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "call", "content": "ok"},
+    ]
+
+    rendered = render_historical_topology("session", messages, [])
+
+    assert json.loads(rendered[1]["tool_calls"][0]["function"]["arguments"]) == arguments
+
+
+def test_raw_and_virtualized_hot_arguments_stay_full_until_epoch_commit(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        compressor=ContextCompressor(context_window=100_000),
+    )
+    session_id = runtime.start_session("test")
+    full_content = "payload" * 200
+    arguments = json.dumps(
+        {"file_path": "generated.py", "content": full_content, "intent": "写入生成文件"},
+        ensure_ascii=False,
+    )
+    output_id = runtime.save_tool_output(
+        session_id=session_id,
+        tool_call_id="write_call",
+        tool_name="WriteFile",
+        arguments=arguments,
+        output="written",
+    )
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "write file"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "write_call",
+                    "type": "function",
+                    "function": {"name": "WriteFile", "arguments": arguments},
+                }
+            ],
+        },
+        {
+            "role": "tool",
+            "tool_call_id": "write_call",
+            "content": "written",
+            "metadata": {"output_id": output_id, "tool_name": "WriteFile", "intent": "写入生成文件"},
+        },
+        {"role": "assistant", "content": "done"},
+    ]
+
+    raw = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="write file",
+        current_turn_start=1,
+    )
+    assert raw[2]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert raw[3]["content"] == "written"
+
+    runtime.force_context_virtualized(session_id)
+    hot = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="write file",
+        current_turn_start=1,
+    )
+    assert hot[2]["tool_calls"][0]["function"]["arguments"] == arguments
+    assert hot[3]["content"] == "written"
+
+    runtime.request_context_epoch_commit(reason="task complete", summary="file written")
+    runtime.finalize_pending_context_epoch(session_id=session_id, messages=messages)
+    messages.append({"role": "user", "content": "next"})
+    cold = runtime.prepare_messages_for_model(
+        session_id=session_id,
+        messages=messages,
+        tools=[],
+        current_prompt="next",
+        current_turn_start=len(messages) - 1,
+    )
+    cold_arguments = json.loads(cold[2]["tool_calls"][0]["function"]["arguments"])
+    assert cold_arguments["content"] == COLD_ARGUMENT_VIRTUALIZED
+    assert "历史工具输出已虚拟化" in cold[3]["content"]
+    assert json.loads(arguments)["content"] == full_content
+    assert runtime.get_tool_output(output_id).arguments_json == arguments
 
 
 def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(tmp_path):
