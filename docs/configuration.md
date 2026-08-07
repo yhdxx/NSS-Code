@@ -215,7 +215,7 @@ myAgent
 | `docker.pids_limit` | `MYCODINGAGENT_DOCKER_PIDS_LIMIT` | `"256"` | 进程数限制 |
 | `docker.default_timeout` | `MYCODINGAGENT_DOCKER_DEFAULT_TIMEOUT` | `120` | 默认命令超时（秒） |
 | `docker.max_timeout` | `MYCODINGAGENT_DOCKER_MAX_TIMEOUT` | `600` | 最大命令超时（秒） |
-| `docker.pull_timeout` | `MYCODINGAGENT_DOCKER_PULL_TIMEOUT` | `300` | Docker pull 超时（秒） |
+| `docker.pull_timeout` | `MYCODINGAGENT_DOCKER_PULL_TIMEOUT` | `1800` | Docker pull/构建超时（秒） |
 
 ### 4.9 `network` — Runtime 托管网络
 
@@ -319,8 +319,10 @@ system prompt，不参与检索或 LRFU；`Dynamic/` 中的 Skill 参与检索�
 | `embedding.endpoint` | `MYCODINGAGENT_EMBEDDING_ENDPOINT` | `"http://127.0.0.1:11434/api/embed"` | 嵌入服务端点 |
 | `embedding.api_format` | `MYCODINGAGENT_EMBEDDING_API_FORMAT` | `"ollama"` | HTTP API 格式（`ollama` / `openai` / `dashscope`） |
 | **`embedding.api_key`** | **`MYCODINGAGENT_EMBEDDING_API_KEY`** | `""` | **嵌入服务 API 密钥（隐私字段）** |
+| `embedding.timeout` | `MYCODINGAGENT_EMBEDDING_TIMEOUT` | `300.0` | 单批嵌入服务请求超时（秒） |
 | `embedding.dimension` | `MYCODINGAGENT_EMBEDDING_DIMENSION` | `1024` | 向量维度 |
 | `embedding.batch_size` | `MYCODINGAGENT_EMBEDDING_BATCH_SIZE` | `16` | 嵌入批大小 |
+| `embedding.download_timeout` | `MYCODINGAGENT_EMBEDDING_DOWNLOAD_TIMEOUT` | `900.0` | 本地 BGE 模型下载超时（秒） |
 | `embedding.fallback_to_hash` | `MYCODINGAGENT_EMBEDDING_FALLBACK_TO_HASH` | `false` | 本地嵌入不可用时回退到哈希 |
 
 ### 4.14 `milvus` — Milvus 向量库

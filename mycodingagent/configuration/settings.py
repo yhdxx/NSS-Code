@@ -881,7 +881,7 @@ class DockerConfig:
         default_factory=lambda: _user_int("docker.check_timeout", ("MYCODINGAGENT_DOCKER_CHECK_TIMEOUT",), 30)
     )
     pull_timeout: int = field(
-        default_factory=lambda: _user_int("docker.pull_timeout", ("MYCODINGAGENT_DOCKER_PULL_TIMEOUT",), 300)
+        default_factory=lambda: _user_int("docker.pull_timeout", ("MYCODINGAGENT_DOCKER_PULL_TIMEOUT",), 1800)
     )
 
 
@@ -1040,7 +1040,17 @@ class EmbeddingConfig:
             _user_float(
                 "embedding.timeout",
                 ("MYCODINGAGENT_EMBEDDING_TIMEOUT",),
-                30.0,
+                300.0,
+            ),
+        )
+    )
+    download_timeout: float = field(
+        default_factory=lambda: max(
+            1.0,
+            _user_float(
+                "embedding.download_timeout",
+                ("MYCODINGAGENT_EMBEDDING_DOWNLOAD_TIMEOUT",),
+                900.0,
             ),
         )
     )

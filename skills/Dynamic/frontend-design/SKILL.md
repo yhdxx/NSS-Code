@@ -1,8 +1,11 @@
 ---
 name: frontend-design
-description: 前端页面与 UI/UX 设计实现工具，用于创建有辨识度、生产级、高质量的前端界面。适用于用户要求设计或实现网页、Web App、前端页面、组件、仪表盘、落地页、交互界面、视觉优化或 UI 改版的场景，输出精致、有创意、避免通用 AI 味的代码。
+description: 用于“前端设计与实现”的工程工作流。适用于前端与 Web 开发相关的代码开发、测试、调试、集成与维护任务。
 license: Complete terms in LICENSE.txt
 ---
+## 中文摘要
+用于“前端设计与实现”的工程工作流。适用于前端与 Web 开发相关的代码开发、测试、调试、集成与维护任务。
+
 
 This skill guides creation of distinctive, production-grade frontend interfaces that avoid generic "AI slop" aesthetics. Implement real working code with exceptional attention to aesthetic details and creative choices.
 

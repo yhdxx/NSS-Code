@@ -8,6 +8,7 @@ ROOT_DIR="$(cd "$(dirname "${BASH_SOURCE[0]}")/.." && pwd)"
 VENV_DIR="${MYCODINGAGENT_VENV:-$ROOT_DIR/.venv}"
 PYTHON_BIN="${MYCODINGAGENT_PYTHON:-python3}"
 USER_BIN_DIR="${MYCODINGAGENT_BIN_DIR:-${XDG_BIN_HOME:-$HOME/.local/bin}}"
+DOCKER_CONFIG_DIR="${MYCODINGAGENT_DOCKER_CONFIG:-$ROOT_DIR/.docker-cli}"
 SKIP_DOCKER=0
 SKIP_LSP=0
 UPGRADE_MODE=0
@@ -15,6 +16,10 @@ LAUNCHER_ONLY=0
 WITH_WEB_TOOLS=0
 SANDBOX_IMAGE="mycodingagent-sandbox:py312"
 SANDBOX_HASH_LABEL="org.mycodingagent.sandbox-input-sha"
+# 首次安装可能同时下载 Python/Node 依赖和 Docker 基础镜像，避免网络抖动触发过短的客户端超时。
+export PIP_DEFAULT_TIMEOUT="${MYCODINGAGENT_PIP_TIMEOUT:-600}"
+export DOCKER_CLIENT_TIMEOUT="${MYCODINGAGENT_DOCKER_CLIENT_TIMEOUT:-1800}"
+export COMPOSE_HTTP_TIMEOUT="${MYCODINGAGENT_COMPOSE_HTTP_TIMEOUT:-1800}"
 
 usage() {
     cat <<'EOF'
@@ -32,6 +37,9 @@ usage() {
   MYCODINGAGENT_PYTHON    Python 解释器，默认 python3
   MYCODINGAGENT_VENV      虚拟环境目录，默认 .venv
   MYCODINGAGENT_BIN_DIR   myAgent 命令安装目录，默认 ~/.local/bin
+  MYCODINGAGENT_DOCKER_CONFIG Docker CLI 可写配置目录，默认项目内 .docker-cli
+  MYCODINGAGENT_PIP_TIMEOUT Pip 下载超时（秒），默认 600
+  MYCODINGAGENT_DOCKER_CLIENT_TIMEOUT Docker 客户端网络超时（秒），默认 1800
 EOF
 }
 
@@ -118,6 +126,8 @@ while (($#)); do
 done
 
 cd "$ROOT_DIR"
+mkdir -p "$DOCKER_CONFIG_DIR"
+export DOCKER_CONFIG="$DOCKER_CONFIG_DIR"
 
 if ((LAUNCHER_ONLY == 1)); then
     install_launcher
@@ -202,8 +212,7 @@ if ((SKIP_DOCKER == 0)); then
         log "Bash Docker 沙箱镜像已存在，跳过构建"
     else
         log "构建 Bash Docker 沙箱镜像"
-        DOCKER_CONFIG="${DOCKER_CONFIG:-$ROOT_DIR/.docker-cli}" \
-            docker build --network=host -f Dockerfile.sandbox \
+        docker build --network=host -f Dockerfile.sandbox \
                 --label "$SANDBOX_HASH_LABEL=$expected_hash" -t "$SANDBOX_IMAGE" .
     fi
     if ((WITH_WEB_TOOLS == 1)); then

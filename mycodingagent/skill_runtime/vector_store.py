@@ -386,16 +386,26 @@ class MilvusVectorStore(SkillVectorStore):
             missed_hashes.append(text_hash)
 
         if missed_records:
-            missed_vectors = self.embedding_service.embed_documents(missed_texts)
-            for record, text_hash, vector in zip(missed_records, missed_hashes, missed_vectors):
-                vectors_by_tool_name[record.tool_name] = vector
-                self.embedding_cache.put(
-                    tool_name=record.tool_name,
-                    text_hash=text_hash,
-                    embedding_signature=self.embedding_signature,
-                    vector=vector,
-                    updated_at=record.updated_at,
-                )
+            batch_size = max(1, CONFIG.embedding.batch_size)
+            for start in range(0, len(missed_records), batch_size):
+                record_batch = missed_records[start:start + batch_size]
+                text_batch = missed_texts[start:start + batch_size]
+                hash_batch = missed_hashes[start:start + batch_size]
+                vectors = self.embedding_service.embed_documents(text_batch)
+                if len(vectors) != len(record_batch):
+                    raise RuntimeError(
+                        "Embedding service returned an unexpected batch size: "
+                        f"expected {len(record_batch)}, got {len(vectors)}"
+                    )
+                for record, text_hash, vector in zip(record_batch, hash_batch, vectors):
+                    vectors_by_tool_name[record.tool_name] = vector
+                    self.embedding_cache.put(
+                        tool_name=record.tool_name,
+                        text_hash=text_hash,
+                        embedding_signature=self.embedding_signature,
+                        vector=vector,
+                        updated_at=record.updated_at,
+                    )
 
         return [vectors_by_tool_name[record.tool_name] for record in records]
 

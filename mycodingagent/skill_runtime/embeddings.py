@@ -3,6 +3,7 @@ from __future__ import annotations
 import hashlib
 import json
 import math
+import os
 import re
 import sqlite3
 import threading
@@ -97,7 +98,10 @@ class LocalEmbeddingService:
         model = self._load_model()
         if model is None:
             return self._fallback.embed_many(texts)
-        return self._encode_with_model(model, texts)
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), self.batch_size):
+            vectors.extend(self._encode_with_model(model, texts[start:start + self.batch_size]))
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
         model = self._load_model()
@@ -129,6 +133,9 @@ class LocalEmbeddingService:
             if self._load_error is not None and self.fallback_to_hash:
                 return None
             try:
+                download_timeout = str(max(1, int(CONFIG.embedding.download_timeout)))
+                os.environ.setdefault("HF_HUB_DOWNLOAD_TIMEOUT", download_timeout)
+                os.environ.setdefault("HF_HUB_ETAG_TIMEOUT", str(min(int(CONFIG.embedding.download_timeout), 120)))
                 from sentence_transformers import SentenceTransformer
 
                 kwargs = {"device": self.device} if self.device else {}
@@ -183,7 +190,13 @@ class HttpEmbeddingService:
         return self.embed_many([text])[0]
 
     def embed_many(self, texts: list[str]) -> list[list[float]]:
-        return self._request_embeddings(texts)
+        if not texts:
+            return []
+        batch_size = max(1, CONFIG.embedding.batch_size)
+        vectors: list[list[float]] = []
+        for start in range(0, len(texts), batch_size):
+            vectors.extend(self._request_embeddings(texts[start:start + batch_size]))
+        return vectors
 
     def embed_query(self, text: str) -> list[float]:
         query_text = f"{self.query_instruction}{text}" if self.query_instruction else text

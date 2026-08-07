@@ -1,8 +1,11 @@
 ---
 name: chrome-automation
-description: Chrome 浏览器自动化控制工具，使用 agent-browser 和 CDP（Chrome DevTools Protocol）连接并控制用户现有的 Google Chrome。适用于用户需要自动化当前浏览器、实时查看浏览器操作、连接远程调试端口、执行网页点击/输入/抓取/测试等浏览器自动化任务的场景。
+description: 用于“Chrome 浏览器自动化”的工程工作流。适用于通用代码开发相关的代码开发、测试、调试、集成与维护任务。
 allowed-tools: Bash(*)
 ---
+## 中文摘要
+用于“Chrome 浏览器自动化”的工程工作流。适用于通用代码开发相关的代码开发、测试、调试、集成与维护任务。
+
 
 # Chrome Browser Automation with Real-time Control
 

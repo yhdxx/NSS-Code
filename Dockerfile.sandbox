@@ -22,37 +22,55 @@ RUN set -eux; \
 ###########################################
 
 RUN apt-get update \
-    -o Acquire::Retries=3 \
-    -o Acquire::http::Timeout=30 \
-    -o Acquire::https::Timeout=30 \
+    -o Acquire::Retries=5 \
+    -o Acquire::http::Timeout=300 \
+    -o Acquire::https::Timeout=300 \
     && apt-get install -y --no-install-recommends \
     bash \
     bzip2 \
     coreutils \
     ca-certificates \
-#    curl \
+    curl \
     dash \
     debianutils \
     file \
     findutils \
     gawk \
     git \
+    gh \
     grep \
     gzip \
+    jq \
     less \
+    lsof \
+    netcat-openbsd \
     openssh-client \
     procps \
     psmisc \
     ripgrep \
+    rsync \
     sed \
     tar \
     time \
     tree \
     unzip \
-#    wget \
+    wget \
     xz-utils \
     zip \
     poppler-utils \
+    sqlite3 \
+    shellcheck \
+    shfmt \
+    pre-commit \
+    git-lfs \
+    universal-ctags \
+    gdb \
+    ninja-build \
+    ccache \
+    postgresql-client \
+    redis-tools \
+    socat \
+    dnsutils \
     \
    ############################################以下是增加部分，不需要可以删除
     gcc \
