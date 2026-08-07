@@ -1,0 +1,4 @@
+interface:
+  display_name: "code-implementation"
+  short_description: "按项目事实和已批准计划实施代码。适用于新增功能、修复缺陷、重构和配置变更；包含最小修改、测试和完成前验证。"
+  default_prompt: "按项目事实和已批准计划实施代码。适用于新增功能、修复缺陷、重构和配置变更；包含最小修改、测试和完成前验证。"

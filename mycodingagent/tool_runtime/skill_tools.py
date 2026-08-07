@@ -5,9 +5,12 @@ import json
 from pydantic import BaseModel, Field
 
 from mycodingagent.skill_runtime.contracts import SkillService
+from mycodingagent.skill_runtime.contracts import (
+    DEFAULT_DYNAMIC_SKILL_LIST_LIMIT,
+    MAX_DYNAMIC_SKILL_LIST_LIMIT,
+)
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_contracts import apply_tool_intent_schema
-
 
 class SearchSkillParams(BaseModel):
     query: str = Field(
@@ -46,13 +49,19 @@ class SearchSkillTool(Tool):
 
 
 class ListDynamicSkillsParams(BaseModel):
-    pass
+    offset: int = Field(default=0, ge=0, description="结果偏移量，从 0 开始")
+    limit: int = Field(
+        default=DEFAULT_DYNAMIC_SKILL_LIST_LIMIT,
+        ge=1,
+        le=MAX_DYNAMIC_SKILL_LIST_LIMIT,
+        description="最多返回的 Dynamic Skill 数量",
+    )
 
 
 class ListDynamicSkillsTool(Tool):
     name = "list_dynamic_skills"
     description = (
-        "列出当前注册的全部 Dynamic Skill 及其名称和简短描述，不包含已在 system prompt 展示的 fixed Skill。"
+        "分页列出当前注册的 Dynamic Skill 名称和简短描述，不包含已在 system prompt 展示的 fixed Skill。"
         "用户询问有哪些动态 Skill、要求查看完整 Dynamic Skill 目录，或询问 Agent 的动态 Skill 能力时使用。"
         "解决任务时，仅当 Dynamic Skill 能力摘要明确包含所需能力，"
         "并且最多三次逐步放宽的中文 search_skill 查询均失败时使用。摘要未明确覆盖所需能力时不要调用。"
@@ -67,7 +76,7 @@ class ListDynamicSkillsTool(Tool):
         self._runtime = runtime
 
     async def execute(self, params: ListDynamicSkillsParams) -> ToolResult:
-        result = await self._runtime.list_dynamic_skills()
+        result = await self._runtime.list_dynamic_skills(offset=params.offset, limit=params.limit)
         return ToolResult(output=json.dumps(result, ensure_ascii=False, indent=2))
 
 

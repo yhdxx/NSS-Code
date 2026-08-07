@@ -16,7 +16,11 @@ from mycodingagent.skill_runtime.models import SearchResult, SkillRecord, SkillR
 from mycodingagent.skill_runtime.reviewers import review_skill_code, review_skill_prompt
 from mycodingagent.skill_runtime.router import SkillRouter, SkillRouterConfig
 from mycodingagent.skill_runtime.session_skill_cache import SessionSkillCache
-from mycodingagent.skill_runtime.contracts import ToolRegistrar
+from mycodingagent.skill_runtime.contracts import (
+    DEFAULT_DYNAMIC_SKILL_LIST_LIMIT,
+    MAX_DYNAMIC_SKILL_LIST_LIMIT,
+    ToolRegistrar,
+)
 from mycodingagent.tool_runtime.skill_tools import (
     ListDynamicSkillsTool,
     GetSkillReferenceTool,
@@ -41,38 +45,17 @@ SEARCH_HINT = (
     "search_skill 或 list_dynamic_skills 返回准确 skill_name 后，需要应用该 SKILL 时直接调用 invoke_skill。"
 )
 
-SKILL_TIER_POLICY = (
-    "Skill 分层规则：Skill 分为 fixed 和 Dynamic 两类。fixed 是少量稳定、每轮都可能需要的基础工作流；"
-    "启动时只把它们的 skill_name、name、description 卡片放入 system prompt，任务匹配时可直接按名调用 invoke_skill，"
-    "完整正文不会预先占用上下文。Dynamic 是可持续增长的专家工作流目录，不把全部 Skill 放进提示词，先用能力摘要判断"
-    "是否可能相关，再按需调用 search_skill；命中后同样只通过 invoke_skill 加载完整正文。这样既保持固定前缀稳定、"
-    "有利于模型缓存，又避免大量暂时无关的 Skill 消耗上下文。fixed 和 Dynamic 都不是自动执行，必须由任务相关性决定是否调用。"
-)
-
 CAPABILITY_SELECTION_POLICY = (
     "能力选择策略：\n"
-    "你每轮收到用户请求后，必须先区分三类能力：Model 自身能力、Business Skill、Core Tool。\n"
-    "Business Skill 是开发者定义的专家工作流，用于提供领域知识、标准流程、约束和最佳实践；"
-    "Core Tool 只负责读写文件、搜索、执行命令等基础操作；Model 自身能力只用于常识问答、推理、总结、翻译和简单文本生成。\n"
-    "决策顺序：\n"
-    "1. 只有同时满足以下条件，才允许直接依赖 Model 自身能力回答：不需要任何 Tool；不需要任何 Business Skill；"
-    "不需要访问本地代码、文件或命令；当前 Prompt 中不存在明显匹配的 Business Skill。\n"
-    "2. 如果 Runtime Context recommendations、search_skill、list_dynamic_skills 或 fixed Skill 卡片已经识别出高度匹配的 Business Skill，"
-    "必须优先调用固定工具 invoke_skill，并传入对应 skill_name；"
-    "不得因为你自己知道如何完成，就跳过该 Skill；Business Skill 优先级高于 Model 自身能力和 Core Tool。\n"
-    "3. 如果 fixed Skill 卡片中没有匹配项，但 Dynamic Skill 能力摘要表明任务可能存在相关 Skill，必须先调用 search_skill 检索；"
-    "若摘要明确完全不覆盖用户需求，可以跳过 Skill 检索；若摘要因首次生成或模型错误而暂不可用，"
-    "则在任务可能需要专家工作流时保守地调用 search_skill。"
+    "1. 每轮先独立检查全部 fixed Skill 卡片，不受 Runtime Context recommendations 是否命中影响。匹配时必须先调用 invoke_skill；"
+    "不得因为自己知道如何完成或 Core Tool 已可用而跳过。\n"
+    "2. fixed 没有匹配项时，再根据 Dynamic 能力摘要判断是否需要 search_skill。普通仓库任务无需形式化搜索 Dynamic Skill。"
+    "若摘要明确完全不覆盖用户需求，可以跳过检索；若摘要暂不可用且任务可能需要专家工作流，则保守检索。"
     "调用 search_skill 时，query 必须使用中文表达；如果用户原始需求是英文或中英混合，先在 query 中翻译/概括为中文能力描述再检索。"
     "连续多次检索时，必须逐步放宽范围：第一次使用具体任务，第二次使用同义词和能力类别，第三次使用上位领域；不要越搜越窄。"
     "只有当 Dynamic Skill 能力摘要明确描述了需要的能力，且三次 search_skill 均未命中时，才允许调用 list_dynamic_skills；否则禁止调用 list_dynamic_skills。\n"
-    "4. 只有不存在相关 Business Skill、Business Skill 明显无法完成任务，或 Skill 指令明确要求执行操作时，才直接调用 Core Tool。\n"
-    "禁止行为：Business Skill 已存在时，禁止直接依赖 HTML/CSS/Python/Java 等自身知识完成整个任务；"
-    "禁止直接调用 ReadFile、WriteFile、EditFile、Glob、Grep、Bash 等 Core Tool 替代 Business Skill 的专家工作流。\n"
-    "典型规则：设计/实现/优化前端页面、组件、Web App、UI/UX 时，如果 skill_frontend_design 可用，必须先调用 "
-    "invoke_skill(skill_name=\"skill_frontend_design\")；代码 Review 时如果 skill_review 可用，必须先调用 "
-    "invoke_skill(skill_name=\"skill_review\")；后端面试时如果 skill_backend_interview 可用，必须先调用 "
-    "invoke_skill(skill_name=\"skill_backend_interview\")。"
+    "3. recommendations 只是候选提示，不是完整清单；必须结合 fixed 卡片和 Dynamic 摘要自行判断。\n"
+    "4. 只有不存在相关 Business Skill，或已调用的 Skill 指令要求执行操作时，才直接使用 Core Tool；Core Tool 不能替代专家工作流。"
 )
 
 class SkillRuntime:
@@ -398,19 +381,32 @@ class SkillRuntime:
             ],
         }
 
-    async def list_dynamic_skills(self) -> dict[str, Any]:
+    async def list_dynamic_skills(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = DEFAULT_DYNAMIC_SKILL_LIST_LIMIT,
+    ) -> dict[str, Any]:
         await self.ensure_synced()
         records = sorted(self.dynamic_records.values(), key=lambda record: record.tool_name)
+        safe_offset = max(0, offset)
+        safe_limit = min(max(1, limit), MAX_DYNAMIC_SKILL_LIST_LIMIT)
+        page = records[safe_offset : safe_offset + safe_limit]
+        next_offset = safe_offset + len(page)
+        has_more = next_offset < len(records)
         return {
-            "count": len(records),
+            "count": len(page),
+            "total": len(records),
+            "offset": safe_offset,
+            "limit": safe_limit,
+            "has_more": has_more,
+            "next_offset": next_offset if has_more else None,
             "tools": [
                 {
                     "name": record.tool_name,
                     "description": record.description,
-                    "source": self._source_kind(record.source_path),
-                    "source_path": str(record.source_path),
                 }
-                for record in records
+                for record in page
             ],
             "next_step": "使用准确的 skill_name 调用 invoke_skill 应用工作流。",
         }
@@ -499,7 +495,7 @@ class SkillRuntime:
         }
 
     def system_hint(self) -> str:
-        parts = [SKILL_TIER_POLICY, CAPABILITY_SELECTION_POLICY, SEARCH_HINT]
+        parts = [CAPABILITY_SELECTION_POLICY, SEARCH_HINT]
         summary = self.dynamic_skill_summary.summary.strip()
         if summary:
             parts.append(_dynamic_skill_summary_hint(summary))

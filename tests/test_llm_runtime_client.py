@@ -81,6 +81,29 @@ def test_initial_system_message_includes_fixed_cards_and_dynamic_summary() -> No
     assert "skill_name: skill_coding_standards" in messages[0]["content"]
 
 
+def test_system_prompt_keeps_runtime_rules_but_not_engineering_workflows() -> None:
+    prompt = build_system_prompt(
+        PromptFeatures(skills_enabled=True),
+        skill_hint=(
+            "- skill_name: skill_project_reading\n"
+            "  name: project-reading\n"
+            "  description: 阅读项目"
+        ),
+    )
+
+    assert "你是 H-Agent" in prompt
+    assert "## 安全" in prompt
+    assert "## 工具选择" in prompt
+    assert "## Runtime Context 字段说明" in prompt
+    assert "skill_name: skill_project_reading" in prompt
+    assert "普通仓库任务无需搜索 Dynamic Skill，但仍必须检查并调用匹配的 fixed Skill" in prompt
+    assert "recommendations 只是本轮候选提示" in prompt
+    assert "Dynamic 是按需检索的专家工作流目录" in prompt
+    assert "## 工程工作流" not in prompt
+    assert "根据行为风险补充或更新测试" not in prompt
+    assert "优先采用最小且完整的修改" not in prompt
+
+
 def test_provider_payloads_accept_cold_tool_topology() -> None:
     arguments = json.dumps(
         {

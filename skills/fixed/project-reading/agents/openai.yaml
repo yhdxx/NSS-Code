@@ -1,0 +1,4 @@
+interface:
+  display_name: "project-reading"
+  short_description: "阅读当前项目并建立可验证上下文。适用于任何涉及工作区事实、源码理解、模块边界、入口、依赖或测试范围的任务。"
+  default_prompt: "阅读当前项目并建立可验证上下文。适用于任何涉及工作区事实、源码理解、模块边界、入口、依赖或测试范围的任务。"

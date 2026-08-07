@@ -6,6 +6,7 @@ import json
 from mycodingagent.approval import ApprovalMode, ApprovalRuntime
 from mycodingagent.commands import CommandContext, CommandRegistry, CommandResult, CommandSpec
 from mycodingagent.code_intelligence.project_graph_runtime import BootstrapUpdate
+from mycodingagent.plan_runtime import PlanRuntime
 from mycodingagent.work_mode import WorkMode, WorkModeManager
 from mycodingagent.commands import handlers
 from mycodingagent.terminal_ui.history import format_history_message
@@ -177,6 +178,20 @@ def test_search_command_disables_external_access_and_updates_terminal(monkeypatc
     assert manager.applied is True
     assert terminal.enabled is False
     assert "localhost:port 仍可访问" in capsys.readouterr().out
+
+
+def test_plan_command_queues_skill_for_the_next_user_query(capsys):
+    runtime = PlanRuntime(session_id=lambda: "session")
+    messages = [{"role": "system", "content": "system"}]
+    context = CommandContext(None, None, messages, plan_runtime=runtime)
+
+    result = asyncio.run(handlers.handle_plan_command(context, ""))
+
+    assert result.messages is messages
+    assert messages == [{"role": "system", "content": "system"}]
+    assert runtime.is_planning
+    assert runtime.should_load_plan_skill()
+    assert "已进入 Plan 模式" in capsys.readouterr().out
 
 
 def test_mode_code_initializes_and_renders_project_graph_bootstrap(monkeypatch, capsys):

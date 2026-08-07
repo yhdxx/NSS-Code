@@ -1,8 +1,10 @@
 from __future__ import annotations
 
 import asyncio
+import json
 from pathlib import Path
 
+from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime.providers import StreamRoundResult
 from mycodingagent.skill_runtime.discovery import discover_skill_records
 from mycodingagent.skill_runtime.dynamic_summary import DynamicSkillSummary
@@ -90,18 +92,28 @@ def test_fixed_skills_are_prompted_but_excluded_from_dynamic_routing(tmp_path: P
     assert "Fixed description" in fixed_hint
     assert "SECRET FIXED BODY" not in fixed_hint
     system_hint = runtime.system_hint()
-    assert "Skill 分为 fixed 和 Dynamic 两类" in system_hint
-    assert "保持固定前缀稳定" in system_hint
-    assert "先用能力摘要判断" in system_hint
+    assert "每轮先独立检查全部 fixed Skill 卡片" in system_hint
+    assert "recommendations 只是候选提示，不是完整清单" in system_hint
+    assert "普通仓库任务无需形式化搜索 Dynamic Skill" in system_hint
     management_names = {schema["name"] for schema in runtime._skill_management_schemas()}
     assert "search_skill" in management_names
     assert "search_tool" not in management_names
     assert "Get_tool_by_name" not in management_names
 
     search = asyncio.run(runtime.search_skill_schemas(query="review code", max_results=5))
-    listing = asyncio.run(runtime.list_dynamic_skills())
+    listing = asyncio.run(runtime.list_dynamic_skills(offset=0, limit=20))
     assert [item["skill_name"] for item in search["skills"]] == ["skill_review"]
     assert [item["name"] for item in listing["tools"]] == ["skill_review"]
+    assert listing == {
+        "count": 1,
+        "total": 1,
+        "offset": 0,
+        "limit": 20,
+        "has_more": False,
+        "next_offset": None,
+        "tools": [{"name": "skill_review", "description": "Review code changes"}],
+        "next_step": "使用准确的 skill_name 调用 invoke_skill 应用工作流。",
+    }
 
     runtime.record_skill_invocation("skill_shared_workflow")
     assert runtime.session_skill_call_round == 0
@@ -122,6 +134,73 @@ def test_fixed_skill_hint_is_stable_and_budgeted(tmp_path: Path, monkeypatch):
     assert full.index("skill_alpha") < full.index("skill_zeta")
     assert "ALPHA BODY" not in full
     assert "fixed Skill 因固定卡片预算未展示" in limited
+
+
+def test_list_dynamic_skills_supports_offset_pagination(tmp_path: Path, monkeypatch):
+    base = tmp_path / "skills"
+    _write_skill(base / "Dynamic" / "alpha" / "SKILL.md", "Alpha", "Alpha description", "BODY")
+    _write_skill(base / "Dynamic" / "beta" / "SKILL.md", "Beta", "Beta description", "BODY")
+    _write_skill(base / "Dynamic" / "gamma" / "SKILL.md", "Gamma", "Gamma description", "BODY")
+    runtime = _runtime(base, monkeypatch)
+    asyncio.run(runtime.sync())
+
+    page = asyncio.run(runtime.list_dynamic_skills(offset=1, limit=1))
+    tool_result = asyncio.run(
+        runtime.list_dynamic_skills_tool_instance.execute(
+            runtime.list_dynamic_skills_tool_instance.params_model(offset=2, limit=1)
+        )
+    )
+
+    assert page == {
+        "count": 1,
+        "total": 3,
+        "offset": 1,
+        "limit": 1,
+        "has_more": True,
+        "next_offset": 2,
+        "tools": [{"name": "skill_beta", "description": "Beta description"}],
+        "next_step": "使用准确的 skill_name 调用 invoke_skill 应用工作流。",
+    }
+    assert "source" not in page["tools"][0]
+    assert "source_path" not in page["tools"][0]
+    assert json.loads(tool_result.output)["tools"] == [
+        {"name": "skill_gamma", "description": "Gamma description"}
+    ]
+
+
+def test_builtin_engineering_skills_are_fixed_unique_and_fit_prompt_budget() -> None:
+    skills_root = Path(__file__).resolve().parents[1] / "skills"
+    fixed = discover_skill_records(skills_root / "fixed", tier="fixed")
+    dynamic = discover_skill_records(skills_root / "Dynamic", tier="dynamic")
+    fixed_names = {record.tool_name for record in fixed}
+    dynamic_names = {record.tool_name for record in dynamic}
+
+    assert {
+        "skill_project_reading",
+        "skill_code_plan",
+        "skill_code_implementation",
+        "skill_test_driven_development",
+        "skill_systematic_debugging",
+        "skill_verification_before_completion",
+    } <= fixed_names
+    assert len(fixed_names) == len(fixed)
+    assert len(dynamic_names) == len(dynamic)
+    assert fixed_names.isdisjoint(dynamic_names)
+    assert {record.content_hash for record in fixed}.isdisjoint(
+        record.content_hash for record in dynamic
+    )
+    assert len(dynamic) > 100
+    assert {
+        "skill_create_implementation_plan",
+        "skill_breakdown_feature_implementation",
+        "skill_what_context_needed",
+    }.isdisjoint(dynamic_names)
+
+    cards = "以下是当前会话固定可用的 Skill 卡片。" + "".join(
+        f"\n{record.tool_name}\n{record.name}\n{record.description}"
+        for record in sorted(fixed, key=lambda item: item.tool_name)
+    )
+    assert (len(cards) + 3) // 4 <= CONFIG.skills.fixed_prompt_max_tokens
 
 
 def test_materialized_long_term_workflow_uses_user_dynamic_root(tmp_path: Path, monkeypatch):

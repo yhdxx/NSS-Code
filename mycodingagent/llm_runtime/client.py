@@ -4,6 +4,7 @@ import asyncio  # 提供异步事件循环、异步子进程等待等能力，�
 import hashlib  # 为 PromptDebug 生成稳定短哈希，避免打印原始 prompt 内容。
 import json  # 负责解析模型生成的工具参数 JSON，以及把参数格式化成终端可读文本。
 from dataclasses import dataclass, replace  # 用轻量数据类保存流式返回过程中尚未拼完整的工具调用。
+from uuid import uuid4
 
 from typing import Any  # `Any` 用在 OpenAI 消息、工具 schema 等动态 JSON 结构的类型标注中。
 
@@ -696,6 +697,17 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
 
     # 追加当前用户问题  # 每次调用 `ask_model` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
+    try:
+        if plan_runtime is not None and plan_runtime.should_load_plan_skill():
+            await _append_plan_skill_for_current_query(
+                messages,
+                prompt=prompt,
+                registry=registry,
+                plan_runtime=plan_runtime,
+            )
+    except Exception:
+        del messages[turn_start:]
+        raise
     save_session_state()
     temporary_system_messages: list[dict[str, Any]] = []
     if capability_router is not None:
@@ -819,8 +831,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 )
             )
         )
-        if plan_runtime is not None and plan_runtime.should_inject_planning_instruction():
-            plan_runtime.mark_planning_instruction_delivered()
         assistant_text = stream_result.text
         tool_calls = stream_result.tool_calls
         usage = stream_result.usage
@@ -1198,8 +1208,8 @@ def _plan_runtime_context(plan_runtime: PlanRuntime | None) -> dict[str, Any] | 
         return None
     if plan_runtime.is_planning:
         proposal = plan_runtime.proposed_plan()
-        payload: dict[str, Any] = {
-            "mode": "只读规划；禁止修改工作区、Bash 和 MCP；允许只读工具、Skill、上下文提交/恢复和项目图谱描述更新。",
+        return {
+            "status": "planning",
             "proposal": (
                 {
                     "id": proposal.id,
@@ -1211,22 +1221,70 @@ def _plan_runtime_context(plan_runtime: PlanRuntime | None) -> dict[str, Any] | 
                 else None
             ),
         }
-        if plan_runtime.should_inject_planning_instruction():
-            payload["instruction"] = (
-                "当前是一次新的 Plan epoch。请先通过只读调查确认真实代码、现状和问题根因，再形成决策完整、可直接实施的软件开发计划。"
-                "计划必须包含：目标与范围、明确不处理的内容、约束与假设、受影响模块/接口/状态/数据流、按依赖顺序的实施步骤、"
-                "权限与安全影响、失败处理和恢复策略、与风险匹配的测试策略（单元/集成/协议/持久化/TUI 等）、验证命令、"
-                "可观测的验收标准以及剩余未决问题。不要臆造兼容层或无关重构；信息不足时先询问用户。"
-                "只能在计划已经足够具体且没有关键未知项时，单独调用 create_plan，并等待用户选择；不要在同一轮混用其他工具。"
-            )
-        return payload
     payload = plan_runtime.context_payload()
     if payload is None:
         return None
     return {
-        "instruction": "严格执行已批准计划；步骤开始、完成或阻塞时调用 update_plan_step，且不得改写计划内容。",
+        "status": "active",
         "active": payload,
     }
+
+
+async def _append_plan_skill_for_current_query(
+    messages: list[dict[str, Any]],
+    *,
+    prompt: str,
+    registry: ToolRegistry,
+    plan_runtime: PlanRuntime,
+) -> None:
+    invoke_skill = registry.get("invoke_skill")
+    if invoke_skill is None:
+        raise RuntimeError("Plan 模式需要 invoke_skill 工具")
+    arguments = {
+        "skill_name": "skill_code_plan",
+        "instruction": prompt,
+        "context": "用户已进入 Plan 模式；对当前请求进行只读调查并形成待审批实施计划。",
+    }
+    result = await invoke_skill.execute(invoke_skill.params_model(**arguments))
+    if result.is_error:
+        raise RuntimeError(f"加载 Plan Skill 失败：{result.output}")
+    call_id = f"plan_skill_{uuid4().hex}"
+    intent = "用户已进入 Plan 模式；加载 code-plan 工作流以规划当前请求。"
+    metadata = {
+        "tool_name": "invoke_skill",
+        "intent": intent,
+        "plan_skill_bootstrap": True,
+        "skill_name": "skill_code_plan",
+    }
+    messages.extend(
+        [
+            {
+                "role": "assistant",
+                "tool_calls": [
+                    {
+                        "id": call_id,
+                        "type": "function",
+                        "function": {
+                            "name": "invoke_skill",
+                            "arguments": json.dumps(
+                                {**arguments, "intent": intent},
+                                ensure_ascii=False,
+                                sort_keys=True,
+                            ),
+                        },
+                    }
+                ],
+                "metadata": metadata,
+            },
+            {
+                "role": "tool",
+                "tool_call_id": call_id,
+                "content": result.output,
+                "metadata": metadata,
+            },
+        ]
+    )
+    plan_runtime.mark_plan_skill_loaded()
 
 
 def _set_plan_tool_decision(
@@ -1261,8 +1319,28 @@ async def _rewrite_context_for_plan_execution(
     system = next((message for message in messages if message.get("role") == "system"), None)
     turn_messages = messages[turn_start:]
     user = next((message for message in turn_messages if message.get("role") == "user"), None)
-    assistant = next((message for message in turn_messages if message.get("role") == "assistant" and message.get("tool_calls")), None)
-    tool = next((message for message in turn_messages if message.get("role") == "tool"), None)
+    assistant = None
+    create_plan_call_id = ""
+    for message in turn_messages:
+        if message.get("role") != "assistant":
+            continue
+        for tool_call in message.get("tool_calls", []):
+            function = tool_call.get("function", {}) if isinstance(tool_call, dict) else {}
+            if function.get("name") == "create_plan":
+                assistant = message
+                create_plan_call_id = str(tool_call.get("id") or "")
+                break
+        if assistant is not None:
+            break
+    tool = next(
+        (
+            message
+            for message in turn_messages
+            if message.get("role") == "tool"
+            and str(message.get("tool_call_id") or "") == create_plan_call_id
+        ),
+        None,
+    )
     if system is None or user is None or assistant is None or tool is None:
         raise ValueError("无法构造计划执行所需的完整消息链")
     rebuilt = [system, user]

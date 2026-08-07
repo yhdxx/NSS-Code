@@ -36,6 +36,23 @@ class _WorkspaceWriteTool(Tool):
         raise AssertionError("Plan execution gate must reject this tool")
 
 
+class _InvokeSkillParams(BaseModel):
+    skill_name: str
+    instruction: str
+    context: str = ""
+
+
+class _InvokeSkillTool(Tool):
+    name = "invoke_skill"
+    description = "test plan skill loader"
+    params_model = _InvokeSkillParams
+    category = "read"
+
+    async def execute(self, params: _InvokeSkillParams) -> ToolResult:
+        assert params.skill_name == "skill_code_plan"
+        return ToolResult(f"PLAN SKILL FOR: {params.instruction}")
+
+
 def test_plan_runtime_persists_mode_plan_and_atomic_progress(tmp_path) -> None:
     store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
     session_id = "session-1"
@@ -103,7 +120,7 @@ def test_plan_policy_blocks_workspace_writes_bash_and_mcp_but_allows_requested_r
     assert policy.allows(Tool("UpdateProjectDescription", "read"))
 
 
-def test_plan_instruction_is_in_runtime_context_without_changing_system_message() -> None:
+def test_plan_runtime_context_contains_state_without_prompt_instruction() -> None:
     runtime = PlanRuntime(session_id=lambda: "session")
     runtime.enter_plan_mode()
     messages = [{"role": "system", "content": "stable-system"}]
@@ -111,13 +128,8 @@ def test_plan_instruction_is_in_runtime_context_without_changing_system_message(
     payload = client._plan_runtime_context(runtime)
 
     assert messages == [{"role": "system", "content": "stable-system"}]
-    assert payload is not None
-    assert "测试策略" in payload["instruction"]
-    assert "验收标准" in payload["instruction"]
-    runtime.mark_planning_instruction_delivered()
-    later_payload = client._plan_runtime_context(runtime)
-    assert later_payload is not None
-    assert "instruction" not in later_payload
+    assert payload == {"status": "planning", "proposal": None}
+    assert "instruction" not in payload
 
 
 def test_plan_mode_listener_tracks_activation_and_exit() -> None:
@@ -132,22 +144,102 @@ def test_plan_mode_listener_tracks_activation_and_exit() -> None:
     assert modes == [InteractionMode.PLAN, InteractionMode.NORMAL]
 
 
-def test_restoring_same_plan_epoch_does_not_reinject_instruction(tmp_path) -> None:
+def test_plan_skill_load_is_pending_once_per_plan_epoch(tmp_path) -> None:
     store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
     runtime = PlanRuntime(store=store, session_id=lambda: "session")
     runtime.enter_plan_mode()
-    runtime.mark_planning_instruction_delivered()
+    assert runtime.should_load_plan_skill()
+    runtime.mark_plan_skill_loaded()
 
     runtime.restore_current_session()
 
     assert runtime.is_planning
-    assert not runtime.should_inject_planning_instruction()
+    assert not runtime.should_load_plan_skill()
+
+    restored = PlanRuntime(store=store, session_id=lambda: "session")
+    restored.restore_current_session()
+    assert restored.should_load_plan_skill()
+
+
+def test_plan_skill_is_appended_after_current_user_query() -> None:
+    runtime = PlanRuntime(session_id=lambda: "session")
+    runtime.enter_plan_mode()
+    registry = ToolRegistry()
+    registry.register(_InvokeSkillTool())
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "assistant", "content": "previous answer"},
+        {"role": "user", "content": "为认证功能制定计划"},
+    ]
+
+    asyncio.run(
+        client._append_plan_skill_for_current_query(
+            messages,
+            prompt="为认证功能制定计划",
+            registry=registry,
+            plan_runtime=runtime,
+        )
+    )
+
+    assert [message["role"] for message in messages[-3:]] == ["user", "assistant", "tool"]
+    tool_call = messages[-2]["tool_calls"][0]
+    arguments = json.loads(tool_call["function"]["arguments"])
+    assert tool_call["function"]["name"] == "invoke_skill"
+    assert arguments["skill_name"] == "skill_code_plan"
+    assert arguments["instruction"] == "为认证功能制定计划"
+    assert messages[-1]["tool_call_id"] == tool_call["id"]
+    assert messages[-1]["content"] == "PLAN SKILL FOR: 为认证功能制定计划"
+    assert messages[-1]["metadata"]["plan_skill_bootstrap"] is True
+    assert not runtime.should_load_plan_skill()
+
+
+def test_plan_execution_rewrite_selects_create_plan_after_automatic_skill_call() -> None:
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "制定计划"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "skill-call",
+                    "type": "function",
+                    "function": {"name": "invoke_skill", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "skill-call", "content": "plan skill"},
+        {
+            "role": "assistant",
+            "tool_calls": [
+                {
+                    "id": "plan-call",
+                    "type": "function",
+                    "function": {"name": "create_plan", "arguments": "{}"},
+                }
+            ],
+        },
+        {"role": "tool", "tool_call_id": "plan-call", "content": "plan result"},
+    ]
+
+    asyncio.run(
+        client._rewrite_context_for_plan_execution(
+            messages,
+            turn_start=1,
+            project_graph=None,
+            work_mode="general",
+        )
+    )
+
+    assert [message["role"] for message in messages] == ["system", "user", "assistant", "tool"]
+    assert messages[-2]["tool_calls"][0]["function"]["name"] == "create_plan"
+    assert messages[-1]["tool_call_id"] == "plan-call"
 
 
 def test_create_plan_rejection_keeps_protocol_complete_messages(monkeypatch) -> None:
     runtime = PlanRuntime(session_id=lambda: "session")
     runtime.enter_plan_mode()
     registry = ToolRegistry()
+    registry.register(_InvokeSkillTool())
     registry.register(CreatePlan(runtime))
     registry.register(_WorkspaceWriteTool())
     seen_tools: list[str] = []
@@ -202,8 +294,21 @@ def test_create_plan_rejection_keeps_protocol_complete_messages(monkeypatch) -> 
     assert runtime.current_plan().status is PlanStatus.REJECTED
     assert "create_plan" in seen_tools
     assert "WriteFile" in seen_tools
-    assistant = next(message for message in messages if message.get("role") == "assistant")
-    tool = next(message for message in messages if message.get("role") == "tool")
+    assistant = next(
+        message
+        for message in messages
+        if message.get("role") == "assistant"
+        and any(
+            call.get("function", {}).get("name") == "create_plan"
+            for call in message.get("tool_calls", [])
+        )
+    )
+    plan_call_id = assistant["tool_calls"][0]["id"]
+    tool = next(
+        message
+        for message in messages
+        if message.get("role") == "tool" and message.get("tool_call_id") == plan_call_id
+    )
     assert assistant["tool_calls"][0]["id"] == tool["tool_call_id"]
     assert json.loads(tool["content"])["decision"] == "rejected"
 
@@ -212,6 +317,7 @@ def test_plan_mode_rejects_workspace_write_at_execution_even_when_schema_is_visi
     runtime = PlanRuntime(session_id=lambda: "session")
     runtime.enter_plan_mode()
     registry = ToolRegistry()
+    registry.register(_InvokeSkillTool())
     registry.register(_WorkspaceWriteTool())
 
     class Provider:
@@ -248,5 +354,9 @@ def test_plan_mode_rejects_workspace_write_at_execution_even_when_schema_is_visi
         )
     )
 
-    tool_message = next(message for message in messages if message.get("role") == "tool")
+    tool_message = next(
+        message
+        for message in messages
+        if message.get("role") == "tool" and message.get("tool_call_id") == "write-call"
+    )
     assert "不允许调用工具 WriteFile" in tool_message["content"]

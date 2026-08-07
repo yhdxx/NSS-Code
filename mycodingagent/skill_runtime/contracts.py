@@ -2,6 +2,9 @@ from __future__ import annotations
 
 from typing import Any, Protocol
 
+DEFAULT_DYNAMIC_SKILL_LIST_LIMIT = 20
+MAX_DYNAMIC_SKILL_LIST_LIMIT = 100
+
 
 class SkillService(Protocol):
     async def search_skill_schemas(
@@ -12,7 +15,12 @@ class SkillService(Protocol):
         tool_names: list[str],
     ) -> dict[str, Any]: ...
 
-    async def list_dynamic_skills(self) -> dict[str, Any]: ...
+    async def list_dynamic_skills(
+        self,
+        *,
+        offset: int = 0,
+        limit: int = DEFAULT_DYNAMIC_SKILL_LIST_LIMIT,
+    ) -> dict[str, Any]: ...
 
     async def search_skill_references(
         self,

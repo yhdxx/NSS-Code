@@ -27,8 +27,8 @@ class PlanRuntime:
         self._plans: dict[str, PlanRecord] = {}
         self._pending_prompt: str | None = None
         self._mode_listeners: list[Callable[[InteractionMode], None]] = []
-        self._planning_instruction_pending = False
-        self._planning_session_id: str | None = None
+        self._plan_skill_pending = False
+        self._plan_skill_session_id: str | None = None
 
     @property
     def mode(self) -> InteractionMode:
@@ -45,11 +45,11 @@ class PlanRuntime:
         if listener is not None and listener not in self._mode_listeners:
             self._mode_listeners.append(listener)
 
-    def should_inject_planning_instruction(self) -> bool:
-        return self.is_planning and self._planning_instruction_pending
+    def should_load_plan_skill(self) -> bool:
+        return self.is_planning and self._plan_skill_pending
 
-    def mark_planning_instruction_delivered(self) -> None:
-        self._planning_instruction_pending = False
+    def mark_plan_skill_loaded(self) -> None:
+        self._plan_skill_pending = False
 
     def restore_current_session(self) -> InteractionMode:
         session_id = self.current_session_id()
@@ -57,18 +57,18 @@ class PlanRuntime:
             return self._mode
         state = self._store.load_plan_runtime_state(session_id)
         restored_mode = InteractionMode(state.get("interaction_mode", InteractionMode.NORMAL.value))
-        same_plan_epoch = self.is_planning and self._planning_session_id == session_id
+        same_plan_epoch = self.is_planning and self._plan_skill_session_id == session_id
         self._set_mode(
             restored_mode,
             persist=False,
         )
         if restored_mode is InteractionMode.PLAN:
             if not same_plan_epoch:
-                self._planning_instruction_pending = True
-            self._planning_session_id = session_id
+                self._plan_skill_pending = True
+            self._plan_skill_session_id = session_id
         else:
-            self._planning_instruction_pending = False
-            self._planning_session_id = None
+            self._plan_skill_pending = False
+            self._plan_skill_session_id = None
         plan = state.get("plan")
         if isinstance(plan, PlanRecord):
             self._plans[session_id] = plan
@@ -81,22 +81,22 @@ class PlanRuntime:
         current = self.current_plan()
         if current is not None and current.status in {PlanStatus.ACTIVE, PlanStatus.BLOCKED}:
             self._save(replace(current, status=PlanStatus.SUPERSEDED, updated_at=time()))
-        self._planning_instruction_pending = True
-        self._planning_session_id = session_id
+        self._plan_skill_pending = True
+        self._plan_skill_session_id = session_id
         self._set_mode(InteractionMode.PLAN, persist=True, session_id=session_id)
 
     def exit_plan_mode(self, *, cancel_proposal: bool = True) -> None:
         current = self.current_plan()
         if cancel_proposal and current is not None and current.status is PlanStatus.PROPOSED:
             self._save(replace(current, status=PlanStatus.CANCELLED, updated_at=time()))
-        self._planning_instruction_pending = False
-        self._planning_session_id = None
+        self._plan_skill_pending = False
+        self._plan_skill_session_id = None
         self._set_mode(InteractionMode.NORMAL, persist=True)
 
     def reset_current_session(self) -> None:
         session_id = self.current_session_id()
-        self._planning_instruction_pending = False
-        self._planning_session_id = None
+        self._plan_skill_pending = False
+        self._plan_skill_session_id = None
         self._set_mode(InteractionMode.NORMAL, persist=False)
         self._plans.pop(session_id, None)
         if self._store is not None:
@@ -156,8 +156,8 @@ class PlanRuntime:
         plan = self._require_plan(plan_id, {PlanStatus.PROPOSED})
         activated = replace(plan, status=PlanStatus.ACTIVE, updated_at=time())
         self._save(activated)
-        self._planning_instruction_pending = False
-        self._planning_session_id = None
+        self._plan_skill_pending = False
+        self._plan_skill_session_id = None
         self._set_mode(InteractionMode.NORMAL, persist=True, session_id=plan.session_id)
         return activated
 
