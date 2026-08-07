@@ -4,9 +4,8 @@ from typing import Any
 
 
 SKILL_RELATED_TOOL_NAMES = {
-    "search_tool",
-    "Get_all_tool",
-    "Get_tool_by_name",
+    "search_skill",
+    "list_dynamic_skills",
     "search_skill_references",
     "Get_skill_reference",
     "invoke_skill",

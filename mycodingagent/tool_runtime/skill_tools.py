@@ -21,7 +21,7 @@ class SearchSkillParams(BaseModel):
 
 
 class SearchSkillTool(Tool):
-    name = "search_tool"
+    name = "search_skill"
     description = (
         "通过工具名称和描述进行关键词与语义混合检索，查找开发者提供的 SKILL。按能力查找 Skill 时，"
         "应使用本工具，不要使用 Bash、Glob 或 ReadFile。结果包含可供 invoke_skill 使用的 Skill 名称和元数据。"
@@ -45,19 +45,20 @@ class SearchSkillTool(Tool):
         return ToolResult(output=json.dumps(result, ensure_ascii=False, indent=2))
 
 
-class GetAllToolParams(BaseModel):
+class ListDynamicSkillsParams(BaseModel):
     pass
 
 
-class GetAllTool(Tool):
-    name = "Get_all_tool"
+class ListDynamicSkillsTool(Tool):
+    name = "list_dynamic_skills"
     description = (
-        "列出当前注册的全部 SKILL 工具及其名称和简短描述。用户询问有哪些 Skill、要求查看全部 Skill，"
-        "或询问 Agent 的 Skill 能力时优先使用。解决任务时，仅当全局 Skill 能力摘要明确包含所需能力，"
-        "并且最多三次逐步放宽的中文 search_tool 查询均失败时使用。摘要未明确覆盖所需能力时不要调用。"
+        "列出当前注册的全部 Dynamic Skill 及其名称和简短描述，不包含已在 system prompt 展示的 fixed Skill。"
+        "用户询问有哪些动态 Skill、要求查看完整 Dynamic Skill 目录，或询问 Agent 的动态 Skill 能力时使用。"
+        "解决任务时，仅当 Dynamic Skill 能力摘要明确包含所需能力，"
+        "并且最多三次逐步放宽的中文 search_skill 查询均失败时使用。摘要未明确覆盖所需能力时不要调用。"
         "禁止使用 Bash 或 Glob 检查 skills 目录或 SQLite 数据库来替代本工具。"
     )
-    params_model = GetAllToolParams
+    params_model = ListDynamicSkillsParams
     category = "read"
     is_concurrency_safe = True
     is_system_tool = True
@@ -65,32 +66,9 @@ class GetAllTool(Tool):
     def __init__(self, runtime: SkillService) -> None:
         self._runtime = runtime
 
-    async def execute(self, params: GetAllToolParams) -> ToolResult:
-        result = await self._runtime.list_skill_tools()
+    async def execute(self, params: ListDynamicSkillsParams) -> ToolResult:
+        result = await self._runtime.list_dynamic_skills()
         return ToolResult(output=json.dumps(result, ensure_ascii=False, indent=2))
-
-
-class GetToolByNameParams(BaseModel):
-    tool_name: str = Field(description="Get_all_tool 返回的准确 SKILL 工具名称")
-
-
-class GetToolByNameTool(Tool):
-    name = "Get_tool_by_name"
-    description = (
-        "根据 Get_all_tool 或 search_tool 返回的准确名称获取 SKILL 工作流详情。识别出与任务匹配的 "
-        "Business Skill 后使用；需要应用该工作流时，再以对应 skill_name 调用 invoke_skill。"
-    )
-    params_model = GetToolByNameParams
-    category = "read"
-    is_concurrency_safe = True
-    is_system_tool = True
-
-    def __init__(self, runtime: SkillService) -> None:
-        self._runtime = runtime
-
-    async def execute(self, params: GetToolByNameParams) -> ToolResult:
-        result = await self._runtime.get_tool_schema_by_name(params.tool_name)
-        return ToolResult(output=json.dumps(result, ensure_ascii=False, indent=2), is_error=bool(result.get("error")))
 
 
 class SearchSkillReferencesParams(BaseModel):
@@ -195,7 +173,7 @@ class InvokeSkillTool(Tool):
     name = "invoke_skill"
     description = (
         "根据准确的 skill_name 调用一个开发者提供的 Business Skill 工作流。当 Runtime Context 推荐、"
-        "search_tool、Get_all_tool 或 Get_tool_by_name 识别出匹配的 SKILL 时使用。"
+        "search_skill、list_dynamic_skills 或 fixed Skill 卡片识别出匹配的 SKILL 时使用。"
         "本固定工具用于替代每个 Skill 各自的动态函数 schema。"
     )
     params_model = InvokeSkillParams

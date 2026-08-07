@@ -1457,7 +1457,7 @@ def test_skill_related_calls_are_retained_for_historical_placeholders():
     persistent = persistent_assistant_tool_message(assistant_message)
 
     assert is_skill_related_tool("skill_review")
-    assert is_skill_related_tool("search_tool")
+    assert is_skill_related_tool("search_skill")
     assert not is_skill_related_tool("ReadFile")
     assert persistent == assistant_message
 

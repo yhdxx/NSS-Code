@@ -730,6 +730,8 @@ class SQLiteLongTermMemoryStore:
         workspace_fingerprint: str,
         memory_uid: str,
         decision: str,
+        materialization_status: str = "",
+        materialization_error: str = "",
     ) -> str:
         latest = self.latest_committed_version(user_id=user_id, workspace_fingerprint=workspace_fingerprint)
         if latest is None:
@@ -775,6 +777,12 @@ class SQLiteLongTermMemoryStore:
                     if item.memory_uid == memory_uid:
                         metadata["promotion_status"] = decision
                         metadata["promotion_updated_at"] = now
+                        if materialization_status:
+                            metadata["materialization_status"] = materialization_status
+                        if materialization_error:
+                            metadata["materialization_error"] = materialization_error
+                        elif materialization_status:
+                            metadata.pop("materialization_error", None)
                         if decision == "declined":
                             metadata["promotion_declined_count"] = int(metadata.get("promotion_declined_count", 0) or 0) + 1
                         updated_at = now

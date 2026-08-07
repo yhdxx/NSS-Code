@@ -14,7 +14,6 @@ class SkillRouterConfig:
     user_weight: float = 0.15
     session_weight: float = 0.45
     retrieval_weight: float = 0.40
-    pinned_bonus: float = 1.0
 
 
 @dataclass
@@ -24,7 +23,6 @@ class _RouterCandidate:
     session_score: float = 0.0
     retrieval_score: float = 0.0
     retrieval_rank: int | None = None
-    pinned: bool = False
     combined_score: float = 0.0
 
     @property
@@ -45,7 +43,6 @@ class SkillRouter:
         retrieval_results: list[SearchResult],
         user_candidates: list[LRFUCandidate],
         session_candidates: list[LRFUCandidate],
-        pinned_names: set[str],
     ) -> list[SkillRecord]:
         if not records or self.config.top_n <= 0:
             return []
@@ -54,12 +51,6 @@ class SkillRouter:
         self._merge_retrieval(candidates, records=records, retrieval_results=retrieval_results)
         self._merge_lrfu(candidates, records=records, source=user_candidates, source_name="user")
         self._merge_lrfu(candidates, records=records, source=session_candidates, source_name="session")
-        for name in pinned_names:
-            record = records.get(name)
-            if record is None:
-                continue
-            candidates.setdefault(name, _RouterCandidate(record=record)).pinned = True
-
         if not candidates:
             return []
 
@@ -119,8 +110,6 @@ class SkillRouter:
                 + self.config.session_weight * candidate.session_score
                 + self.config.retrieval_weight * candidate.retrieval_score
             )
-            if candidate.pinned:
-                candidate.combined_score += self.config.pinned_bonus
 
     def _enforce_retrieval_floor(
         self,
@@ -150,11 +139,7 @@ class SkillRouter:
                 selected_by_name[name] = retrieval_candidate
                 selected_retrieval_count += 1
                 continue
-            replaceable = [
-                candidate
-                for candidate in selected
-                if not candidate.pinned and not candidate.from_retrieval
-            ]
+            replaceable = [candidate for candidate in selected if not candidate.from_retrieval]
             if not replaceable:
                 break
             victim = min(replaceable, key=lambda item: (item.combined_score, item.record.tool_name))

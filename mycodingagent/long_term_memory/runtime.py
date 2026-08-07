@@ -4,7 +4,7 @@ import asyncio
 import json
 import re
 from time import time
-from typing import Any
+from typing import Any, Awaitable, Callable
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.llm_runtime.model_manager import ModelManager
@@ -55,6 +55,10 @@ class LongTermMemoryRuntime:
         self.query_model = LongTermMemoryQueryModel(provider_getter=model_manager.search_provider)
         self._backfill_task: asyncio.Task | None = None
         self._last_context_by_session: dict[str, LongTermMemoryContext] = {}
+        self._skill_materializer: Callable[..., Awaitable[dict[str, str]]] | None = None
+
+    def set_skill_materializer(self, materializer: Callable[..., Awaitable[dict[str, str]]]) -> None:
+        self._skill_materializer = materializer
 
     def schedule_startup_backfill(self) -> None:
         if not CONFIG.long_term_memory.enabled or not CONFIG.long_term_memory.startup_backfill_enabled:
@@ -217,10 +221,35 @@ class LongTermMemoryRuntime:
             )
         if not success:
             return
+        skill_candidates = {item.memory_uid: item for item in context.skill_candidates}
         for memory_uid in used_skill:
             if not self._should_prompt_skill_promotion(memory_uid):
                 continue
             decision = await _confirm_skill_promotion(memory_uid)
+            materialization_status = "not_requested"
+            materialization_error = ""
+            if decision == "approved_for_skill":
+                candidate = skill_candidates.get(memory_uid)
+                workflow = candidate.metadata.get("workflow") if candidate is not None else None
+                if self._skill_materializer is None:
+                    materialization_status = "failed"
+                    materialization_error = "Skill 物化器未配置"
+                elif candidate is None or not isinstance(workflow, dict):
+                    materialization_status = "failed"
+                    materialization_error = "未找到可物化的 Skill candidate"
+                else:
+                    try:
+                        materialized = await self._skill_materializer(
+                            memory_uid=memory_uid,
+                            workflow=workflow,
+                            content=candidate.content,
+                        )
+                    except Exception as exc:
+                        materialization_status = "failed"
+                        materialization_error = f"Dynamic Skill 物化失败：{type(exc).__name__}: {exc}"
+                    else:
+                        materialization_status = str(materialized.get("status") or "failed")
+                        materialization_error = str(materialized.get("error") or "")
             self.global_store.record_turn_usage(
                 session_id=session_id,
                 turn_start_index=turn_start_index,
@@ -233,7 +262,12 @@ class LongTermMemoryRuntime:
                 success=True,
                 prompted={"memory_uid": memory_uid, "decision": decision},
             )
-            self._mark_skill_promotion_decision(memory_uid, decision)
+            self._mark_skill_promotion_decision(
+                memory_uid,
+                decision,
+                materialization_status=materialization_status,
+                materialization_error=materialization_error,
+            )
 
     async def _run_backfill(self) -> None:
         jobs = self.store.list_claimable_extractions(
@@ -242,6 +276,43 @@ class LongTermMemoryRuntime:
         )
         for job in jobs:
             await self._extract_by_id(job.extraction_id)
+        await self._retry_failed_skill_materializations()
+
+    async def _retry_failed_skill_materializations(self) -> None:
+        if self._skill_materializer is None:
+            return
+        _, items = self.global_store.load_latest_active_items(
+            user_id=self.user_id,
+            workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        )
+        for item in items:
+            if item.memory_type != MemoryType.SKILL_CANDIDATE:
+                continue
+            if item.metadata.get("promotion_status") != "approved_for_skill":
+                continue
+            if item.metadata.get("materialization_status") != "failed":
+                continue
+            workflow = item.metadata.get("workflow")
+            if not isinstance(workflow, dict):
+                continue
+            try:
+                result = await self._skill_materializer(
+                    memory_uid=item.memory_uid,
+                    workflow=workflow,
+                    content=item.content,
+                )
+            except Exception as exc:
+                status = "failed"
+                error = f"Dynamic Skill 重试失败：{type(exc).__name__}: {exc}"
+            else:
+                status = str(result.get("status") or "failed")
+                error = str(result.get("error") or "")
+            self._mark_skill_promotion_decision(
+                item.memory_uid,
+                "approved_for_skill",
+                materialization_status=status,
+                materialization_error=error,
+            )
 
     async def _extract_by_id(self, extraction_id: str) -> ExtractionResult:
         job = self.store.claim_extraction(
@@ -340,12 +411,21 @@ class LongTermMemoryRuntime:
         cooldown = CONFIG.long_term_memory.skill_candidate_prompt_cooldown_days * 24 * 60 * 60
         return not last_prompted_at or (time() - last_prompted_at) >= cooldown
 
-    def _mark_skill_promotion_decision(self, memory_uid: str, decision: str) -> None:
+    def _mark_skill_promotion_decision(
+        self,
+        memory_uid: str,
+        decision: str,
+        *,
+        materialization_status: str,
+        materialization_error: str,
+    ) -> None:
         self.global_store.mark_skill_candidate_promotion_status(
             user_id=self.user_id,
             workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
             memory_uid=memory_uid,
             decision=decision,
+            materialization_status=materialization_status,
+            materialization_error=materialization_error,
         )
 
 

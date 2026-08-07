@@ -365,8 +365,11 @@ async def _run(terminal: TerminalApplication) -> None:
         skills_root=CONFIG.skills.root,
         skill_roots=CONFIG.skills.roots,
         registry=registry,
+        summary_provider_getter=model_manager.active_provider,
     )  # 结束上方的多行结构。
-    await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_tool/skill 工具执行入口。
+    await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_skill/skill 工具执行入口。
+    if long_term_memory_runtime is not None:
+        long_term_memory_runtime.set_skill_materializer(skill_runtime.materialize_dynamic_skill)
     mcp_manager: MCPClientManager | None = None
     playwright_direct_tool_names: set[str] = set()
     capability_router: CapabilityRouter | None = None
@@ -443,9 +446,8 @@ async def _run(terminal: TerminalApplication) -> None:
         "get_mcp_prompt",
     }
     skill_management_tool_names = {
-        "search_tool",
-        "Get_all_tool",
-        "Get_tool_by_name",
+        "search_skill",
+        "list_dynamic_skills",
         "search_skill_references",
         "Get_skill_reference",
         "invoke_skill",

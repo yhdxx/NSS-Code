@@ -286,9 +286,14 @@ Playwright 和联网 MCP 的公网流量，并断开不再允许的 MCP；Playwr
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `skills.default_tool_names` | `MYCODINGAGENT_DEFAULT_SKILLS` | `["coding-standards"]` | 默认启用的 Skill |
+| `skills.builtin_root` | `MYCODINGAGENT_BUILTIN_SKILLS_ROOT` | 仓库 `skills/` | 内置 Skill 基础根目录；其下必须使用 `fixed/` 和 `Dynamic/` |
+| `skills.user_root` | `MYCODINGAGENT_USER_SKILLS_ROOT` | `~/.mycodingagent/skills` | 用户 Skill 基础根目录；长期记忆批准的 Skill 写入其 `Dynamic/` |
+| `skills.extra_roots` | `MYCODINGAGENT_EXTRA_SKILLS_ROOTS` | `[]` | 额外 Skill 基础根目录列表；每项同样使用 `fixed/` 和 `Dynamic/` |
+| `skills.fixed_prompt_max_tokens` | `MYCODINGAGENT_FIXED_SKILL_PROMPT_MAX_TOKENS` | `2000` | 初始 system prompt 中 fixed Skill 卡片的近似 token 上限 |
 | `skills.router_top_n` | `MYCODINGAGENT_SKILL_ROUTER_TOP_N` | `10` | Skill Router 推荐 Top-N |
 | `skills.router_retrieval_top_k` | `MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_TOP_K` | `40` | 向量检索 Top-K |
+| `skills.router_cache_top_k` | `MYCODINGAGENT_SKILL_ROUTER_CACHE_TOP_K` | `40` | 每级 LRFU 缓存参与路由的候选上限 |
+| `skills.router_retrieval_min_ratio` | `MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_MIN_RATIO` | `0.4` | Dynamic Skill 推荐结果的最低检索候选比例 |
 | `skills.router_user_weight` | `MYCODINGAGENT_SKILL_ROUTER_USER_WEIGHT` | `0.15` | 用户习惯权重 |
 | `skills.router_session_weight` | `MYCODINGAGENT_SKILL_ROUTER_SESSION_WEIGHT` | `0.45` | 会话内权重 |
 | `skills.router_retrieval_weight` | `MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_WEIGHT` | `0.40` | 语义检索权重 |
@@ -299,6 +304,11 @@ Playwright 和联网 MCP 的公网流量，并断开不再允许的 MCP；Playwr
 | `skills.session_skill_cache_max_entries` | `MYCODINGAGENT_SESSION_SKILL_CACHE_MAX_ENTRIES` | `200` | 会话级 Skill LRFU 缓存容量 |
 | `skills.vector_sync_batch_size` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_BATCH_SIZE` | `2` | 向量同步批大小 |
 | `skills.vector_sync_max_retries` | `MYCODINGAGENT_SKILL_VECTOR_SYNC_MAX_RETRIES` | `3` | 向量同步最大重试 |
+
+Skill 根目录不兼容旧的平铺结构。`fixed/` 中的 Skill 仅以 `skill_name + name + description` 卡片进入初始
+system prompt，不参与检索或 LRFU；`Dynamic/` 中的 Skill 参与检索、向量索引和 LRFU。启动时会比较 Dynamic
+目录的 `name + description` 指纹，只有发生变化才调用总结模型并更新本地摘要缓存。摘要仅描述能力覆盖范围，
+用于让主模型在需求完全不属于这些类别时跳过无效 Skill 检索。
 
 ### 4.13 `embedding` — 嵌入模型
 
@@ -414,7 +424,7 @@ Playwright 和联网 MCP 的公网流量，并断开不再允许的 MCP；Playwr
 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
 | `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | path |
 
-项目专属状态不再写入用户目录：会话、检查点、项目事实、代码索引、项目图谱、MCP metadata cache 和多智能体状态位于 `<workspace>/.mycodingagent/state/`，删除项目目录会一并删除这些数据。用户画像、偏好、工作流/Skill 候选仍保留在 `memory.db_path` 指向的全局库。启动过程不会迁移旧目录或修补旧 SQLite schema；不兼容时请删除对应数据库后由当前版本重建。
+项目专属状态不再写入用户目录：会话、检查点、项目事实、代码索引、项目图谱、MCP metadata cache 和多智能体状态位于 `<workspace>/.mycodingagent/state/`，删除项目目录会一并删除这些数据。用户画像、偏好、工作流/Skill 候选仍保留在 `memory.db_path` 指向的全局库；用户批准沉淀后的正式 Skill 位于 `skills.user_root/Dynamic/`。启动过程不会迁移旧目录或修补旧 SQLite schema；不兼容时请删除对应数据库后由当前版本重建。
 
 ---
 

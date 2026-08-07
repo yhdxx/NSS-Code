@@ -2036,9 +2036,9 @@ def tool_short_summary(tool_name: str, arguments: str, content: str, context_id:
 
 
 def skill_invocation_kind(tool_name: str) -> str:
-    if tool_name == "search_tool":
+    if tool_name == "search_skill":
         return "search"
-    if tool_name in {"Get_all_tool", "Get_tool_by_name"}:
+    if tool_name == "list_dynamic_skills":
         return "list"
     if tool_name in {"search_skill_references", "Get_skill_reference"}:
         return "reference"

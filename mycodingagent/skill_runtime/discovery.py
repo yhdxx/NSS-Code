@@ -30,13 +30,17 @@ REFERENCE_TEXT_SUFFIXES = {
 }
 
 
-def discover_skill_records(skills_root: Path | tuple[Path, ...] | list[Path]) -> list[SkillRecord]:
+def discover_skill_records(
+    skills_root: Path | tuple[Path, ...] | list[Path],
+    *,
+    tier: str | None = None,
+) -> list[SkillRecord]:
     if isinstance(skills_root, Path):
-        return _discover_single_root(skills_root)
+        return _discover_single_root(skills_root, tier=tier)
 
     records_by_tool_name: dict[str, SkillRecord] = {}
     for root in skills_root:
-        for record in _discover_single_root(root):
+        for record in _discover_single_root(root, tier=tier):
             records_by_tool_name[record.tool_name] = record
     return list(records_by_tool_name.values())
 
@@ -54,13 +58,13 @@ def discover_reference_records(records: dict[str, SkillRecord] | list[SkillRecor
     return reference_records
 
 
-def _discover_single_root(skills_root: Path) -> list[SkillRecord]:
+def _discover_single_root(skills_root: Path, *, tier: str | None = None) -> list[SkillRecord]:
     if not skills_root.exists():
         return []
 
     records: list[SkillRecord] = []
     for path in sorted(_iter_skill_files(skills_root)):
-        record = _load_skill_file(path)
+        record = _load_skill_file(path, tier=tier or _tier_from_path(path))
         if record is not None:
             records.append(record)
     return records
@@ -123,18 +127,18 @@ def _is_reference_text_file(path: Path) -> bool:
     return path.suffix.lower() in REFERENCE_TEXT_SUFFIXES
 
 
-def _load_skill_file(path: Path) -> SkillRecord | None:
+def _load_skill_file(path: Path, *, tier: str) -> SkillRecord | None:
     try:
         content = path.read_text(encoding="utf-8")
     except OSError:
         return None
 
     if path.name.endswith(SKILL_JSON_SUFFIX):
-        return _load_json_skill(path, content)
-    return _load_markdown_skill(path, content)
+        return _load_json_skill(path, content, tier=tier)
+    return _load_markdown_skill(path, content, tier=tier)
 
 
-def _load_json_skill(path: Path, content: str) -> SkillRecord | None:
+def _load_json_skill(path: Path, content: str, *, tier: str) -> SkillRecord | None:
     try:
         data = json.loads(content)
     except json.JSONDecodeError:
@@ -145,14 +149,27 @@ def _load_json_skill(path: Path, content: str) -> SkillRecord | None:
     name = str(data.get("name") or path.stem.removesuffix(".skill")).strip()
     description = str(data.get("description") or _first_nonempty_line(str(data.get("content") or "")) or name).strip()
     body = str(data.get("content") or content)
-    return _make_record(path, name, description, body, metadata={"format": "json", "raw": data})
+    return _make_record(path, name, description, body, metadata={"format": "json", "raw": data, "tier": tier})
 
 
-def _load_markdown_skill(path: Path, content: str) -> SkillRecord:
+def _load_markdown_skill(path: Path, content: str, *, tier: str) -> SkillRecord:
     frontmatter = _frontmatter(content)
     name = str(frontmatter.get("name") or _first_markdown_heading(content) or path.parent.name).strip()
     description = str(frontmatter.get("description") or _first_paragraph(content) or name).strip()
-    return _make_record(path, name, description, content, metadata={"format": "markdown"})
+    metadata = {"format": "markdown", "tier": tier}
+    for key in ("generated_by", "memory_uid"):
+        if frontmatter.get(key):
+            metadata[key] = str(frontmatter[key])
+    return _make_record(path, name, description, content, metadata=metadata)
+
+
+def _tier_from_path(path: Path) -> str:
+    for part in reversed(path.parts):
+        if part == "fixed":
+            return "fixed"
+        if part == "Dynamic":
+            return "dynamic"
+    return "dynamic"
 
 
 def _make_record(path: Path, name: str, description: str, content: str, metadata: dict[str, Any]) -> SkillRecord:

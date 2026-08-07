@@ -894,6 +894,12 @@ class SkillConfig:
             or _default_builtin_skills_root()
         )
     )
+    user_root: Path = field(
+        default_factory=lambda: (
+            _user_path("skills.user_root", ("MYCODINGAGENT_USER_SKILLS_ROOT",))
+            or (Path.home() / ".mycodingagent" / "skills")
+        )
+    )
     workspace_root: Path = field(default_factory=_default_workspace_skills_root)
     extra_roots: tuple[Path, ...] = field(
         default_factory=lambda: _user_paths("skills.extra_roots", ("MYCODINGAGENT_EXTRA_SKILLS_ROOTS",))
@@ -908,14 +914,17 @@ class SkillConfig:
     small_count: int = field(
         default_factory=lambda: _user_int("skills.small_count", ("MYCODINGAGENT_SKILL_SMALL_COUNT",), 8)
     )
-    default_tool_names: tuple[str, ...] = field(
-        default_factory=lambda: _user_list("skills.default_tool_names", ("MYCODINGAGENT_DEFAULT_SKILLS",), ("coding-standards",))
-    )
     prefetch_top_k: int = field(
         default_factory=lambda: _user_int("skills.prefetch_top_k", ("MYCODINGAGENT_SKILL_PREFETCH_TOP_K",), 3)
     )
     search_top_k: int = field(
         default_factory=lambda: _user_int("skills.search_top_k", ("MYCODINGAGENT_SKILL_SEARCH_TOP_K",), 8)
+    )
+    fixed_prompt_max_tokens: int = field(
+        default_factory=lambda: max(
+            1,
+            _user_int("skills.fixed_prompt_max_tokens", ("MYCODINGAGENT_FIXED_SKILL_PROMPT_MAX_TOKENS",), 2000),
+        )
     )
     min_score: float = field(
         default_factory=lambda: _user_float("skills.min_score", ("MYCODINGAGENT_SKILL_MIN_SCORE",), 0.18)
@@ -947,9 +956,6 @@ class SkillConfig:
     )
     router_retrieval_weight: float = field(
         default_factory=lambda: _user_float("skills.router_retrieval_weight", ("MYCODINGAGENT_SKILL_ROUTER_RETRIEVAL_WEIGHT",), 0.40)
-    )
-    router_pinned_bonus: float = field(
-        default_factory=lambda: _user_float("skills.router_pinned_bonus", ("MYCODINGAGENT_SKILL_ROUTER_PINNED_BONUS",), 1.0)
     )
     lrfu_decay: float = field(
         default_factory=lambda: _user_float("skills.lrfu_decay", ("MYCODINGAGENT_SKILL_LRFU_DECAY",), 0.95)
@@ -987,7 +993,15 @@ class SkillConfig:
 
     @property
     def roots(self) -> tuple[Path, ...]:
-        return _dedupe_paths((self.builtin_root, *self.extra_roots))
+        return _dedupe_paths((self.builtin_root, *self.extra_roots, self.user_root))
+
+    @property
+    def fixed_roots(self) -> tuple[Path, ...]:
+        return _dedupe_paths(tuple(root / "fixed" for root in self.roots))
+
+    @property
+    def dynamic_roots(self) -> tuple[Path, ...]:
+        return _dedupe_paths(tuple(root / "Dynamic" for root in self.roots))
 
 
 @dataclass(frozen=True)

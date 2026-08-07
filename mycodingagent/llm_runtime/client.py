@@ -579,7 +579,15 @@ def create_initial_messages(
     capability_router: Any | None = None,
     memory_runtime: MemoryRuntime | None = None,
 ) -> list[dict[str, Any]]:
-    skill_hint = skill_runtime.system_hint() if skill_runtime is not None else ""
+    if skill_runtime is None:
+        skill_hint = ""
+    else:
+        fixed_hint = getattr(skill_runtime, "fixed_skill_hint", lambda: "")()
+        skill_hint = "\n\n".join(
+            part
+            for part in (skill_runtime.system_hint(), fixed_hint)
+            if part.strip()
+        )
     return [
         {
             "role": "system",
@@ -639,10 +647,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         mode = memory_runtime.context_mode(session_id)
         return str(getattr(mode, "value", mode))
 
-    begin_turn = getattr(skill_runtime, "begin_turn", None)
-    if callable(begin_turn):
-        begin_turn()
-
     def save_session_state(*, sync: bool = False) -> None:
         if memory_runtime is None or not session_id:
             return
@@ -655,11 +659,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             session_id,
             getattr(workspace_tracker, "file_state_cache", None),
         )
-
-    def end_skill_turn() -> None:
-        end_turn = getattr(skill_runtime, "end_turn", None)
-        if callable(end_turn):
-            end_turn()
 
     turn_token_usage = TokenUsageSummary()
     session_token_usage: TokenUsageSummary | None = None
@@ -875,7 +874,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             save_session_state(sync=True)
             print_turn_token_summary()
             await record_long_term_turn_usage(False)
-            end_skill_turn()
             render_assistant_text(
                 "本轮已被用户中断。已完成的工具结果已保留，可以继续对话。"
             )
@@ -900,7 +898,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             save_session_state(sync=True)
             print_turn_token_summary()
             await record_long_term_turn_usage(False)
-            end_skill_turn()
             return assistant_text, messages
 
         mixed_plan_call = any(call.tool_name == "create_plan" for call in tool_calls) and len(tool_calls) != 1
@@ -933,7 +930,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         if not tool_calls:  # 如果模型没有请求工具，说明本轮任务已经完成。
             print_turn_token_summary()
             await record_long_term_turn_usage(True)
-            end_skill_turn()
             return assistant_text, messages  # 返回最终文本和完整消息历史给调用方。
 
         follow_up_after_tool = False
@@ -1085,7 +1081,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 print_turn_token_summary()
                 if not usage_recorded:
                     await record_long_term_turn_usage(True)
-                end_skill_turn()
                 return "计划已提交，等待后续处理。", messages
         if follow_up_after_tool and not (cancel_event is not None and cancel_event.is_set()):
             interruption_text = "当前任务已在工具调用结束后暂停，接下来处理排队消息。"
@@ -1099,7 +1094,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             save_session_state(sync=True)
             print_turn_token_summary()
             await record_long_term_turn_usage(False)
-            end_skill_turn()
             render_assistant_text(interruption_text)
             return interruption_text, messages
         if cancel_event is not None and cancel_event.is_set():
@@ -1114,13 +1108,11 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             save_session_state(sync=True)
             print_turn_token_summary()
             await record_long_term_turn_usage(False)
-            end_skill_turn()
             render_assistant_text(interruption_text)
             return interruption_text, messages
 
     print_turn_token_summary()
     await record_long_term_turn_usage(False)
-    end_skill_turn()
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。
 
 

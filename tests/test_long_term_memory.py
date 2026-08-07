@@ -4,6 +4,7 @@ import json
 import sqlite3
 from pathlib import Path
 from time import time
+from types import SimpleNamespace
 
 import pytest
 
@@ -16,6 +17,7 @@ from mycodingagent.long_term_memory.models import (
     MemoryType,
 )
 from mycodingagent.long_term_memory.namespaces import GLOBAL_WORKSPACE_FINGERPRINT, WORKFLOW_STAGING_FINGERPRINT
+from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.long_term_memory.session_serializer import build_storage_payload, session_source_hash
 from mycodingagent.long_term_memory.store import LongTermMemoryVersionConflict, SQLiteLongTermMemoryStore
 from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch, SubmitLongTermMemoryQueryResult
@@ -288,6 +290,7 @@ def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
         workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
         memory_uid=memory_uid,
         decision="approved_for_skill",
+        materialization_status="materialized",
     )
 
     assert promoted_version
@@ -296,6 +299,96 @@ def test_skill_candidate_promotion_status_creates_new_version(tmp_path: Path):
     assert latest.version_id == promoted_version
     promoted_item = store.load_items(promoted_version)[0]
     assert promoted_item.metadata["promotion_status"] == "approved_for_skill"
+    assert promoted_item.metadata["materialization_status"] == "materialized"
+
+
+def test_skill_candidate_approval_materializes_dynamic_skill(tmp_path: Path, monkeypatch):
+    from mycodingagent.long_term_memory import runtime as runtime_module
+
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    version_id, candidate = _create_skill_candidate(store)
+    runtime = LongTermMemoryRuntime.__new__(LongTermMemoryRuntime)
+    runtime.memory_runtime = SimpleNamespace(workspace_fingerprint="workspace", workspace_label="repo")
+    runtime.global_store = store
+    runtime.user_id = "u1"
+    runtime._last_context_by_session = {
+        "session-1": LongTermMemoryContext(
+            version_id=version_id,
+            query_id="query-1",
+            skill_candidates=[candidate],
+        )
+    }
+    calls = []
+
+    async def materialize(**kwargs):
+        calls.append(kwargs)
+        return {"status": "materialized", "tool_name": "skill_large_file_batch_split"}
+
+    async def approve(_memory_uid: str) -> str:
+        return "approved_for_skill"
+
+    runtime._skill_materializer = materialize
+    runtime._should_prompt_skill_promotion = lambda _memory_uid: True
+    monkeypatch.setattr(runtime_module, "_confirm_skill_promotion", approve)
+
+    import asyncio
+
+    asyncio.run(
+        runtime.record_turn_usage_and_maybe_prompt_skill_promotion(
+            session_id="session-1",
+            messages=[{"role": "assistant", "content": f"uses_memory_uid={candidate.memory_uid}"}],
+            turn_start_index=0,
+            success=True,
+        )
+    )
+
+    assert calls == [
+        {
+            "memory_uid": candidate.memory_uid,
+            "workflow": candidate.metadata["workflow"],
+            "content": candidate.content,
+        }
+    ]
+    latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT)
+    assert latest is not None
+    promoted = store.load_items(latest.version_id)[0]
+    assert promoted.metadata["promotion_status"] == "approved_for_skill"
+    assert promoted.metadata["materialization_status"] == "materialized"
+    assert "materialization_error" not in promoted.metadata
+
+
+def test_startup_retries_failed_dynamic_skill_materialization(tmp_path: Path):
+    store = SQLiteLongTermMemoryStore(tmp_path / "memory.sqlite3")
+    _version_id, candidate = _create_skill_candidate(store)
+    store.mark_skill_candidate_promotion_status(
+        user_id="u1",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        memory_uid=candidate.memory_uid,
+        decision="approved_for_skill",
+        materialization_status="failed",
+        materialization_error="temporary failure",
+    )
+    runtime = LongTermMemoryRuntime.__new__(LongTermMemoryRuntime)
+    runtime.global_store = store
+    runtime.user_id = "u1"
+    calls = []
+
+    async def materialize(**kwargs):
+        calls.append(kwargs)
+        return {"status": "materialized"}
+
+    runtime._skill_materializer = materialize
+
+    import asyncio
+
+    asyncio.run(runtime._retry_failed_skill_materializations())
+
+    assert len(calls) == 1
+    latest = store.latest_committed_version(user_id="u1", workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT)
+    assert latest is not None
+    retried = store.load_items(latest.version_id)[0]
+    assert retried.metadata["materialization_status"] == "materialized"
+    assert "materialization_error" not in retried.metadata
 
 
 def test_workflow_candidate_promotes_after_three_other_workspace_uses(tmp_path: Path):
@@ -575,6 +668,46 @@ def _create_workflow_candidate(store: SQLiteLongTermMemoryStore, *, origin_works
         extraction_id=extraction_id,
     )
     return store.load_items(version_id)[0].memory_uid
+
+
+def _create_skill_candidate(store: SQLiteLongTermMemoryStore) -> tuple[str, LongTermMemoryItem]:
+    extraction_id = store.mark_extraction_pending(
+        session_id="s-skill",
+        user_id="u1",
+        workspace_fingerprint="workspace",
+        workspace_label="workspace",
+        workspace_root="/workspace",
+        source_hash="hash-skill",
+        source_message_count=2,
+    )
+    store.claim_extraction(extraction_id, claim_timeout_seconds=60)
+    version_id = store.apply_patch_as_new_version(
+        user_id="u1",
+        workspace_fingerprint=GLOBAL_WORKSPACE_FINGERPRINT,
+        workspace_label="User Global Memory",
+        source_session_id="s-skill",
+        parent_version_id="",
+        existing_items=[],
+        new_items=[
+            {
+                "memory_type": "skill_candidate",
+                "scope": "user",
+                "content": "Locate boundaries once, then split all target files in a batch.",
+                "confidence": 0.9,
+                "evidence": ["message:1"],
+                "metadata": _workflow_metadata(
+                    name="large_file_batch_split",
+                    description="Split large files without repeated reads.",
+                    when_to_use="Several modules must be extracted from one source file.",
+                    when_not_use=["Only one small function changes."],
+                ),
+            }
+        ],
+        update_items=[],
+        retire_items=[],
+        extraction_id=extraction_id,
+    )
+    return version_id, store.load_items(version_id)[0]
 
 
 def _workflow_metadata(

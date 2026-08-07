@@ -65,6 +65,22 @@ def _tool_call_chunks(tool_id: str, name: str, arguments: str) -> list[_Chunk]:
     ]
 
 
+def test_initial_system_message_includes_fixed_cards_and_dynamic_summary() -> None:
+    class FakeSkillRuntime:
+        def system_hint(self) -> str:
+            return "Dynamic Skill 能力摘要：代码工程"
+
+        def fixed_skill_hint(self) -> str:
+            return "- skill_name: skill_coding_standards\n  name: Coding Standards\n  description: Stable rules"
+
+    messages = client.create_initial_messages(ToolRegistry(), skill_runtime=FakeSkillRuntime())
+
+    assert len(messages) == 1
+    assert messages[0]["role"] == "system"
+    assert "Dynamic Skill 能力摘要：代码工程" in messages[0]["content"]
+    assert "skill_name: skill_coding_standards" in messages[0]["content"]
+
+
 def test_provider_payloads_accept_cold_tool_topology() -> None:
     arguments = json.dumps(
         {
@@ -307,12 +323,12 @@ def test_skill_tool_calls_are_hidden_from_terminal(monkeypatch):
         lambda calls, **_kwargs: rendered_calls.extend(calls),
     )
     fake_client = _FakeClient(
-        [_FakeStream(_tool_call_chunks("call_skill", "search_tool", '{"query":"test"}'))]
+        [_FakeStream(_tool_call_chunks("call_skill", "search_skill", '{"query":"test"}'))]
     )
 
     _text, calls, _usage = _run_stream(fake_client)
 
-    assert [call.tool_name for call in calls] == ["search_tool"]
+    assert [call.tool_name for call in calls] == ["search_skill"]
     assert rendered_calls == []
 
 

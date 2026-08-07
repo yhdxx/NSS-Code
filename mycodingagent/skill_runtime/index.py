@@ -7,6 +7,10 @@ from mycodingagent.skill_runtime.models import SkillRecord, SkillReferenceRecord
 from mycodingagent.sqlite_utils import SQLITE_CONNECTION_FACTORY
 
 
+def _skill_tier_from_source_path(path: Path) -> str:
+    return "fixed" if "fixed" in path.parts else "dynamic"
+
+
 class SkillSqlStore:
     def __init__(self, db_path: Path) -> None:
         self.db_path = db_path
@@ -75,9 +79,9 @@ class SkillSqlStore:
                 source_path=Path(source_path),
                 content_hash=content_hash,
                 updated_at=updated_at,
+                metadata={"tier": _skill_tier_from_source_path(Path(source_path))},
             )
         return records
-
     def upsert(self, record: SkillRecord) -> None:
         with self._connect() as conn:
             conn.execute(

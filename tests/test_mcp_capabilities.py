@@ -620,7 +620,7 @@ def test_skill_and_mcp_search_tool_names_are_unambiguous(tmp_path):
 
     names = {schema["name"] for schema in registry.get_all_schemas("openai")}
 
-    assert "search_tool" in names
+    assert "search_skill" in names
     assert "search_mcp_tools" in names
     assert "search_tools" not in names
 

@@ -3,11 +3,13 @@ from __future__ import annotations
 import time
 from pathlib import Path
 import re
-from typing import Any
+from typing import Any, Callable
 from uuid import uuid4
 
 from mycodingagent.configuration import CONFIG
+from mycodingagent.llm_runtime.providers import InferenceProvider
 from mycodingagent.skill_runtime.discovery import discover_reference_records, discover_skill_records, normalize_tool_name
+from mycodingagent.skill_runtime.dynamic_summary import DynamicSkillSummary
 from mycodingagent.skill_runtime.embeddings import EmbeddingCache, create_embedding_service
 from mycodingagent.skill_runtime.index import SkillSqlStore
 from mycodingagent.skill_runtime.models import SearchResult, SkillRecord, SkillReferenceRecord, SkillSyncReport
@@ -16,9 +18,8 @@ from mycodingagent.skill_runtime.router import SkillRouter, SkillRouterConfig
 from mycodingagent.skill_runtime.session_skill_cache import SessionSkillCache
 from mycodingagent.skill_runtime.contracts import ToolRegistrar
 from mycodingagent.tool_runtime.skill_tools import (
-    GetAllTool,
+    ListDynamicSkillsTool,
     GetSkillReferenceTool,
-    GetToolByNameTool,
     InvokeSkillTool,
     SearchSkillReferencesTool,
     SearchSkillTool,
@@ -31,14 +32,21 @@ from mycodingagent.skill_runtime.watcher import MultiSkillDirectoryWatcher
 TOKEN_RE = re.compile(r"[a-zA-Z0-9_]+|[\u4e00-\u9fff]")
 
 SEARCH_HINT = (
-    "查询、列举、确认当前可用 SKILL 时，必须优先调用 Get_all_tool，禁止用 Bash、Glob、ReadFile "
-    "直接检查 skills 目录或 .skill_runtime 数据库。需要按能力查找 SKILL 时，调用 search_tool 批量检索，"
-    "search_tool 的 query 必须使用中文能力描述；如果用户使用英文或中英混合表达，先翻译/概括成中文再检索。"
-    "search_tool 使用本地 BGE embedding、本地 Milvus HNSW 向量检索、Milvus 内置 BM25 关键词检索和 RRF 融合排序。"
+    "查询、列举、确认当前可用 Dynamic Skill 时，必须优先调用 list_dynamic_skills，禁止用 Bash、Glob、ReadFile "
+    "直接检查 skills 目录或 .skill_runtime 数据库。需要按能力查找 SKILL 时，调用 search_skill 批量检索，"
+    "search_skill 的 query 必须使用中文能力描述；如果用户使用英文或中英混合表达，先翻译/概括成中文再检索。"
     "最多尝试三次（防止死循环），且三次检索必须逐步放宽：具体任务 -> 同义词/能力类别 -> 上位领域。"
-    "只有当 SKILL 兜底能力摘要中明确描述了你需要的能力，且三次 search_tool 都没有找到对应 Skill 时，才允许调用 Get_all_tool；"
-    "如果不能根据摘要确认存在相关能力，禁止调用 Get_all_tool，以减少不必要 token 消耗。"
-    "Get_all_tool 返回后，再调用 Get_tool_by_name 获取目标 SKILL 详情；需要应用该 SKILL 时调用固定工具 invoke_skill。"
+    "只有当 Dynamic Skill 能力摘要中明确描述了你需要的能力，且三次 search_skill 都没有找到对应 Skill 时，才允许调用 list_dynamic_skills；"
+    "如果摘要描述中没有相关能力，禁止调用 list_dynamic_skills，以减少不必要 token 消耗。"
+    "search_skill 或 list_dynamic_skills 返回准确 skill_name 后，需要应用该 SKILL 时直接调用 invoke_skill。"
+)
+
+SKILL_TIER_POLICY = (
+    "Skill 分层规则：Skill 分为 fixed 和 Dynamic 两类。fixed 是少量稳定、每轮都可能需要的基础工作流；"
+    "启动时只把它们的 skill_name、name、description 卡片放入 system prompt，任务匹配时可直接按名调用 invoke_skill，"
+    "完整正文不会预先占用上下文。Dynamic 是可持续增长的专家工作流目录，不把全部 Skill 放进提示词，先用能力摘要判断"
+    "是否可能相关，再按需调用 search_skill；命中后同样只通过 invoke_skill 加载完整正文。这样既保持固定前缀稳定、"
+    "有利于模型缓存，又避免大量暂时无关的 Skill 消耗上下文。fixed 和 Dynamic 都不是自动执行，必须由任务相关性决定是否调用。"
 )
 
 CAPABILITY_SELECTION_POLICY = (
@@ -49,13 +57,15 @@ CAPABILITY_SELECTION_POLICY = (
     "决策顺序：\n"
     "1. 只有同时满足以下条件，才允许直接依赖 Model 自身能力回答：不需要任何 Tool；不需要任何 Business Skill；"
     "不需要访问本地代码、文件或命令；当前 Prompt 中不存在明显匹配的 Business Skill。\n"
-    "2. 如果 Runtime Context recommendations、search_tool 或 Get_tool_by_name 已经识别出高度匹配的 Business Skill，"
+    "2. 如果 Runtime Context recommendations、search_skill、list_dynamic_skills 或 fixed Skill 卡片已经识别出高度匹配的 Business Skill，"
     "必须优先调用固定工具 invoke_skill，并传入对应 skill_name；"
     "不得因为你自己知道如何完成，就跳过该 Skill；Business Skill 优先级高于 Model 自身能力和 Core Tool。\n"
-    "3. 如果当前 Prompt 中没有匹配 Business Skill，但任务可能存在相关 Skill，必须先调用 search_tool 检索；"
-    "调用 search_tool 时，query 必须使用中文表达；如果用户原始需求是英文或中英混合，先在 query 中翻译/概括为中文能力描述再检索。"
+    "3. 如果 fixed Skill 卡片中没有匹配项，但 Dynamic Skill 能力摘要表明任务可能存在相关 Skill，必须先调用 search_skill 检索；"
+    "若摘要明确完全不覆盖用户需求，可以跳过 Skill 检索；若摘要因首次生成或模型错误而暂不可用，"
+    "则在任务可能需要专家工作流时保守地调用 search_skill。"
+    "调用 search_skill 时，query 必须使用中文表达；如果用户原始需求是英文或中英混合，先在 query 中翻译/概括为中文能力描述再检索。"
     "连续多次检索时，必须逐步放宽范围：第一次使用具体任务，第二次使用同义词和能力类别，第三次使用上位领域；不要越搜越窄。"
-    "只有当 SKILL 兜底能力摘要明确描述了需要的能力，且三次 search_tool 均未命中时，才允许调用 Get_all_tool；否则禁止调用 Get_all_tool。\n"
+    "只有当 Dynamic Skill 能力摘要明确描述了需要的能力，且三次 search_skill 均未命中时，才允许调用 list_dynamic_skills；否则禁止调用 list_dynamic_skills。\n"
     "4. 只有不存在相关 Business Skill、Business Skill 明显无法完成任务，或 Skill 指令明确要求执行操作时，才直接调用 Core Tool。\n"
     "禁止行为：Business Skill 已存在时，禁止直接依赖 HTML/CSS/Python/Java 等自身知识完成整个任务；"
     "禁止直接调用 ReadFile、WriteFile、EditFile、Glob、Grep、Bash 等 Core Tool 替代 Business Skill 的专家工作流。\n"
@@ -65,28 +75,6 @@ CAPABILITY_SELECTION_POLICY = (
     "invoke_skill(skill_name=\"skill_backend_interview\")。"
 )
 
-SKILL_FALLBACK_SUMMARY = (
-    "当前 skills 覆盖代码开发与审查、后端面试、前端页面设计、产品经理工具、简历定制、合同审查、"
-    "法条转 Markdown、Obsidian 笔记/Canvas/Bases、多媒体压缩转换、"
-    "网页转 Markdown、Chrome 自动化、网页转桌面应用、网页设计分析、数据叙事、论文分析、"
-    "股票分析、语音识别与合成、视频下载与字幕提取、PPT 生成/可视化/路演视频/PPTX 导出、"
-    "文章研究写作/格式化/配图/发布、微信公众号/X/多平台内容发布、小红书美妆内容、电商文案/"
-    "营销视频/商品视频/萌宠带货/数字人带货、短视频爆款文案/二创/反推/抽帧/素材生成/合成、"
-    "历史/科普/三体/诗词/睡前故事等内容创作，以及智能内容系统、"
-    "AI 社交发布和各类视频/图像/音频生成工作流。"
-)
-
-SKILL_FALLBACK_HINT = (
-    "SKILL 兜底能力摘要：\n"
-    f"{SKILL_FALLBACK_SUMMARY}\n"
-    "如果 Runtime Context 推荐的 SKILL 不是你真正需要的能力，请根据该摘要判断是否调用 "
-    "search_tool、Get_all_tool、Get_tool_by_name、search_skill_references 或 Get_skill_reference "
-    "继续查询；search_tool 的 query 必须使用中文。需要应用某个 SKILL 时调用 invoke_skill。"
-    "只有摘要明确覆盖目标能力且 search_tool 多次未命中时，才允许调用 Get_all_tool；"
-    "若摘要没有明确覆盖目标能力，禁止调用 Get_all_tool，直接回答、使用核心工具或说明当前没有对应 Skill。"
-)
-
-
 class SkillRuntime:
     def __init__(
         self,
@@ -94,17 +82,21 @@ class SkillRuntime:
         skills_root: Path | None = None,
         skill_roots: tuple[Path, ...] | list[Path] | None = None,
         registry: ToolRegistrar,
+        summary_provider_getter: Callable[[], InferenceProvider] | None = None,
     ) -> None:
         self.skills_root = skills_root or CONFIG.skills.root
-        self.skill_roots = tuple(skill_roots or CONFIG.skills.roots)
-        self._builtin_root = self.skill_roots[0] if self.skill_roots else CONFIG.skills.builtin_root
+        self.skill_base_roots = tuple(skill_roots or CONFIG.skills.roots)
+        self.fixed_roots = tuple(root / "fixed" for root in self.skill_base_roots)
+        self.dynamic_roots = tuple(root / "Dynamic" for root in self.skill_base_roots)
+        self.skill_roots = (*self.fixed_roots, *self.dynamic_roots)
+        self._builtin_root = CONFIG.skills.builtin_root
         self.registry = registry
         self.small_count = CONFIG.skills.small_count
         self.prefetch_top_k = CONFIG.skills.prefetch_top_k
         self.search_top_k = CONFIG.skills.search_top_k
         self.min_score = CONFIG.skills.min_score
-        self.default_tool_names = {normalize_tool_name(name) for name in CONFIG.skills.default_tool_names}
         index_dir = CONFIG.skills.index_dir or (self.skills_root / ".skill_runtime")
+        self.user_skills_root = CONFIG.skills.user_root
         self.store = SkillSqlStore(index_dir / "skills.sqlite3")
         self.embedding_service = create_embedding_service()
         self.embedding_cache = EmbeddingCache(index_dir / "embeddings.sqlite3")
@@ -123,7 +115,6 @@ class SkillRuntime:
                 user_weight=CONFIG.skills.router_user_weight,
                 session_weight=CONFIG.skills.router_session_weight,
                 retrieval_weight=CONFIG.skills.router_retrieval_weight,
-                pinned_bonus=CONFIG.skills.router_pinned_bonus,
             )
         )
         self.user_skill_cache = UserSkillCache(
@@ -137,26 +128,27 @@ class SkillRuntime:
             decay=CONFIG.skills.lrfu_decay,
             max_entries=CONFIG.skills.session_skill_cache_max_entries,
         )
+        self.dynamic_skill_summary = DynamicSkillSummary(
+            index_dir / "dynamic_skill_summary.json",
+            provider_getter=summary_provider_getter,
+        )
         self.records = self.store.load_all()
         self.references = self.store.load_references()
-        self.search_tool_instance = SearchSkillTool(self)
-        self.get_all_tool_instance = GetAllTool(self)
-        self.get_tool_by_name_instance = GetToolByNameTool(self)
+        self.search_skill_tool_instance = SearchSkillTool(self)
+        self.list_dynamic_skills_tool_instance = ListDynamicSkillsTool(self)
         self.search_references_tool_instance = SearchSkillReferencesTool(self)
         self.get_reference_tool_instance = GetSkillReferenceTool(self)
         self.invoke_skill_instance = InvokeSkillTool(self)
         self._registered_skill_tools: set[str] = set()
-        self._session_pinned_tool_names: dict[str, None] = {}
-        self._turn_pinned_tool_names: dict[str, None] = {}
         self._watcher = MultiSkillDirectoryWatcher(self.skill_roots)
 
     async def initialize(self) -> SkillSyncReport:
         self._watcher.start()
         report = await self.ensure_synced()
         self._ensure_vector_index_complete(report)
-        self.registry.register(self.search_tool_instance)
-        self.registry.register(self.get_all_tool_instance)
-        self.registry.register(self.get_tool_by_name_instance)
+        await self.dynamic_skill_summary.refresh(self.dynamic_records)
+        self.registry.register(self.search_skill_tool_instance)
+        self.registry.register(self.list_dynamic_skills_tool_instance)
         self.registry.register(self.search_references_tool_instance)
         self.registry.register(self.get_reference_tool_instance)
         self.registry.register(self.invoke_skill_instance)
@@ -178,12 +170,12 @@ class SkillRuntime:
             limit=self.router_cache_top_k,
             current_round=self.session_skill_call_round,
         )
+        dynamic_records = self.dynamic_records
         selected = self.router.select(
-            records=self.records,
+            records=dynamic_records,
             retrieval_results=retrieval_results,
             user_candidates=user_candidates,
             session_candidates=session_candidates,
-            pinned_names=set(self._session_pinned_tool_names) | set(self._turn_pinned_tool_names) | self.default_tool_names,
         )
         by_name = {result.record.tool_name: result for result in retrieval_results}
         recommendations: list[SearchResult] = []
@@ -206,7 +198,7 @@ class SkillRuntime:
                     score=1.0 / rank,
                     keyword_score=0.0,
                     semantic_score=0.0,
-                    metadata={"retriever": "skill_router_lrfu_or_pinned", "router_source": "skill_router"},
+                    metadata={"retriever": "skill_router_lrfu", "router_source": "skill_router"},
                 )
             )
         return recommendations
@@ -224,7 +216,7 @@ class SkillRuntime:
 
     def _ensure_vector_index_complete(self, report: SkillSyncReport | None = None) -> None:
         try:
-            stale_records = self.vector_store.stale_records(self.records)
+            stale_records = self.vector_store.stale_records(self.dynamic_records)
         except Exception:
             return
         if not stale_records:
@@ -258,9 +250,20 @@ class SkillRuntime:
         return False, last_exc
 
     async def sync(self) -> SkillSyncReport:
-        discovered = discover_skill_records(self.skill_roots)
+        fixed_discovered = discover_skill_records(self.fixed_roots, tier="fixed")
+        dynamic_discovered = discover_skill_records(self.dynamic_roots, tier="dynamic")
+        fixed_names = {record.tool_name for record in fixed_discovered}
+        conflicts = [record for record in dynamic_discovered if record.tool_name in fixed_names]
+        discovered = [
+            *fixed_discovered,
+            *(record for record in dynamic_discovered if record.tool_name not in fixed_names),
+        ]
         stored = self.store.load_all()
-        report = SkillSyncReport()
+        report = SkillSyncReport(
+            rejected=[f"{record.source_path}: 与 fixed Skill 工具名冲突" for record in conflicts]
+        )
+        if conflicts:
+            report.changed = True
         existing_sources = {str(record.source_path) for record in discovered}
         existing_tool_names = {record.tool_name for record in discovered}
         changed_records: list[SkillRecord] = []
@@ -298,35 +301,49 @@ class SkillRuntime:
         report.reference_deleted += reference_report[2]
         if any(reference_report):
             report.changed = True
-        if changed_records:
-            self.vector_store.upsert(changed_records)
+        changed_dynamic_records = [
+            record for record in changed_records if record.metadata.get("tier", "dynamic") == "dynamic"
+        ]
+        dynamic_records = {
+            name: record
+            for name, record in current_records.items()
+            if record.metadata.get("tier", "dynamic") == "dynamic"
+        }
+        if changed_dynamic_records:
+            self.vector_store.upsert(changed_dynamic_records)
             report.embedding_cache_hits += getattr(self.vector_store, "last_cache_hits", 0)
             report.embedding_cache_misses += getattr(self.vector_store, "last_cache_misses", 0)
         if getattr(self.vector_store, "needs_full_sync", False):
-            self.vector_store.upsert(list(current_records.values()))
+            self.vector_store.upsert(list(dynamic_records.values()))
             report.embedding_cache_hits += getattr(self.vector_store, "last_cache_hits", 0)
             report.embedding_cache_misses += getattr(self.vector_store, "last_cache_misses", 0)
-        if report.deleted:
-            self.vector_store.delete_missing(existing_tool_names)
-            self.embedding_cache.delete_missing(existing_tool_names)
-            self._session_pinned_tool_names = {
-                name: None
-                for name in self._session_pinned_tool_names
-                if name in existing_tool_names
-            }
-            self._turn_pinned_tool_names = {
-                name: None
-                for name in self._turn_pinned_tool_names
-                if name in existing_tool_names
-            }
+        if report.changed:
+            dynamic_names = set(dynamic_records)
+            self.vector_store.delete_missing(dynamic_names)
+            self.embedding_cache.delete_missing(dynamic_names)
         self.records = current_records
         self.references = self.store.load_references()
         self._register_available_skill_tools()
-        self._activate_default_skill_tools()
         return report
 
     def get_record(self, tool_name: str) -> SkillRecord | None:
         return self.records.get(tool_name)
+
+    @property
+    def fixed_records(self) -> dict[str, SkillRecord]:
+        return {
+            name: record
+            for name, record in self.records.items()
+            if record.metadata.get("tier") == "fixed"
+        }
+
+    @property
+    def dynamic_records(self) -> dict[str, SkillRecord]:
+        return {
+            name: record
+            for name, record in self.records.items()
+            if record.metadata.get("tier", "dynamic") == "dynamic"
+        }
 
     def list_references_for_skill(self, tool_name: str) -> list[dict[str, Any]]:
         records = [
@@ -363,8 +380,6 @@ class SkillRuntime:
             top_k=limit,
             preferred_names=tool_names,
         )
-        for result in results:
-            self._pin_skill(result.record.tool_name, scope="turn")
         skills = [_skill_payload_from_record(item.record) for item in results]
         return {
             "hint": SEARCH_HINT,
@@ -383,9 +398,9 @@ class SkillRuntime:
             ],
         }
 
-    async def list_skill_tools(self) -> dict[str, Any]:
+    async def list_dynamic_skills(self) -> dict[str, Any]:
         await self.ensure_synced()
-        records = sorted(self.records.values(), key=lambda record: record.tool_name)
+        records = sorted(self.dynamic_records.values(), key=lambda record: record.tool_name)
         return {
             "count": len(records),
             "tools": [
@@ -397,37 +412,7 @@ class SkillRuntime:
                 }
                 for record in records
             ],
-            "next_step": "使用准确的 skill_name 调用 invoke_skill 应用工作流，或调用 Get_tool_by_name 查看详情。",
-        }
-
-    async def get_tool_schema_by_name(self, tool_name: str) -> dict[str, Any]:
-        await self.ensure_synced()
-        record = self.records.get(tool_name)
-        if record is None:
-            lower_name = tool_name.lower()
-            matches = [
-                record
-                for record in self.records.values()
-                if lower_name in record.tool_name.lower() or lower_name in record.name.lower()
-            ]
-            if len(matches) == 1:
-                record = matches[0]
-        if record is None:
-            return {
-                "error": f"未找到 SKILL 工具：{tool_name}",
-                "hint": "调用 Get_all_tool 查看准确的可用工具名称。",
-            }
-        self._pin_skill(record.tool_name, scope="turn")
-        self.session_skill_cache.touch(
-            record.tool_name,
-            current_round=self.session_skill_call_round,
-            reward=self.session_activation_reward,
-        )
-        return {
-            **_skill_payload_from_record(record),
-            "source": self._source_kind(record.source_path),
-            "source_path": str(record.source_path),
-            "next_step": "需要应用该工作流时，使用此 skill_name 调用 invoke_skill。",
+            "next_step": "使用准确的 skill_name 调用 invoke_skill 应用工作流。",
         }
 
     async def search_skill_references(self, *, query: str = "", skill_name: str = "", max_results: int = 5) -> dict[str, Any]:
@@ -437,7 +422,7 @@ class SkillRuntime:
         if skill_name and not resolved_skill:
             return {
                 "error": f"未找到 SKILL 工具：{skill_name}",
-                "hint": "使用 Get_all_tool 查看准确的可用 SKILL 工具名称。",
+                "hint": "使用 list_dynamic_skills 查看准确的可用 Dynamic Skill 名称。",
                 "count": 0,
                 "references": [],
             }
@@ -489,7 +474,7 @@ class SkillRuntime:
         if not skill_tool_name:
             return {
                 "error": f"未找到 SKILL 工具：{skill_name}",
-                "hint": "使用 Get_all_tool 查看准确的可用 SKILL 工具名称。",
+                "hint": "使用 list_dynamic_skills 查看准确的可用 Dynamic Skill 名称。",
             }
         normalized_path = _normalize_reference_path(reference_path)
         if normalized_path is None:
@@ -514,34 +499,87 @@ class SkillRuntime:
         }
 
     def system_hint(self) -> str:
-        return CAPABILITY_SELECTION_POLICY + "\n\n" + SEARCH_HINT + "\n\n" + SKILL_FALLBACK_HINT
+        parts = [SKILL_TIER_POLICY, CAPABILITY_SELECTION_POLICY, SEARCH_HINT]
+        summary = self.dynamic_skill_summary.summary.strip()
+        if summary:
+            parts.append(_dynamic_skill_summary_hint(summary))
+        return "\n\n".join(parts)
 
-    def default_skill_hint(self) -> str:
-        records = [
-            self.records[name]
-            for name in self.default_tool_names
-            if name in self.records
-        ]
+    def fixed_skill_hint(self, *, max_tokens: int | None = None) -> str:
+        records = [self.fixed_records[name] for name in sorted(self.fixed_records)]
         if not records:
             return ""
-        parts = [
-            "以下 SKILL 是编码智能体默认加载的基础开发流程，处理编码、改造、实现系统或较复杂功能时应优先遵循："
-        ]
+        token_budget = max_tokens or CONFIG.skills.fixed_prompt_max_tokens
+        parts = ["以下是当前会话固定可用的 Skill 卡片。只有任务确实匹配时才调用 invoke_skill，卡片不代表 Skill 已执行："]
+        used_tokens = _estimate_card_tokens(parts[0])
+        included = 0
         for record in records:
-            parts.append(
-                f"\n---\n默认 SKILL: {record.tool_name}\n"
-                f"名称: {record.name}\n"
-                f"描述: {record.description}\n"
-                f"来源: {self._source_kind(record.source_path)}\n"
-                f"内容:\n{record.content}"
+            card = (
+                f"\n- skill_name: {record.tool_name}\n"
+                f"  name: {record.name}\n"
+                f"  description: {record.description[:800]}"
             )
+            card_tokens = _estimate_card_tokens(card)
+            if used_tokens + card_tokens > token_budget:
+                break
+            parts.append(card)
+            used_tokens += card_tokens
+            included += 1
+        omitted = len(records) - included
+        if omitted:
+            parts.append(f"\n- 另有 {omitted} 个 fixed Skill 因固定卡片预算未展示")
         return "\n".join(parts)
+
+    async def materialize_dynamic_skill(
+        self,
+        *,
+        memory_uid: str,
+        workflow: dict[str, Any],
+        content: str,
+    ) -> dict[str, str]:
+        name = str(workflow.get("name") or "").strip()
+        description = str(workflow.get("description") or "").strip()
+        when_to_use = str(workflow.get("when_to_use") or "").strip()
+        when_not_use = [str(item).strip() for item in list(workflow.get("when_not_use") or []) if str(item).strip()]
+        if not name or not description or not when_to_use or not content.strip():
+            return {"status": "failed", "error": "长期记忆工作流缺少生成 Dynamic Skill 所需字段"}
+
+        tool_name = normalize_tool_name(name)
+        skill_path = self.user_skills_root / "Dynamic" / tool_name / CONFIG.skills.markdown_filename
+        if skill_path.exists():
+            try:
+                existing = skill_path.read_text(encoding="utf-8")
+            except OSError as exc:
+                return {"status": "failed", "error": f"读取现有 Dynamic Skill 失败：{exc}"}
+            if f"memory_uid: {memory_uid}" not in existing:
+                return {"status": "conflict", "error": f"Dynamic Skill 已存在且不属于 memory_uid={memory_uid}"}
+
+        skill_path.parent.mkdir(parents=True, exist_ok=True)
+        generated = _render_generated_dynamic_skill(
+            name=name,
+            description=description,
+            when_to_use=when_to_use,
+            when_not_use=when_not_use,
+            content=content,
+            memory_uid=memory_uid,
+        )
+        temporary_path = skill_path.with_suffix(".tmp")
+        try:
+            temporary_path.write_text(generated, encoding="utf-8")
+            temporary_path.replace(skill_path)
+        except OSError as exc:
+            return {"status": "failed", "error": f"写入 Dynamic Skill 失败：{exc}"}
+
+        await self.sync()
+        record = self.records.get(tool_name)
+        if record is None or record.metadata.get("tier") != "dynamic":
+            return {"status": "failed", "error": "Dynamic Skill 写入后未能通过同步与审核"}
+        return {"status": "materialized", "tool_name": tool_name, "path": str(skill_path)}
 
     def _skill_management_schemas(self) -> list[dict[str, Any]]:
         return [
-            self.search_tool_instance.get_schema(),
-            self.get_all_tool_instance.get_schema(),
-            self.get_tool_by_name_instance.get_schema(),
+            self.search_skill_tool_instance.get_schema(),
+            self.list_dynamic_skills_tool_instance.get_schema(),
             self.search_references_tool_instance.get_schema(),
             self.get_reference_tool_instance.get_schema(),
             self.invoke_skill_instance.get_schema(),
@@ -554,28 +592,10 @@ class SkillRuntime:
             self.registry.register(SkillTool(self, tool_name))
             self._registered_skill_tools.add(tool_name)
 
-    def _activate_default_skill_tools(self) -> None:
-        for tool_name in self.default_tool_names:
-            self._pin_skill(tool_name, scope="session")
-
-    def begin_turn(self) -> None:
-        self._turn_pinned_tool_names.clear()
-
-    def end_turn(self) -> None:
-        self._turn_pinned_tool_names.clear()
-
-    def _pin_skill(self, tool_name: str, *, scope: str = "turn") -> None:
-        if tool_name not in self.records:
-            return
-        pinned = self._session_pinned_tool_names if scope == "session" else self._turn_pinned_tool_names
-        pinned[tool_name] = None
-        max_pins = max(self.router_cache_top_k, CONFIG.skills.router_top_n)
-        while len(pinned) > max_pins:
-            oldest = next(iter(pinned))
-            pinned.pop(oldest, None)
-
     def record_skill_invocation(self, tool_name: str) -> None:
         if tool_name not in self.records:
+            return
+        if tool_name not in self.dynamic_records:
             return
         self.session_skill_call_round += 1
         self.session_skill_cache.touch(
@@ -589,7 +609,6 @@ class SkillRuntime:
             skill_name=tool_name,
             session_skill_call_round=self.session_skill_call_round,
         )
-        self._pin_skill(tool_name, scope="turn")
 
     def _search_records(
         self,
@@ -598,9 +617,10 @@ class SkillRuntime:
         top_k: int,
         preferred_names: list[str] | None = None,
     ) -> list[SearchResult]:
+        records = self.dynamic_records
         results = self.vector_store.search(
             query,
-            records=self.records,
+            records=records,
             top_k=top_k,
             preferred_names=preferred_names,
         )
@@ -608,7 +628,7 @@ class SkillRuntime:
             primary=results or [],
             fallback=_local_keyword_search(
                 query,
-                records=self.records,
+                records=records,
                 top_k=top_k,
                 preferred_names=preferred_names,
             ),
@@ -755,6 +775,58 @@ def _local_keyword_search(
             )
         )
     return sorted(results, key=lambda item: (-item.score, item.record.tool_name))[:top_k]
+
+
+def _render_generated_dynamic_skill(
+    *,
+    name: str,
+    description: str,
+    when_to_use: str,
+    when_not_use: list[str],
+    content: str,
+    memory_uid: str,
+) -> str:
+    never_use = "\n".join(f"- {item}" for item in when_not_use) or "- 无"
+    return "\n".join(
+        [
+            "---",
+            f"name: {_frontmatter_value(name)}",
+            f"description: {_frontmatter_value(description)}",
+            "generated_by: long_term_memory",
+            f"memory_uid: {memory_uid}",
+            "---",
+            "",
+            f"# {name}",
+            "",
+            "## 适用场景",
+            when_to_use,
+            "",
+            "## 不适用场景",
+            never_use,
+            "",
+            "## 工作流",
+            content.strip(),
+            "",
+        ]
+    )
+
+
+def _frontmatter_value(value: str) -> str:
+    return " ".join(value.split()).replace(":", "-")
+
+
+def _estimate_card_tokens(text: str) -> int:
+    return max(1, (len(text) + 3) // 4)
+
+
+def _dynamic_skill_summary_hint(summary: str) -> str:
+    return (
+        "Dynamic Skill 能力摘要（仅用于判断是否值得检索，不代表这些 Skill 已加载或已执行）：\n"
+        f"{summary}\n"
+        "若用户需求可能属于摘要中的任一能力类别，先按检索规则调用 search_skill；"
+        "若用户需求完全不在摘要覆盖范围内，可以不搜索 Skill，直接使用模型自身能力或 Core Tool 完成任务。"
+        "只有摘要明确覆盖目标能力且多次 search_skill 未命中时，才允许调用 list_dynamic_skills。"
+    )
 
 
 def _local_keyword_score(query_tokens: list[str], record: SkillRecord) -> float:

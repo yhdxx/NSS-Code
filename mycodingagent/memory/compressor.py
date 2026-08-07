@@ -13,9 +13,8 @@ REPRODUCIBLE_TOOLS = {
     "Grep",
     "Get_skill_reference",
     "search_skill_references",
-    "search_tool",
-    "Get_tool_by_name",
-    "Get_all_tool",
+    "search_skill",
+    "list_dynamic_skills",
     "invoke_skill",
 }
 

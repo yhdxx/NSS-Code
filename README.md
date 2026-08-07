@@ -236,7 +236,7 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 核心工具（文件读写、Glob/Grep、Bash、ask_user）
   + 固定网页工具（ResearchWeb / FetchUrl）
   + MCP 固定 discovery/execution tools
-  + Skill 固定入口（search_tool / Get_all_tool / invoke_skill 等）
+  + Skill 固定入口（search_skill / list_dynamic_skills / invoke_skill 等）
   + 上下文恢复工具
   -> OpenAI function calling tools
 ```
@@ -404,7 +404,12 @@ Skill 系统按"发现 -> 审查 -> 索引 -> 检索 -> 路由 -> 调用 -> 反�
 
 ### 7.1 Skill 发现
 
-`skill_runtime/discovery.py` 扫描 `skills/` 目录：
+每个 Skill 根目录只扫描两个区：
+
+- `fixed/`：固定 Skill。启动时只把稳定排序的 `skill_name + name + description` 卡片放入 system prompt，正文仍由 `invoke_skill` 渐进加载。
+- `Dynamic/`：动态 Skill。参与混合检索和 LRFU，不直接把所有卡片放入主模型上下文。目录名区分大小写，平铺在 Skill 根目录下的旧结构不会被发现。
+
+`skill_runtime/discovery.py` 在两个区内：
 
 1. 查找 `SKILL.md` 或 `.skill.json`。
 2. 解析名称、描述、正文、references。
@@ -430,15 +435,19 @@ Skill 检索融合：
 - RRF 排名融合
 - 本地关键词回退
 
+只有 `Dynamic/` 中的 Skill 进入检索和向量索引。启动时 Runtime 对所有 Dynamic Skill 的 `name + description`
+计算稳定指纹；指纹变化时才调用总结模型，把能力归并为使用一到两个关键词命名的简洁类别，并缓存结果。
+这段摘要会进入 system prompt，帮助主模型判断是否值得检索：需求可能命中摘要时调用 `search_skill`，完全不在摘要覆盖范围时可跳过 Skill 检索。
+
 ### 7.4 LRFU 反馈
 
 每次 Skill 被调用后更新：
 
 - 用户级 LRFU：跨会话持久化，学习长期偏好。
 - 会话级 LRFU：仅当前会话有效，捕捉短期任务上下文。
-- Pin / 默认 Skill：作为固定信号参与排序。
 
-最终路由结果以 tool schema 形式暴露给模型。
+LRFU 只记录 Dynamic Skill；fixed Skill 不进入候选池，也没有 pin 表或默认 pin。所有 Skill 都通过稳定的
+`invoke_skill(skill_name=...)` 入口加载正文并执行。
 
 ---
 
@@ -625,7 +634,8 @@ Runtime 会记录 workflow/skill 是否被模型实际使用：
 
 - workflow 被三个不同其他项目查询但未使用：降级为原项目专属。
 - workflow 被三个不同其他项目查询并成功使用：升级为全局 `skill_candidate`。
-- `skill_candidate` 成功复用达到阈值：询问用户是否沉淀为正式 Skill。
+- `skill_candidate` 成功复用达到阈值：询问用户是否沉淀为正式 Skill；批准后原子写入
+  `~/.mycodingagent/skills/Dynamic/<skill_name>/SKILL.md` 并立即同步。物化失败会记录状态并在下次启动回填时重试。
 
 ---
 
@@ -711,7 +721,9 @@ mycodingagent/
 └── workspace/              # 工作区身份和文件缓存
 
 mycodingagent/multi_agent/   # 多智能体编排、上下文、工具权限和文件协调
-skills/                     # Skill 插件资产
+skills/                     # Skill 插件资产根目录
+├── fixed/                  # 每轮 system prompt 注入 name + description 卡片
+└── Dynamic/                # 动态检索、LRFU 与长期记忆沉淀 Skill
 infra/searxng/              # 会话私有 SearXNG 配置模板
 tests/                      # 单元、集成和评测测试
 ```

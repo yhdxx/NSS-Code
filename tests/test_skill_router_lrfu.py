@@ -104,7 +104,6 @@ class SkillRouterTests(unittest.TestCase):
                 user_weight=0.15,
                 session_weight=0.45,
                 retrieval_weight=0.40,
-                pinned_bonus=0.0,
             )
         )
         selected = router.select(
@@ -114,7 +113,6 @@ class SkillRouterTests(unittest.TestCase):
             ],
             user_candidates=[LRFUCandidate("skill_a", 10.0)],
             session_candidates=[LRFUCandidate("skill_b", 10.0)],
-            pinned_names=set(),
         )
         selected_names = {record.tool_name for record in selected}
 
