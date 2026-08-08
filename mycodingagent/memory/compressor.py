@@ -168,7 +168,7 @@ def estimate_size(value: Any) -> int:
 
 
 def sanitize_message_for_model(message: dict[str, Any]) -> dict[str, Any]:
-    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
+    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content"}
     return {key: value for key, value in message.items() if key in allowed_keys}
 
 

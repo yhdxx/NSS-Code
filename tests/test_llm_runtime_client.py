@@ -11,8 +11,14 @@ from pydantic import BaseModel
 from mycodingagent.llm_runtime import client
 from mycodingagent.llm_runtime import streaming
 from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
-from mycodingagent.llm_runtime.providers.base import ChatRequest, ModelProfile
+from mycodingagent.llm_runtime.providers.base import (
+    ChatRequest,
+    ModelProfile,
+    PendingToolCall,
+    StreamRoundResult,
+)
 from mycodingagent.llm_runtime.providers.openai_compatible import OpenAICompatibleProvider
+from mycodingagent.llm_runtime.providers.vendors import DeepSeekProvider
 from mycodingagent.llm_runtime.providers.anthropic import AnthropicProvider
 from mycodingagent.llm_runtime.providers.gemini import GeminiProvider
 from mycodingagent.plan_runtime import PlanRuntime, PlanStepStatus, UpdatePlanStep
@@ -24,9 +30,15 @@ from tests.model_manager_stub import ask_model_with_raw_client
 
 
 class _Delta:
-    def __init__(self, content: str | None = None, tool_calls: list | None = None) -> None:
+    def __init__(
+        self,
+        content: str | None = None,
+        tool_calls: list | None = None,
+        reasoning_content: str | None = None,
+    ) -> None:
         self.content = content
         self.tool_calls = tool_calls
+        self.reasoning_content = reasoning_content
 
 
 class _Choice:
@@ -336,6 +348,89 @@ def test_openai_provider_emits_text_deltas_before_final_render() -> None:
         ("delta", "world"),
         ("finish", "hello world", True),
     ]
+
+
+def test_stream_chat_preserves_reasoning_content_for_tool_round() -> None:
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.profile = ModelProfile(key="test", provider="test", model="test-model", api="test-key")
+    provider._client = _FakeClient(
+        [
+            _FakeStream(
+                [
+                    _Chunk(_Delta(reasoning_content="先分析")),
+                    _Chunk(_Delta(reasoning_content="再调用工具")),
+                    *_tool_call_chunks("call_1", "EchoTool", '{"text":"ok"}'),
+                ]
+            )
+        ]
+    )
+
+    result = asyncio.run(
+        provider.stream_chat(ChatRequest(messages=[{"role": "user", "content": "do"}]))
+    )
+
+    assert result.reasoning_content == "先分析再调用工具"
+    assert result.tool_calls[0].tool_name == "EchoTool"
+
+
+def test_only_deepseek_provider_sends_reasoning_content_history() -> None:
+    messages = [
+        {"role": "user", "content": "do"},
+        {
+            "role": "assistant",
+            "reasoning_content": "先分析",
+            "tool_calls": [],
+        },
+    ]
+    profile = ModelProfile(key="test", provider="test", model="test-model", api="test-key")
+
+    generic = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    deepseek = DeepSeekProvider.__new__(DeepSeekProvider)
+
+    assert "reasoning_content" not in generic.prepare_messages(messages)[1]
+    assert deepseek.prepare_messages(messages)[1]["reasoning_content"] == "先分析"
+
+
+def test_agent_preserves_reasoning_content_between_tool_rounds() -> None:
+    class Provider:
+        model = "test-model"
+
+        def __init__(self) -> None:
+            self.requests: list[ChatRequest] = []
+
+        async def stream_chat(self, request: ChatRequest) -> StreamRoundResult:
+            self.requests.append(request)
+            if len(self.requests) == 1:
+                return StreamRoundResult(
+                    "",
+                    [PendingToolCall("call_1", "EchoTool", '{"text":"ok"}')],
+                    reasoning_content="分析后调用 EchoTool。",
+                )
+            return StreamRoundResult("done", [])
+
+    provider = Provider()
+
+    class ModelManager:
+        active_model = "test-model"
+
+        def active_provider(self) -> Provider:
+            return provider
+
+    registry = _registry()
+    text, messages = asyncio.run(
+        client.ask_model(
+            ModelManager(),
+            "do work",
+            registry,
+            client.format_openai_tools(registry.get_all_schemas("openai")),
+            [{"role": "system", "content": "system"}],
+        )
+    )
+
+    assert text == "done"
+    assert provider.requests[1].messages[-2]["reasoning_content"] == "分析后调用 EchoTool。"
+    assistant = next(message for message in messages if message.get("tool_calls"))
+    assert assistant["reasoning_content"] == "分析后调用 EchoTool。"
 
 
 def test_skill_tool_calls_are_hidden_from_terminal(monkeypatch):

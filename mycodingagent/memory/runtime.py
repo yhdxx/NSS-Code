@@ -1546,6 +1546,8 @@ def render_historical_assistant_message(
     rendered: dict[str, Any] = {"role": "assistant"}
     if message.get("content"):
         rendered["content"] = message["content"]
+    if "reasoning_content" in message:
+        rendered["reasoning_content"] = message["reasoning_content"]
     if message.get("tool_calls"):
         rendered_calls: list[Any] = []
         for tool_call in message["tool_calls"]:
@@ -1787,7 +1789,7 @@ def apply_current_summaries(
 
 
 def sanitize_messages_for_model(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
+    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content"}
     sanitized: list[dict[str, Any]] = []
     for message in messages:
         copied = {key: value for key, value in message.items() if key in allowed_keys}

@@ -65,7 +65,11 @@ class OpenAICompatibleProvider:
         return list(self._reasoning_options)
 
     async def stream_chat(self, request: ChatRequest) -> StreamRoundResult:
-        payload: dict[str, Any] = {"model": self.model, "messages": request.messages, "stream": True}
+        payload: dict[str, Any] = {
+            "model": self.model,
+            "messages": self.prepare_messages(request.messages),
+            "stream": True,
+        }
         if request.tools:
             payload["tools"] = request.tools
         if request.temperature is not None:
@@ -78,12 +82,14 @@ class OpenAICompatibleProvider:
             payload["extra_body"] = extra_body
 
         content_parts: list[str] = []
+        reasoning_parts: list[str] = []
         pending_tool_calls: dict[int, PendingToolCall] = {}
         last_usage = None
         stream = None
 
         for attempt in range(CONFIG.client.api_max_retries + 1):
             content_parts = []
+            reasoning_parts = []
             pending_tool_calls = {}
             last_usage = None
             try:
@@ -108,10 +114,19 @@ class OpenAICompatibleProvider:
                                 request.stream_sink.abort(text)
                             if request.display and text:
                                 render_assistant_text(text, label=request.output_label)
-                            return StreamRoundResult(text, [], last_usage, interrupted=True)
+                            return StreamRoundResult(
+                                text,
+                                [],
+                                last_usage,
+                                interrupted=True,
+                                reasoning_content="".join(reasoning_parts),
+                            )
                         if not chunk.choices:
                             continue
                         delta = chunk.choices[0].delta
+                        reasoning_delta = getattr(delta, "reasoning_content", None)
+                        if reasoning_delta:
+                            reasoning_parts.append(str(reasoning_delta))
                         text = getattr(delta, "content", None)
                         if text:
                             content_parts.append(text)
@@ -166,7 +181,20 @@ class OpenAICompatibleProvider:
                 )
             else:
                 render_assistant_markdown(text, label=request.output_label)
-        return StreamRoundResult(text, calls, last_usage)
+        return StreamRoundResult(
+            text,
+            calls,
+            last_usage,
+            reasoning_content="".join(reasoning_parts),
+        )
+
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        """Serialize canonical messages for providers without vendor fields."""
+        allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
+        return [
+            {key: value for key, value in message.items() if key in allowed_keys}
+            for message in messages
+        ]
 
     async def close(self) -> None:
         await self._client.close()

@@ -15,6 +15,13 @@ class DeepSeekProvider(OpenAICompatibleProvider):
         ReasoningOption("disabled", "关闭思考", "向 DeepSeek 兼容接口传递 thinking disabled。"),
     )
 
+    def prepare_messages(self, messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
+        prepared = super().prepare_messages(messages)
+        for source, target in zip(messages, prepared, strict=True):
+            if source.get("role") == "assistant" and "reasoning_content" in source:
+                target["reasoning_content"] = str(source.get("reasoning_content") or "")
+        return prepared
+
     def _reasoning_payload(self, reasoning: str | dict[str, Any] | None) -> dict[str, Any]:
         if isinstance(reasoning, dict):
             thinking = reasoning.get("thinking")

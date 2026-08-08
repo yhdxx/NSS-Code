@@ -1440,6 +1440,7 @@ def test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_pat
 def test_skill_related_calls_are_retained_for_historical_placeholders():
     assistant_message = {
         "role": "assistant",
+        "reasoning_content": "tool reasoning",
         "tool_calls": [
             {
                 "id": "skill_call",

@@ -161,7 +161,7 @@ def test_plan_skill_load_is_pending_once_per_plan_epoch(tmp_path) -> None:
     assert restored.should_load_plan_skill()
 
 
-def test_plan_skill_is_appended_after_current_user_query() -> None:
+def test_plan_skill_is_loaded_as_runtime_attachment_after_current_user_query() -> None:
     runtime = PlanRuntime(session_id=lambda: "session")
     runtime.enter_plan_mode()
     registry = ToolRegistry()
@@ -172,25 +172,33 @@ def test_plan_skill_is_appended_after_current_user_query() -> None:
         {"role": "user", "content": "为认证功能制定计划"},
     ]
 
-    asyncio.run(
-        client._append_plan_skill_for_current_query(
-            messages,
+    output = asyncio.run(
+        client._load_plan_skill_for_current_query(
             prompt="为认证功能制定计划",
             registry=registry,
             plan_runtime=runtime,
         )
     )
 
-    assert [message["role"] for message in messages[-3:]] == ["user", "assistant", "tool"]
-    tool_call = messages[-2]["tool_calls"][0]
-    arguments = json.loads(tool_call["function"]["arguments"])
-    assert tool_call["function"]["name"] == "invoke_skill"
-    assert arguments["skill_name"] == "skill_code_plan"
-    assert arguments["instruction"] == "为认证功能制定计划"
-    assert messages[-1]["tool_call_id"] == tool_call["id"]
-    assert messages[-1]["content"] == "PLAN SKILL FOR: 为认证功能制定计划"
-    assert messages[-1]["metadata"]["plan_skill_bootstrap"] is True
+    assert [message["role"] for message in messages[-2:]] == ["assistant", "user"]
+    assert output == "PLAN SKILL FOR: 为认证功能制定计划"
     assert not runtime.should_load_plan_skill()
+
+
+def test_plan_skill_attachment_is_rendered_after_user_request() -> None:
+    runtime_context = client.RuntimeContextBuilder().build()
+    rendered = client.PromptRenderer.render_current_user_message(
+        runtime_context,
+        "为认证功能制定计划",
+        runtime_attachments=[
+            {"name": "skill_code_plan", "content": "PLAN SKILL FOR: 为认证功能制定计划"}
+        ],
+    )
+
+    assert rendered.content.index("<USER_REQUEST>") < rendered.content.index("</USER_REQUEST>")
+    assert rendered.content.index("</USER_REQUEST>") < rendered.content.index("<RUNTIME_ATTACHMENT>")
+    assert "<NAME>skill_code_plan</NAME>" in rendered.content
+    assert "PLAN SKILL FOR: 为认证功能制定计划" in rendered.content
 
 
 def test_plan_execution_rewrite_selects_create_plan_after_automatic_skill_call() -> None:
@@ -243,12 +251,14 @@ def test_create_plan_rejection_keeps_protocol_complete_messages(monkeypatch) -> 
     registry.register(CreatePlan(runtime))
     registry.register(_WorkspaceWriteTool())
     seen_tools: list[str] = []
+    seen_messages: list[list[dict]] = []
 
     class Provider:
         model = "test-model"
 
         async def stream_chat(self, request):
             seen_tools.extend(tool["function"]["name"] for tool in request.tools)
+            seen_messages.append(request.messages)
             return StreamRoundResult(
                 "",
                 [
@@ -292,6 +302,10 @@ def test_create_plan_rejection_keeps_protocol_complete_messages(monkeypatch) -> 
 
     assert runtime.current_plan() is not None
     assert runtime.current_plan().status is PlanStatus.REJECTED
+    assert not any(message.get("tool_calls") for message in seen_messages[0])
+    current_user = seen_messages[0][-1]["content"]
+    assert current_user.index("</USER_REQUEST>") < current_user.index("<RUNTIME_ATTACHMENT>")
+    assert "<NAME>skill_code_plan</NAME>" in current_user
     assert "create_plan" in seen_tools
     assert "WriteFile" in seen_tools
     assistant = next(

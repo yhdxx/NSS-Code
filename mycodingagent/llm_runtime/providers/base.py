@@ -22,6 +22,7 @@ class StreamRoundResult:
     tool_calls: list[PendingToolCall]
     usage: Any = None
     interrupted: bool = False
+    reasoning_content: str = ""
 
 
 @dataclass(frozen=True)
@@ -106,6 +107,7 @@ def normalize_stream_result(value: Any) -> StreamRoundResult:
             tool_calls=list(getattr(value, "tool_calls") or []),
             usage=getattr(value, "usage", None),
             interrupted=bool(getattr(value, "interrupted", False)),
+            reasoning_content=str(getattr(value, "reasoning_content", "") or ""),
         )
     text, tool_calls, usage = value
     return StreamRoundResult(text=text, tool_calls=tool_calls, usage=usage)

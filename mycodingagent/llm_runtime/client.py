@@ -4,7 +4,6 @@ import asyncio  # 提供异步事件循环、异步子进程等待等能力，�
 import hashlib  # 为 PromptDebug 生成稳定短哈希，避免打印原始 prompt 内容。
 import json  # 负责解析模型生成的工具参数 JSON，以及把参数格式化成终端可读文本。
 from dataclasses import dataclass, replace  # 用轻量数据类保存流式返回过程中尚未拼完整的工具调用。
-from uuid import uuid4
 
 from typing import Any  # `Any` 用在 OpenAI 消息、工具 schema 等动态 JSON 结构的类型标注中。
 
@@ -697,13 +696,19 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
 
     # 追加当前用户问题  # 每次调用 `ask_model` 都代表用户发来一条新消息。
     messages.append({"role": "user", "content": prompt})  # 把用户输入追加进历史，让模型能看到本轮需求。
+    runtime_attachments: list[dict[str, Any]] = []
     try:
         if plan_runtime is not None and plan_runtime.should_load_plan_skill():
-            await _append_plan_skill_for_current_query(
-                messages,
+            plan_skill_output = await _load_plan_skill_for_current_query(
                 prompt=prompt,
                 registry=registry,
                 plan_runtime=plan_runtime,
+            )
+            runtime_attachments.append(
+                {
+                    "name": "skill_code_plan",
+                    "content": plan_skill_output,
+                }
             )
     except Exception:
         del messages[turn_start:]
@@ -790,7 +795,14 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 context_render_mode=current_context_mode(),
                 task_snapshot=summary_text or None,
             )
-            rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
+            if runtime_attachments:
+                rendered_prompt = PromptRenderer.render_current_user_message(
+                    runtime_context,
+                    prompt,
+                    runtime_attachments=runtime_attachments,
+                )
+            else:
+                rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
         else:
             rendered_prompt = frozen_rendered_prompt
         model_messages = render_current_turn_for_model(
@@ -832,6 +844,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         )
         assistant_text = stream_result.text
         tool_calls = stream_result.tool_calls
+        reasoning_content = stream_result.reasoning_content
         usage = stream_result.usage
         if usage:
             usage_values = api_usage_to_dict(usage)
@@ -925,6 +938,8 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 }  # 结束单个工具调用对象。
                 for index, tool_call in enumerate(tool_calls)  # 按已排序的工具调用列表生成 OpenAI 协议结构。
             ]  # 结束 assistant_message["tool_calls"] 数组。
+            if reasoning_content:
+                assistant_message["reasoning_content"] = reasoning_content
         persistent_assistant_message = None
         if tool_calls:
             persistent_assistant_message = persistent_assistant_tool_message(assistant_message)
@@ -1229,13 +1244,12 @@ def _plan_runtime_context(plan_runtime: PlanRuntime | None) -> dict[str, Any] | 
     }
 
 
-async def _append_plan_skill_for_current_query(
-    messages: list[dict[str, Any]],
+async def _load_plan_skill_for_current_query(
     *,
     prompt: str,
     registry: ToolRegistry,
     plan_runtime: PlanRuntime,
-) -> None:
+) -> str:
     invoke_skill = registry.get("invoke_skill")
     if invoke_skill is None:
         raise RuntimeError("Plan 模式需要 invoke_skill 工具")
@@ -1247,43 +1261,8 @@ async def _append_plan_skill_for_current_query(
     result = await invoke_skill.execute(invoke_skill.params_model(**arguments))
     if result.is_error:
         raise RuntimeError(f"加载 Plan Skill 失败：{result.output}")
-    call_id = f"plan_skill_{uuid4().hex}"
-    intent = "用户已进入 Plan 模式；加载 code-plan 工作流以规划当前请求。"
-    metadata = {
-        "tool_name": "invoke_skill",
-        "intent": intent,
-        "plan_skill_bootstrap": True,
-        "skill_name": "skill_code_plan",
-    }
-    messages.extend(
-        [
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": call_id,
-                        "type": "function",
-                        "function": {
-                            "name": "invoke_skill",
-                            "arguments": json.dumps(
-                                {**arguments, "intent": intent},
-                                ensure_ascii=False,
-                                sort_keys=True,
-                            ),
-                        },
-                    }
-                ],
-                "metadata": metadata,
-            },
-            {
-                "role": "tool",
-                "tool_call_id": call_id,
-                "content": result.output,
-                "metadata": metadata,
-            },
-        ]
-    )
     plan_runtime.mark_plan_skill_loaded()
+    return result.output
 
 
 def _set_plan_tool_decision(

@@ -23,6 +23,8 @@ def persistent_assistant_tool_message(assistant_message: dict[str, Any]) -> dict
     persistent_message: dict[str, Any] = {"role": "assistant", "tool_calls": tool_calls}
     if assistant_message.get("content"):
         persistent_message["content"] = assistant_message["content"]
+    if "reasoning_content" in assistant_message:
+        persistent_message["reasoning_content"] = assistant_message["reasoning_content"]
     return persistent_message
 
 

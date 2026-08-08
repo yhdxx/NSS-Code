@@ -164,7 +164,11 @@ class RuntimeContextBuilder:
 
 class PromptRenderer:
     @staticmethod
-    def render_current_user_message(runtime_context: RuntimeContext, user_prompt: str) -> RenderedPrompt:
+    def render_current_user_message(
+        runtime_context: RuntimeContext,
+        user_prompt: str,
+        runtime_attachments: list[dict[str, Any]] | None = None,
+    ) -> RenderedPrompt:
         runtime_context_json = json.dumps(
             runtime_context.to_payload(),
             ensure_ascii=False,
@@ -179,6 +183,15 @@ class PromptRenderer:
             f"{user_prompt}\n"
             "</USER_REQUEST>"
         )
+        for attachment in runtime_attachments or []:
+            name = str(attachment.get("name") or "runtime_attachment")
+            attachment_content = str(attachment.get("content") or "")
+            content += (
+                "\n\n<RUNTIME_ATTACHMENT>\n"
+                f"<NAME>{name}</NAME>\n"
+                f"{attachment_content}\n"
+                "</RUNTIME_ATTACHMENT>"
+            )
         runtime_context_hash = hashlib.sha256(runtime_context_json.encode("utf-8")).hexdigest()[:12]
         runtime_context_tokens = estimate_tokens(runtime_context_json)
         user_prompt_tokens = estimate_tokens(user_prompt)
@@ -201,7 +214,7 @@ def render_current_turn_for_model(
     current_turn_start: int,
     rendered_prompt: RenderedPrompt,
 ) -> list[dict[str, Any]]:
-    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls"}
+    allowed_keys = {"role", "content", "name", "tool_call_id", "tool_calls", "reasoning_content"}
     model_messages: list[dict[str, Any]] = []
     for message in messages:
         copied = {key: value for key, value in message.items() if key in allowed_keys}
