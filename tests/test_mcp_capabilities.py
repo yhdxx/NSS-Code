@@ -372,6 +372,94 @@ def test_tavily_secret_is_redacted_from_mcp_errors():
     assert message == "failed [REDACTED]"
 
 
+def test_empty_mcp_timeout_error_has_actionable_message():
+    config = MCPServerConfig(name="tavily")
+    manager = MCPClientManager()
+    manager.server_configs["tavily"] = config
+
+    message = manager._error_message("tavily", asyncio.TimeoutError())
+
+    assert message == "操作超时"
+
+
+def test_remote_mcp_initialize_retries_once_after_timeout(monkeypatch, tmp_path):
+    import httpx
+    import mcp
+    import mcp.client.streamable_http as streamable_http_module
+    import mycodingagent.mcp_integration.manager as manager_module
+
+    initialize_calls = 0
+
+    class FakeAsyncClient:
+        def __init__(self, **_kwargs):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+    class FakeTransportContext:
+        async def __aenter__(self):
+            return object(), object(), lambda: None
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+    class FakeSession:
+        def __init__(self, _read_stream, _write_stream):
+            pass
+
+        async def __aenter__(self):
+            return self
+
+        async def __aexit__(self, _exc_type, _exc, _traceback):
+            return None
+
+        async def initialize(self):
+            nonlocal initialize_calls
+            initialize_calls += 1
+            if initialize_calls == 1:
+                raise asyncio.TimeoutError()
+            return object()
+
+    class FakeNetworkRuntime:
+        @staticmethod
+        def proxy_url_for_mcp(_server):
+            return "http://127.0.0.1:3128"
+
+    monkeypatch.setattr(httpx, "AsyncClient", FakeAsyncClient)
+    monkeypatch.setattr(mcp, "ClientSession", FakeSession)
+    monkeypatch.setattr(
+        streamable_http_module,
+        "streamable_http_client",
+        lambda *_args, **_kwargs: FakeTransportContext(),
+    )
+    monkeypatch.setattr(manager_module, "REMOTE_CONNECT_RETRY_DELAY_SECONDS", 0.0)
+    manager = MCPClientManager(
+        network_access=NetworkAccessRuntime(enabled=True),
+        network_runtime=FakeNetworkRuntime(),
+        workspace_root=tmp_path,
+    )
+    manager.server_configs["tavily"] = MCPServerConfig(
+        name="tavily",
+        transport="streamable_http",
+        url="https://mcp.tavily.com/mcp/",
+        network=True,
+        startup_timeout=1.0,
+    )
+
+    async def scenario():
+        session = await manager._ensure_session("tavily")
+        assert isinstance(session, FakeSession)
+        await manager.close()
+
+    asyncio.run(scenario())
+
+    assert initialize_calls == 2
+
+
 def test_mcp_config_loads_browser_container_options(tmp_path):
     config = tmp_path / "mcp.json"
     config.write_text(
@@ -807,6 +895,70 @@ def test_mcp_metadata_cache_invalidates_when_server_config_changes(tmp_path):
     assert entry.config.command == "gh-v2"
     assert entry.tools == []
     assert entry.updated_at == 0.0
+
+
+def test_failed_mcp_discovery_is_persisted_and_retried_after_reload(tmp_path):
+    config_path = tmp_path / "mcp.json"
+    cache_path = tmp_path / "mcp-cache.sqlite3"
+    config_path.write_text(
+        json.dumps({"servers": {"github": {"command": "gh-mcp"}}}),
+        encoding="utf-8",
+    )
+    loader = MCPConfigLoader(project_path=config_path, user_path=tmp_path / "missing.json")
+    first_cache = MCPMetadataCache(cache_path)
+    first_cache.sync_configs(loader.load())
+    first_cache.mark_error("github", "")
+
+    manager = MCPClientManager(
+        config_loader=loader,
+        metadata_cache=MCPMetadataCache(cache_path),
+    )
+    asyncio.run(manager.initialize())
+    entry = manager.metadata_cache.get("github")
+    calls = 0
+
+    async def fake_refresh(server):
+        nonlocal calls
+        calls += 1
+        manager.metadata_cache.update_discovery(
+            server,
+            tools=[MCPItemSummary(name="fresh_tool")],
+            connected=True,
+        )
+        return manager.metadata_cache.get(server).summary()
+
+    assert entry is not None
+    assert entry.available is False
+    assert entry.discovered is False
+    assert entry.error == "MCP Server 连接失败，未返回错误详情"
+
+    manager.refresh_server = fake_refresh
+    result = asyncio.run(manager.list_tools("github"))
+
+    assert calls == 1
+    assert result["tools"][0]["name"] == "fresh_tool"
+
+
+def test_successful_mcp_discovery_cache_remains_reusable_after_reload(tmp_path):
+    config = MCPServerConfig(name="github", command="gh-mcp")
+    cache_path = tmp_path / "mcp-cache.sqlite3"
+    first = MCPMetadataCache(cache_path)
+    first.sync_configs({"github": config})
+    first.update_discovery(
+        "github",
+        tools=[MCPItemSummary(name="cached_tool")],
+        connected=True,
+    )
+
+    second = MCPMetadataCache(cache_path)
+    second.sync_configs({"github": config})
+    entry = second.get("github")
+
+    assert entry is not None
+    assert entry.discovered is True
+    assert entry.available is True
+    assert entry.connected is False
+    assert [item.name for item in entry.tools] == ["cached_tool"]
 
 
 def test_mcp_discovery_retries_unavailable_server_on_model_probe(tmp_path):

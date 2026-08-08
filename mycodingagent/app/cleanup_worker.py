@@ -94,6 +94,91 @@ def cleanup_stale_workspace_runtimes(
         if inspected.stdout.strip() not in excluded:
             _run(["docker", "rm", "-f", container_id], env)
 
+    cleanup_orphaned_managed_networks(
+        docker_config,
+        excluded_runtime_ids=excluded,
+    )
+
+
+def cleanup_orphaned_managed_networks(
+    docker_config: Path,
+    *,
+    excluded_runtime_ids: set[str] | None = None,
+) -> None:
+    """Remove managed networks whose owning process is no longer alive.
+
+    Networks without a process label are legacy resources. They are only
+    removed when Docker reports no attached containers.
+    """
+    excluded = excluded_runtime_ids or set()
+    env = os.environ.copy()
+    docker_config.mkdir(parents=True, exist_ok=True)
+    env["DOCKER_CONFIG"] = str(docker_config)
+    networks = _run(
+        [
+            "docker",
+            "network",
+            "ls",
+            "-q",
+            "--filter",
+            "label=com.mycodingagent.managed=true",
+            "--filter",
+            "label=com.mycodingagent.kind=managed-network",
+        ],
+        env,
+    )
+    for network_id in networks.stdout.split() if networks.returncode == 0 else []:
+        inspected = _run(
+            [
+                "docker",
+                "network",
+                "inspect",
+                "--format",
+                "{{index .Labels \"com.mycodingagent.runtime\"}}\t{{index .Labels \"com.mycodingagent.pid\"}}\t{{len .Containers}}",
+                network_id,
+            ],
+            env,
+        )
+        runtime_id, pid_text, containers_text = _split_inspection(inspected.stdout)
+        if not runtime_id or runtime_id in excluded:
+            continue
+        try:
+            container_count = int(containers_text)
+        except ValueError:
+            continue
+        if pid_text and _process_is_alive(pid_text):
+            continue
+        if container_count:
+            if pid_text:
+                cleanup_runtime(runtime_id, network_id, docker_config)
+            continue
+        cleanup_runtime(runtime_id, network_id, docker_config)
+
+
+def _split_inspection(value: str) -> tuple[str, str, str]:
+    parts = value.strip().split("\t")
+    if len(parts) != 3:
+        return "", "", ""
+    return parts[0].strip(), parts[1].strip(), parts[2].strip()
+
+
+def _process_is_alive(value: str) -> bool:
+    try:
+        pid = int(value)
+    except ValueError:
+        return False
+    if pid <= 0:
+        return False
+    try:
+        os.kill(pid, 0)
+    except ProcessLookupError:
+        return False
+    except PermissionError:
+        return True
+    except OSError:
+        return False
+    return True
+
 
 def _run(command: list[str], env: dict[str, str]) -> subprocess.CompletedProcess[str]:
     try:

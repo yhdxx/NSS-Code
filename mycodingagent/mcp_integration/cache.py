@@ -20,6 +20,7 @@ class MCPMetadataEntry:
     resources: list[MCPItemSummary] = field(default_factory=list)
     prompts: list[MCPItemSummary] = field(default_factory=list)
     connected: bool = False
+    discovered: bool = False
     available: bool = True
     error: str = ""
     updated_at: float = 0.0
@@ -96,6 +97,7 @@ class MCPMetadataCache:
         if prompts is not None:
             entry.prompts = prompts
         entry.connected = connected
+        entry.discovered = not error
         entry.error = error
         entry.available = not error
         entry.updated_at = time.time()
@@ -106,8 +108,9 @@ class MCPMetadataCache:
         if entry is None:
             return
         entry.connected = False
+        entry.discovered = False
         entry.available = False
-        entry.error = error
+        entry.error = error.strip() or "MCP Server 连接失败，未返回错误详情"
         entry.updated_at = time.time()
         self._persist(entry)
 
@@ -157,7 +160,9 @@ class MCPMetadataCache:
                 resources=[MCPItemSummary(**item) for item in payload.get("resources", [])],
                 prompts=[MCPItemSummary(**item) for item in payload.get("prompts", [])],
                 connected=False,
-                available=True,
+                discovered=bool(payload.get("discovered", False)),
+                available=bool(payload.get("available", True)),
+                error=str(payload.get("error", "")),
                 updated_at=float(row["updated_at"]),
             )
         except (TypeError, ValueError, json.JSONDecodeError):
@@ -170,6 +175,9 @@ class MCPMetadataCache:
             "tools": [asdict(item) for item in entry.tools],
             "resources": [asdict(item) for item in entry.resources],
             "prompts": [asdict(item) for item in entry.prompts],
+            "discovered": entry.discovered,
+            "available": entry.available,
+            "error": entry.error,
         }
         with self._connect() as conn:
             conn.execute(

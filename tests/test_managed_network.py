@@ -2,12 +2,14 @@ from __future__ import annotations
 
 import asyncio
 import base64
+import contextlib
 import json
 import os
 from pathlib import Path
 
 import pytest
 
+import mycodingagent.managed_network as managed_network
 from mycodingagent.configuration.settings import NetworkConfig
 from mycodingagent.managed_network import (
     ManagedNetworkRuntime,
@@ -101,6 +103,69 @@ def test_mcp_proxy_identity_allows_one_server_while_global_network_is_off(tmp_pa
     assert not runtime.access.allows_external_client("tavily")
 
 
+def test_managed_subnet_candidates_are_deterministic_small_and_distinct():
+    first = list(managed_network._managed_subnet_candidates("runtime-a"))
+    second = list(managed_network._managed_subnet_candidates("runtime-a"))
+
+    assert first == second
+    assert len(first) == managed_network.MANAGED_SUBNET_ATTEMPTS
+    assert all(item.prefixlen == 28 for item in first)
+    assert all(item.subnet_of(managed_network.MANAGED_SUBNET_POOL) for item in first)
+    assert len(set(first)) == len(first)
+
+
+def test_initialize_retries_conflicting_managed_subnet(tmp_path, monkeypatch):
+    runtime = _runtime(tmp_path)
+    runtime.runtime_id = "runtime-a"
+    runtime.network_name = "mycodingagent-network-runtime-a"
+    commands: list[tuple[str, ...]] = []
+    create_attempts = 0
+
+    async def fake_docker(*args):
+        nonlocal create_attempts
+        commands.append(args)
+        if args[:2] == ("network", "create"):
+            create_attempts += 1
+            if create_attempts == 1:
+                return managed_network._ProcessResult(
+                    1, "", "could not find an available, non-overlapping IPv4 address pool"
+                )
+            return managed_network._ProcessResult(0, "network-id", "")
+        if args[:2] == ("network", "inspect"):
+            return managed_network._ProcessResult(0, "10.240.0.1", "")
+        return managed_network._ProcessResult(0, "", "")
+
+    class FakeSocket:
+        def getsockname(self):
+            return ("10.240.0.1", 12345)
+
+    class FakeServer:
+        sockets = [FakeSocket()]
+
+        def close(self):
+            return None
+
+        async def wait_closed(self):
+            return None
+
+    async def fake_start_server(*_args, **_kwargs):
+        return FakeServer()
+
+    monkeypatch.setattr(managed_network, "_docker_available", lambda: True)
+    monkeypatch.setattr(managed_network, "_docker", fake_docker)
+    monkeypatch.setattr(asyncio, "start_server", fake_start_server)
+
+    status = asyncio.run(runtime.initialize())
+
+    assert status.ready is True
+    assert create_attempts == 2
+    create_commands = [command for command in commands if command[:2] == ("network", "create")]
+    first_subnet = create_commands[0][create_commands[0].index("--subnet") + 1]
+    second_subnet = create_commands[1][create_commands[1].index("--subnet") + 1]
+    assert first_subnet != second_subnet
+    assert runtime.subnet == second_subnet
+
+
 def test_disabling_access_cancels_active_public_connections(tmp_path):
     async def run():
         runtime = _runtime(tmp_path)
@@ -122,6 +187,29 @@ def test_disabling_access_cancels_active_public_connections(tmp_path):
     task, cancelled = asyncio.run(run())
     assert task.cancelled()
     assert cancelled.is_set()
+
+
+def test_close_local_forces_inflight_proxy_connections_to_finish(tmp_path):
+    async def run():
+        runtime = _runtime(tmp_path, connect_timeout=30.0)
+        server = await asyncio.start_server(runtime._accept, "127.0.0.1", 0)
+        runtime._server = server
+        port = server.sockets[0].getsockname()[1]
+        _reader, writer = await asyncio.open_connection("127.0.0.1", port)
+        writer.write(b"CONNECT example.com:443 HTTP/1.1\r\n")
+        await writer.drain()
+        await asyncio.sleep(0)
+
+        await asyncio.wait_for(runtime.close_local(), timeout=2.0)
+
+        assert runtime._server is None
+        assert not runtime._connections
+        assert not runtime._writers
+        writer.close()
+        with contextlib.suppress(ConnectionResetError):
+            await writer.wait_closed()
+
+    asyncio.run(run())
 
 
 def test_loopback_target_uses_bound_workspace_resolver(tmp_path):

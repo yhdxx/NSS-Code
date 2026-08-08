@@ -4,16 +4,16 @@ import asyncio
 import base64
 import contextlib
 import fnmatch
+import hashlib
 import ipaddress
 import json
 import os
+import secrets
 import socket
 import ssl
-import secrets
-import hashlib
 from dataclasses import dataclass
 from pathlib import Path
-from typing import Awaitable, Callable
+from typing import Awaitable, Callable, Iterator
 from urllib.parse import urlsplit
 from uuid import uuid4
 
@@ -23,10 +23,16 @@ from mycodingagent.network_access import NetworkAccessRuntime
 
 MANAGED_LABEL = "com.mycodingagent.managed"
 RUNTIME_ID_LABEL = "com.mycodingagent.runtime"
+PROCESS_ID_LABEL = "com.mycodingagent.pid"
 RUNTIME_KIND_LABEL = "com.mycodingagent.kind"
 WORKSPACE_LABEL = "com.mycodingagent.workspace"
 LOCAL_HOSTS = frozenset({"localhost", "127.0.0.1", "::1"})
 METADATA_HOSTS = frozenset({"169.254.169.254", "metadata.google.internal"})
+MANAGED_SUBNET_POOL = ipaddress.ip_network("10.240.0.0/16")
+MANAGED_SUBNET_PREFIX = 28
+MANAGED_SUBNET_ATTEMPTS = 16
+NETWORK_WRITER_CLOSE_TIMEOUT_SECONDS = 1.0
+NETWORK_SERVER_CLOSE_TIMEOUT_SECONDS = 1.0
 
 
 @dataclass(frozen=True)
@@ -67,10 +73,12 @@ class ManagedNetworkRuntime:
         self.workspace_key = hashlib.sha256(str(self.workspace_root).encode("utf-8")).hexdigest()[:16]
         self.runtime_id = runtime_id or uuid4().hex
         self.network_name = f"mycodingagent-network-{self.runtime_id[:12]}"
+        self.subnet = ""
         self.gateway = ""
         self.proxy_port = 0
         self._server: asyncio.AbstractServer | None = None
         self._connections: set[asyncio.Task[None]] = set()
+        self._writers: set[asyncio.StreamWriter] = set()
         self._client_tokens: dict[str, str] = {}
         self._local_target: Callable[[int], Awaitable[tuple[str, int] | None]] | None = None
         self._network_ready = False
@@ -125,16 +133,30 @@ class ManagedNetworkRuntime:
     async def initialize(self) -> NetworkRuntimeStatus:
         if not _docker_available():
             return NetworkRuntimeStatus(False, "未找到 docker")
-        created = await _docker(
-            "network", "create", "--internal", "--driver", "bridge",
-            "--label", f"{MANAGED_LABEL}=true",
-            "--label", f"{RUNTIME_KIND_LABEL}=managed-network",
-            "--label", f"{WORKSPACE_LABEL}={self.workspace_key}",
-            "--label", f"{RUNTIME_ID_LABEL}={self.runtime_id}",
-            self.network_name,
-        )
-        if created.returncode != 0:
-            return NetworkRuntimeStatus(False, _process_error("创建托管网络失败", created))
+        created = None
+        for subnet in _managed_subnet_candidates(self.runtime_id):
+            result = await _docker(
+                "network", "create", "--internal", "--driver", "bridge",
+                "--subnet", str(subnet),
+                "--gateway", str(next(subnet.hosts())),
+                "--label", f"{MANAGED_LABEL}=true",
+                "--label", f"{RUNTIME_KIND_LABEL}=managed-network",
+                "--label", f"{WORKSPACE_LABEL}={self.workspace_key}",
+                "--label", f"{RUNTIME_ID_LABEL}={self.runtime_id}",
+                "--label", f"{PROCESS_ID_LABEL}={os.getpid()}",
+                self.network_name,
+            )
+            if result.returncode == 0:
+                created = result
+                self.subnet = str(subnet)
+                break
+            if not _is_subnet_conflict(result.stderr):
+                return NetworkRuntimeStatus(False, _process_error("创建托管网络失败", result))
+        if created is None:
+            return NetworkRuntimeStatus(
+                False,
+                "创建托管网络失败：专用子网池已耗尽或与现有网络冲突",
+            )
         self._network_ready = True
         inspected = await _docker(
             "network", "inspect", "--format", "{{(index .IPAM.Config 0).Gateway}}", self.network_name
@@ -174,15 +196,32 @@ class ManagedNetworkRuntime:
     async def close_local(self) -> None:
         """Stop proxy activity without waiting for Docker network removal."""
         self.access.bind_change_hook(None)
-        if self._server is not None:
-            self._server.close()
-            await self._server.wait_closed()
-            self._server = None
+        server = self._server
+        self._server = None
+        if server is not None:
+            server.close()
+        writers = list(self._writers)
+        for writer in writers:
+            writer.close()
+        if writers:
+            await asyncio.gather(
+                *(_wait_writer_closed(writer) for writer in writers),
+                return_exceptions=True,
+            )
+        self._writers.clear()
         tasks = list(self._connections)
         for task in tasks:
             task.cancel()
         if tasks:
-            await asyncio.gather(*tasks, return_exceptions=True)
+            try:
+                async with asyncio.timeout(NETWORK_SERVER_CLOSE_TIMEOUT_SECONDS):
+                    await asyncio.gather(*tasks, return_exceptions=True)
+            except asyncio.TimeoutError:
+                self._connections.difference_update(tasks)
+        if server is not None:
+            with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError):
+                async with asyncio.timeout(NETWORK_SERVER_CLOSE_TIMEOUT_SECONDS):
+                    await server.wait_closed()
         self.proxy_port = 0
         self._client_tokens.clear()
 
@@ -199,6 +238,7 @@ class ManagedNetworkRuntime:
         task = asyncio.current_task()
         if task is not None:
             self._connections.add(task)
+        self._writers.add(writer)
         try:
             await self._serve_connection(reader, writer)
         except asyncio.CancelledError:
@@ -217,7 +257,7 @@ class ManagedNetworkRuntime:
                         retryable=True,
                     ),
                 )
-        except (ConnectionError, OSError) as exc:
+        except (ConnectionError, OSError, asyncio.IncompleteReadError) as exc:
             with contextlib.suppress(Exception):
                 await self._respond_error(
                     writer,
@@ -231,9 +271,9 @@ class ManagedNetworkRuntime:
         finally:
             if task is not None:
                 self._connections.discard(task)
+            self._writers.discard(writer)
             writer.close()
-            with contextlib.suppress(Exception):
-                await writer.wait_closed()
+            await _wait_writer_closed(writer)
 
     async def _serve_connection(self, reader: asyncio.StreamReader, writer: asyncio.StreamWriter) -> None:
         header = await asyncio.wait_for(reader.readuntil(b"\r\n\r\n"), self.config.connect_timeout)
@@ -470,8 +510,7 @@ class ManagedNetworkRuntime:
             await asyncio.gather(copy(client_reader, remote_writer), copy(remote_reader, client_writer))
         finally:
             remote_writer.close()
-            with contextlib.suppress(Exception):
-                await remote_writer.wait_closed()
+            await _wait_writer_closed(remote_writer)
 
     @staticmethod
     async def _respond(writer: asyncio.StreamWriter, status: int, message: str) -> None:
@@ -512,6 +551,28 @@ class _ProcessResult:
     returncode: int
     stdout: str
     stderr: str
+
+
+def _managed_subnet_candidates(runtime_id: str) -> Iterator[ipaddress.IPv4Network]:
+    """Yield deterministic /28 networks from the agent-owned address pool."""
+    block_size = 1 << (32 - MANAGED_SUBNET_PREFIX)
+    total = MANAGED_SUBNET_POOL.num_addresses // block_size
+    start = int(hashlib.sha256(runtime_id.encode("utf-8")).hexdigest(), 16) % total
+    for offset in range(min(MANAGED_SUBNET_ATTEMPTS, total)):
+        index = (start + offset) % total
+        address = int(MANAGED_SUBNET_POOL.network_address) + index * block_size
+        yield ipaddress.ip_network((address, MANAGED_SUBNET_PREFIX))
+
+
+def _is_subnet_conflict(stderr: str) -> bool:
+    message = stderr.lower()
+    return "non-overlapping ipv4 address pool" in message or "overlaps" in message
+
+
+async def _wait_writer_closed(writer: asyncio.StreamWriter) -> None:
+    with contextlib.suppress(asyncio.CancelledError, asyncio.TimeoutError, OSError, RuntimeError):
+        async with asyncio.timeout(NETWORK_WRITER_CLOSE_TIMEOUT_SECONDS):
+            await writer.wait_closed()
 
 
 async def _docker(*args: str) -> _ProcessResult:

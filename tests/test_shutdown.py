@@ -185,7 +185,7 @@ def test_cleanup_worker_removes_only_stale_runtimes_for_current_workspace(monkey
     assert commands[3] == ["docker", "rm", "-f", "container-a"]
     assert commands[4] == ["docker", "network", "rm", "network-a"]
     assert "label=com.mycodingagent.kind=workspace-runtime" in commands[5]
-    assert commands[-1] == ["docker", "rm", "-f", "container-a"]
+    assert ["docker", "rm", "-f", "container-a"] in commands
 
 
 def test_stale_cleanup_excludes_current_runtime_ids(monkeypatch, tmp_path):
@@ -212,6 +212,36 @@ def test_stale_cleanup_excludes_current_runtime_ids(monkeypatch, tmp_path):
     )
 
     assert not any(command[1:3] == ["rm", "-f"] for command in commands)
+
+
+def test_orphaned_managed_network_cleanup_preserves_live_and_legacy_attached(monkeypatch, tmp_path):
+    commands: list[list[str]] = []
+
+    def run(command, _env):
+        commands.append(command)
+        if command[1:3] == ["network", "ls"]:
+            return cleanup_worker.subprocess.CompletedProcess(
+                command, 0, "network-legacy\nnetwork-live\nnetwork-attached\n", ""
+            )
+        if command[1:3] == ["network", "inspect"]:
+            network = command[-1]
+            payloads = {
+                "network-legacy": "runtime-legacy\t\t0\n",
+                "network-live": "runtime-live\tlive-pid\t0\n",
+                "network-attached": "runtime-attached\tdead-pid\t1\n",
+            }
+            return cleanup_worker.subprocess.CompletedProcess(command, 0, payloads[network], "")
+        if command[1:3] == ["ps", "-aq"]:
+            return cleanup_worker.subprocess.CompletedProcess(command, 0, "", "")
+        return cleanup_worker.subprocess.CompletedProcess(command, 0, "", "")
+
+    monkeypatch.setattr(cleanup_worker, "_run", run)
+    monkeypatch.setattr(cleanup_worker, "_process_is_alive", lambda value: value == "live-pid")
+
+    cleanup_worker.cleanup_orphaned_managed_networks(tmp_path / "docker")
+
+    removed = [command[-1] for command in commands if command[1:3] == ["network", "rm"]]
+    assert removed == ["network-legacy", "network-attached"]
 
 
 def test_stale_runtime_cleanup_is_detached(monkeypatch, tmp_path):

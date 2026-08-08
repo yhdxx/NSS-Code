@@ -26,6 +26,8 @@ from mycodingagent.managed_network import ManagedNetworkRuntime
 
 DIRECT_TOOL_ONLY_SERVERS = frozenset({"playwright"})
 SESSION_CLOSE_TIMEOUT_SECONDS = 5.0
+REMOTE_CONNECT_ATTEMPTS = 2
+REMOTE_CONNECT_RETRY_DELAY_SECONDS = 0.25
 
 
 class MCPClientManager:
@@ -168,8 +170,9 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
             return {"error": f"未找到 MCP Server：{server}", "tools": []}
-        if not summary.available and summary.error:
-            return {"error": f"MCP Server 不可用：{summary.error}", "server": summary.to_payload(), "tools": []}
+        if not summary.available:
+            error = summary.error or "MCP Server 连接失败，未返回错误详情"
+            return {"error": f"MCP Server 不可用：{error}", "server": summary.to_payload(), "tools": []}
         return {"server": summary.to_payload(), "tools": [item.to_payload() for item in entry.tools]}
 
     async def list_resources(self, server: str) -> dict[str, Any]:
@@ -177,8 +180,9 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
             return {"error": f"未找到 MCP Server：{server}", "resources": []}
-        if not summary.available and summary.error:
-            return {"error": f"MCP Server 不可用：{summary.error}", "server": summary.to_payload(), "resources": []}
+        if not summary.available:
+            error = summary.error or "MCP Server 连接失败，未返回错误详情"
+            return {"error": f"MCP Server 不可用：{error}", "server": summary.to_payload(), "resources": []}
         return {"server": summary.to_payload(), "resources": [item.to_payload() for item in entry.resources]}
 
     async def list_prompts(self, server: str) -> dict[str, Any]:
@@ -186,8 +190,9 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if summary is None or entry is None:
             return {"error": f"未找到 MCP Server：{server}", "prompts": []}
-        if not summary.available and summary.error:
-            return {"error": f"MCP Server 不可用：{summary.error}", "server": summary.to_payload(), "prompts": []}
+        if not summary.available:
+            error = summary.error or "MCP Server 连接失败，未返回错误详情"
+            return {"error": f"MCP Server 不可用：{error}", "server": summary.to_payload(), "prompts": []}
         return {"server": summary.to_payload(), "prompts": [item.to_payload() for item in entry.prompts]}
 
     async def call_tool(self, server: str, tool: str, arguments: dict[str, Any] | None = None) -> MCPExecutionResult:
@@ -288,7 +293,9 @@ class MCPClientManager:
         return self.metadata_cache.unavailable_servers()
 
     def _error_message(self, server: str, exc: Exception) -> str:
-        message = str(exc)
+        message = str(exc).strip()
+        if not message:
+            message = "操作超时" if isinstance(exc, asyncio.TimeoutError) else type(exc).__name__
         config = self.server_configs.get(server)
         if config is None:
             return message
@@ -322,7 +329,7 @@ class MCPClientManager:
         entry = self.metadata_cache.get(server)
         if entry is None:
             return None
-        if entry.updated_at > 0 and not entry.error:
+        if entry.updated_at > 0 and entry.discovered and entry.available:
             return entry.summary()
         return await self.refresh_server(server)
 
@@ -366,49 +373,61 @@ class MCPClientManager:
         except Exception as exc:
             raise RuntimeError("执行真实 MCP discovery 需要安装 Python 包 'mcp'") from exc
 
-        stack = AsyncExitStack()
-        try:
-            if config.transport == "streamable_http":
-                if self.network_runtime is None and not is_local_http_url(config.url):
-                    raise RuntimeError("远程 MCP 缺少 Runtime 托管网络")
-                http_client = await stack.enter_async_context(
-                    httpx.AsyncClient(
-                        headers=self.config_loader.resolve_headers(config),
-                        timeout=config.call_timeout,
-                        trust_env=False,
-                        proxy=(
-                            self.network_runtime.proxy_url_for_mcp(server)
-                            if self.network_runtime and not is_local_http_url(config.url)
-                            else None
-                        ),
+        attempts = REMOTE_CONNECT_ATTEMPTS if config.transport == "streamable_http" else 1
+        for attempt in range(1, attempts + 1):
+            stack = AsyncExitStack()
+            try:
+                if config.transport == "streamable_http":
+                    if self.network_runtime is None and not is_local_http_url(config.url):
+                        raise RuntimeError("远程 MCP 缺少 Runtime 托管网络")
+                    http_client = await stack.enter_async_context(
+                        httpx.AsyncClient(
+                            headers=self.config_loader.resolve_headers(config),
+                            timeout=config.call_timeout,
+                            trust_env=False,
+                            proxy=(
+                                self.network_runtime.proxy_url_for_mcp(server)
+                                if self.network_runtime and not is_local_http_url(config.url)
+                                else None
+                            ),
+                        )
                     )
-                )
-                read_stream, write_stream, _ = await stack.enter_async_context(
-                    streamable_http_client(config.url, http_client=http_client)
-                )
-            else:
-                env = os.environ.copy()
-                for key, value in self.config_loader.resolve_env(config).items():
-                    if value:
-                        env[key] = value
-                env.setdefault("npm_config_cache", "/tmp/mycodingagent-npm-cache")
-                if config.network and self.network_runtime is not None:
-                    env.update(self.network_runtime.proxy_environment_for_mcp(server))
-                if config.sandbox:
-                    docker_args = self._sandboxed_stdio_args(config)
-                    params = StdioServerParameters(command="docker", args=docker_args, env=env)
+                    read_stream, write_stream, _ = await stack.enter_async_context(
+                        streamable_http_client(config.url, http_client=http_client)
+                    )
                 else:
-                    params = StdioServerParameters(command=config.command, args=list(config.args), env=env)
-                read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
-            session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
-            await asyncio.wait_for(session.initialize(), timeout=config.startup_timeout)
-            self._session_contexts[server] = stack
-            self._sessions[server] = session
-            return session
-        except Exception:
-            with contextlib.suppress(Exception):
-                await stack.aclose()
-            raise
+                    env = os.environ.copy()
+                    for key, value in self.config_loader.resolve_env(config).items():
+                        if value:
+                            env[key] = value
+                    env.setdefault("npm_config_cache", "/tmp/mycodingagent-npm-cache")
+                    if config.network and self.network_runtime is not None:
+                        env.update(self.network_runtime.proxy_environment_for_mcp(server))
+                    if config.sandbox:
+                        docker_args = self._sandboxed_stdio_args(config)
+                        params = StdioServerParameters(command="docker", args=docker_args, env=env)
+                    else:
+                        params = StdioServerParameters(command=config.command, args=list(config.args), env=env)
+                    read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
+                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+                await asyncio.wait_for(session.initialize(), timeout=config.startup_timeout)
+                self._session_contexts[server] = stack
+                self._sessions[server] = session
+                return session
+            except Exception as exc:
+                with contextlib.suppress(Exception):
+                    await stack.aclose()
+                retryable = isinstance(exc, (asyncio.TimeoutError, httpx.TransportError))
+                if retryable and attempt < attempts:
+                    await asyncio.sleep(REMOTE_CONNECT_RETRY_DELAY_SECONDS)
+                    continue
+                if isinstance(exc, asyncio.TimeoutError):
+                    raise TimeoutError(
+                        f"MCP Server {server} initialize 超时："
+                        f"单次限制 {config.startup_timeout:g}s，已尝试 {attempt} 次"
+                    ) from exc
+                raise
+        raise RuntimeError(f"MCP Server {server} 未能建立连接")
 
     async def _close_session(self, server: str) -> None:
         async with self._close_lock:
