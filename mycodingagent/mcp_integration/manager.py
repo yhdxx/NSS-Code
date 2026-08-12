@@ -4,6 +4,7 @@ import asyncio
 import contextlib
 import os
 import time
+from datetime import timedelta
 from pathlib import Path
 from typing import Any
 from uuid import uuid4
@@ -26,6 +27,7 @@ from mycodingagent.managed_network import ManagedNetworkRuntime
 
 DIRECT_TOOL_ONLY_SERVERS = frozenset({"playwright"})
 SESSION_CLOSE_TIMEOUT_SECONDS = 5.0
+ACTIVE_CALL_CLOSE_TIMEOUT_SECONDS = 2.0
 REMOTE_CONNECT_ATTEMPTS = 2
 REMOTE_CONNECT_RETRY_DELAY_SECONDS = 0.25
 
@@ -61,6 +63,7 @@ class MCPClientManager:
         self.server_configs: dict[str, MCPServerConfig] = {}
         self._sessions: dict[str, Any] = {}
         self._session_contexts: dict[str, Any] = {}
+        self._active_calls: dict[str, set[asyncio.Task[Any]]] = {}
         self._reconnect_task: asyncio.Task | None = None
         self._states: dict[str, str] = {}
         self._failures: dict[str, int] = {}
@@ -79,7 +82,7 @@ class MCPClientManager:
         self._states = {name: self._states.get(name, "configured") for name in self.server_configs}
 
     async def close(self) -> None:
-        if self._closing and not self._sessions and (
+        if self._closing and not self._sessions and not self._active_calls and (
             self._reconnect_task is None or self._reconnect_task.done()
         ):
             return
@@ -88,6 +91,7 @@ class MCPClientManager:
             self._reconnect_task.cancel()
             with contextlib.suppress(asyncio.CancelledError):
                 await self._reconnect_task
+        await self._cancel_active_calls()
         # MCP stdio sessions use AnyIO cancel scopes whose exits must remain
         # ordered within the task that entered them.
         for server in list(self._sessions):
@@ -220,12 +224,20 @@ class MCPClientManager:
         before_outputs = self._playwright_output_snapshot() if server == "playwright" else {}
         try:
             session = await self._ensure_session(server)
-            result = await asyncio.wait_for(
-                session.call_tool(tool, call_arguments),
-                timeout=self.server_configs[server].call_timeout,
+            result = await self._track_active_call(
+                server,
+                session.call_tool(
+                    tool,
+                    call_arguments,
+                    read_timeout_seconds=timedelta(
+                        seconds=self.server_configs[server].call_timeout
+                    ),
+                ),
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            message = self._error_message(server, exc)
+            message = self._operation_error_message(server, exc)
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, message)
             return MCPExecutionResult(server=server, operation="tool", name=tool, is_error=True, content_text=f"MCP 工具调用失败：{message}", content_type="error")
@@ -247,11 +259,11 @@ class MCPClientManager:
             return unavailable
         try:
             session = await self._ensure_session(server)
-            result = await asyncio.wait_for(
-                session.read_resource(uri), timeout=self.server_configs[server].call_timeout
-            )
+            result = await self._track_active_call(server, session.read_resource(uri))
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            message = self._error_message(server, exc)
+            message = self._operation_error_message(server, exc)
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, message)
             return MCPExecutionResult(server=server, operation="resource", name=uri, is_error=True, content_text=f"MCP 资源读取失败：{message}", content_type="error")
@@ -265,12 +277,14 @@ class MCPClientManager:
             return unavailable
         try:
             session = await self._ensure_session(server)
-            result = await asyncio.wait_for(
+            result = await self._track_active_call(
+                server,
                 session.get_prompt(prompt, arguments or {}),
-                timeout=self.server_configs[server].call_timeout,
             )
+        except asyncio.CancelledError:
+            raise
         except Exception as exc:
-            message = self._error_message(server, exc)
+            message = self._operation_error_message(server, exc)
             if not _is_mcp_operation_error(exc):
                 await self._mark_server_unavailable(server, message)
             return MCPExecutionResult(server=server, operation="prompt", name=prompt, is_error=True, content_text=f"获取 MCP Prompt 失败：{message}", content_type="error")
@@ -301,6 +315,13 @@ class MCPClientManager:
             return message
         for secret in self.config_loader.secret_values(config):
             message = message.replace(secret, "[REDACTED]")
+        return message
+
+    def _operation_error_message(self, server: str, exc: Exception) -> str:
+        message = self._error_message(server, exc)
+        if _is_mcp_timeout_error(exc):
+            timeout = self.server_configs[server].call_timeout
+            return f"操作超时（限制 {timeout:g}s）"
         return message
 
     def schedule_reconnect_unavailable_servers(self) -> asyncio.Task | None:
@@ -409,7 +430,13 @@ class MCPClientManager:
                     else:
                         params = StdioServerParameters(command=config.command, args=list(config.args), env=env)
                     read_stream, write_stream = await stack.enter_async_context(stdio_client(params))
-                session = await stack.enter_async_context(ClientSession(read_stream, write_stream))
+                session = await stack.enter_async_context(
+                    ClientSession(
+                        read_stream,
+                        write_stream,
+                        read_timeout_seconds=timedelta(seconds=config.call_timeout),
+                    )
+                )
                 await asyncio.wait_for(session.initialize(), timeout=config.startup_timeout)
                 self._session_contexts[server] = stack
                 self._sessions[server] = session
@@ -430,6 +457,7 @@ class MCPClientManager:
         raise RuntimeError(f"MCP Server {server} 未能建立连接")
 
     async def _close_session(self, server: str) -> None:
+        await self._cancel_active_calls(server)
         async with self._close_lock:
             self._sessions.pop(server, None)
             contexts = self._session_contexts.pop(server, None)
@@ -453,6 +481,43 @@ class MCPClientManager:
                 return
             except BaseException:
                 return
+
+    async def _track_active_call(self, server: str, awaitable: Any) -> Any:
+        task = asyncio.current_task()
+        if task is None:
+            return await awaitable
+        self._active_calls.setdefault(server, set()).add(task)
+        try:
+            return await awaitable
+        finally:
+            calls = self._active_calls.get(server)
+            if calls is not None:
+                calls.discard(task)
+                if not calls:
+                    self._active_calls.pop(server, None)
+
+    async def _cancel_active_calls(self, server: str | None = None) -> None:
+        current = asyncio.current_task()
+        names = [server] if server is not None else list(self._active_calls)
+        tasks = {
+            task
+            for name in names
+            for task in self._active_calls.get(name, set())
+            if task is not current and not task.done()
+        }
+        if not tasks:
+            return
+        for task in tasks:
+            task.cancel()
+        done, pending = await asyncio.wait(tasks, timeout=ACTIVE_CALL_CLOSE_TIMEOUT_SECONDS)
+        if done:
+            await asyncio.gather(*done, return_exceptions=True)
+        for task in pending:
+            task.cancel()
+        if pending:
+            with contextlib.suppress(asyncio.TimeoutError):
+                async with asyncio.timeout(ACTIVE_CALL_CLOSE_TIMEOUT_SECONDS):
+                    await asyncio.gather(*pending, return_exceptions=True)
 
     def _sandboxed_stdio_args(self, config: MCPServerConfig) -> list[str]:
         network_name = (
@@ -645,26 +710,20 @@ class MCPClientManager:
 
     async def _list_tools_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)
-        result = await asyncio.wait_for(
-            session.list_tools(), timeout=self.server_configs[server].call_timeout
-        )
+        result = await self._track_active_call(server, session.list_tools())
         return [_item_summary(item) for item in getattr(result, "tools", [])]
 
     async def _list_resources_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)
         with contextlib.suppress(Exception):
-            result = await asyncio.wait_for(
-                session.list_resources(), timeout=self.server_configs[server].call_timeout
-            )
+            result = await self._track_active_call(server, session.list_resources())
             return [_item_summary(item) for item in getattr(result, "resources", [])]
         return []
 
     async def _list_prompts_from_session(self, server: str) -> list[MCPItemSummary]:
         session = await self._ensure_session(server)
         with contextlib.suppress(Exception):
-            result = await asyncio.wait_for(
-                session.list_prompts(), timeout=self.server_configs[server].call_timeout
-            )
+            result = await self._track_active_call(server, session.list_prompts())
             return [_item_summary(item) for item in getattr(result, "prompts", [])]
         return []
 
@@ -690,6 +749,12 @@ def _is_mcp_operation_error(exc: Exception) -> bool:
     """Return True for server-side operation errors that should not poison the connection."""
     exc_type = type(exc)
     return exc_type.__name__ == "McpError" and exc_type.__module__ == "mcp.shared.exceptions"
+
+
+def _is_mcp_timeout_error(exc: Exception) -> bool:
+    if not _is_mcp_operation_error(exc):
+        return isinstance(exc, asyncio.TimeoutError)
+    return "timed out while waiting for response" in str(exc).lower()
 
 
 def _validate_playwright_output_arguments(arguments: dict[str, Any]) -> str:

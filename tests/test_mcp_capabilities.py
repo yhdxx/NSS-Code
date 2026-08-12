@@ -3,10 +3,14 @@ from __future__ import annotations
 import asyncio
 import base64
 import json
+from dataclasses import replace
+from datetime import timedelta
 from pathlib import Path
 import sys
 
 import pytest
+from mcp.shared.exceptions import McpError
+from mcp.types import ErrorData
 
 from mycodingagent.capability_discovery import CapabilityRouter
 from mycodingagent.capability_discovery.models import CapabilityRecommendation, CapabilityResult
@@ -408,7 +412,8 @@ def test_remote_mcp_initialize_retries_once_after_timeout(monkeypatch, tmp_path)
             return None
 
     class FakeSession:
-        def __init__(self, _read_stream, _write_stream):
+        def __init__(self, _read_stream, _write_stream, read_timeout_seconds=None):
+            assert read_timeout_seconds == timedelta(seconds=60)
             pass
 
         async def __aenter__(self):
@@ -1309,6 +1314,144 @@ if __name__ == "__main__":
     assert good_result.is_error is False
     assert "result:react" in good_result.content_text
     assert after_good.available is True
+
+
+def test_real_stdio_mcp_tool_timeout_returns_error_and_closes_cleanly(tmp_path):
+    server_script = tmp_path / "slow_mcp_server.py"
+    server_script.write_text(
+        """
+import asyncio
+from mcp.server.fastmcp import FastMCP
+
+mcp = FastMCP("slow")
+
+@mcp.tool(description="Slow operation")
+async def slow_operation() -> str:
+    await asyncio.sleep(10)
+    return "late"
+
+if __name__ == "__main__":
+    mcp.run("stdio")
+""".strip(),
+        encoding="utf-8",
+    )
+    config = tmp_path / "mcp.json"
+    config.write_text(
+        json.dumps(
+            {
+                "servers": {
+                    "slow": {
+                        "command": sys.executable,
+                        "args": [str(server_script)],
+                        "call_timeout": 10.0,
+                    }
+                }
+            }
+        ),
+        encoding="utf-8",
+    )
+    manager = MCPClientManager(
+        config_loader=MCPConfigLoader(project_path=config, user_path=tmp_path / "missing.json")
+    )
+
+    async def scenario():
+        await manager.initialize()
+        try:
+            await manager._ensure_session("slow")
+            manager.metadata_cache.update_discovery(
+                "slow",
+                tools=[MCPItemSummary(name="slow_operation", description="Slow operation")],
+                connected=True,
+            )
+            manager.server_configs["slow"] = replace(
+                manager.server_configs["slow"],
+                call_timeout=0.1,
+            )
+            result = await manager.call_tool("slow", "slow_operation", {})
+            summary = manager.metadata_cache.get("slow").summary()
+            return result, summary
+        finally:
+            await manager.close()
+
+    result, summary = asyncio.run(scenario())
+
+    assert result.is_error is True
+    assert "操作超时（限制 0.1s）" in result.content_text
+    assert summary.available is True
+    assert manager._sessions == {}
+    assert manager._session_contexts == {}
+    assert manager._active_calls == {}
+
+
+def test_mcp_tool_timeout_is_reported_without_poisoning_server():
+    config = MCPServerConfig(name="playwright", call_timeout=12)
+    manager = MCPClientManager(metadata_cache=MCPMetadataCache())
+    manager.server_configs = {"playwright": config}
+    manager.metadata_cache.sync_configs(manager.server_configs)
+    manager.metadata_cache.update_discovery("playwright", connected=True)
+
+    class Session:
+        async def call_tool(self, name, arguments, read_timeout_seconds=None):
+            assert name == "browser_evaluate"
+            assert arguments == {"function": "() => 1"}
+            assert read_timeout_seconds == timedelta(seconds=12)
+            raise McpError(
+                ErrorData(
+                    code=408,
+                    message="Timed out while waiting for response to CallToolRequest. Waited 12 seconds.",
+                )
+            )
+
+    manager._sessions["playwright"] = Session()
+
+    result = asyncio.run(
+        manager.call_tool("playwright", "browser_evaluate", {"function": "() => 1"})
+    )
+    summary = manager.metadata_cache.get("playwright").summary()
+
+    assert result.is_error is True
+    assert "操作超时（限制 12s）" in result.content_text
+    assert summary.available is True
+    assert manager._active_calls == {}
+
+
+def test_mcp_close_cancels_active_call_before_session_context():
+    manager = MCPClientManager(metadata_cache=MCPMetadataCache())
+    manager.server_configs = {"playwright": MCPServerConfig(name="playwright")}
+    manager.metadata_cache.sync_configs(manager.server_configs)
+    manager.metadata_cache.update_discovery("playwright", connected=True)
+    call_started = asyncio.Event()
+    call_cancelled = asyncio.Event()
+    context_closed = asyncio.Event()
+
+    class Session:
+        async def call_tool(self, _name, _arguments, read_timeout_seconds=None):
+            call_started.set()
+            try:
+                await asyncio.Event().wait()
+            finally:
+                call_cancelled.set()
+
+    class Context:
+        async def aclose(self):
+            assert call_cancelled.is_set()
+            context_closed.set()
+
+    manager._sessions["playwright"] = Session()
+    manager._session_contexts["playwright"] = Context()
+
+    async def scenario():
+        call = asyncio.create_task(manager.call_tool("playwright", "browser_evaluate", {}))
+        await call_started.wait()
+        await manager.close()
+        result = await asyncio.gather(call, return_exceptions=True)
+        return result
+
+    result = asyncio.run(scenario())
+
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert context_closed.is_set()
+    assert manager._active_calls == {}
 
 
 def test_mcp_write_tool_requires_approval_and_returns_user_denied(tmp_path):

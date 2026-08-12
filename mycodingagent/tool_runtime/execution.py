@@ -112,6 +112,13 @@ async def execute_tool(
             cancel_task.cancel()
             await asyncio.gather(cancel_task, return_exceptions=True)
             result = task.result()
+    except asyncio.CancelledError:
+        execution = ToolExecution("工具执行已被取消。", is_error=True)
+        _finish_record(execution_recorder, execution_id, "interrupted", execution.output)
+        current_task = asyncio.current_task()
+        if current_task is not None and current_task.cancelling():
+            raise
+        return execution
     except Exception as exc:
         execution = ToolExecution(f"工具执行错误：{exc}", is_error=True)
         _finish_record(execution_recorder, execution_id, "failed", execution.output)

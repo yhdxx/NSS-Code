@@ -212,6 +212,43 @@ def test_execution_record_is_persisted_and_finished(tmp_path):
     assert records[0].args_preview == '{"value": "ok"}'
 
 
+def test_cancelled_tool_execution_is_recorded_as_interrupted(tmp_path):
+    runtime = _runtime(tmp_path)
+    session_id = runtime.start_session("test")
+    started = asyncio.Event()
+
+    class BlockingTool(Tool):
+        name = "BlockingTool"
+        description = "block until cancelled"
+        params_model = _Params
+
+        async def execute(self, _params: _Params) -> ToolResult:
+            started.set()
+            await asyncio.Event().wait()
+            raise AssertionError("unreachable")
+
+    async def scenario():
+        task = asyncio.create_task(
+            execute_tool(
+                BlockingTool(),
+                {"value": "ok"},
+                execution_recorder=runtime,
+                session_id=session_id,
+            )
+        )
+        await started.wait()
+        task.cancel()
+        return await asyncio.gather(task, return_exceptions=True)
+
+    result = asyncio.run(scenario())
+    record = runtime.store.list_executions(session_id)[0]
+
+    assert isinstance(result[0], asyncio.CancelledError)
+    assert record.status == "interrupted"
+    assert record.finished_at is not None
+    assert "取消" in record.error
+
+
 def test_store_reconciles_running_execution_after_restart(tmp_path):
     db_path = tmp_path / "sessions.sqlite3"
     store = SQLiteMemoryStore(db_path)
