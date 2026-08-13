@@ -184,7 +184,7 @@ myAgent
 | `memory.state_dir` | `MYCODINGAGENT_STATE_DIR` | `~/.mycodingagent/state` | 用户全局配置/跨项目记忆的默认目录；当前工作区的运行状态使用工作区 `.mycodingagent/state/` |
 | `memory.db_path` | `MYCODINGAGENT_MEMORY_DB_PATH` | `~/.mycodingagent/state/sessions.sqlite3` | 用户全局长期记忆库；会话、项目事实、代码索引、项目图谱、MCP cache 和多智能体状态落在 `<workspace>/.mycodingagent/state/` |
 | `memory.default_work_mode` | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `"general"` | 默认工作模式（`general` / `code`） |
-| `memory.default_context_window` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `128000` | 默认上下文窗口大小 |
+| `memory.default_context_window` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `1000000` | 默认上下文窗口大小；未单独配置的模型均按 1M 计算 |
 | `memory.session_ttl_days` | `MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS` | `90` | 会话保留天数 |
 | `memory.workspace_snapshot_ttl_days` | `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS` | `30` | 工作区快照保留天数 |
 | `memory.budget_soft_ratio` | `MYCODINGAGENT_BUDGET_SOFT_RATIO` | `0.60` | 上下文软预算比例 |
@@ -195,7 +195,7 @@ myAgent
 | `memory.reserved_reasoning_tokens` | `MYCODINGAGENT_RESERVED_REASONING_TOKENS` | `8000` | 为推理保留的 token 数 |
 | `memory.reserved_output_tokens` | `MYCODINGAGENT_RESERVED_OUTPUT_TOKENS` | `4000` | 为输出保留的 token 数 |
 | `memory.reserved_tool_tokens` | `MYCODINGAGENT_RESERVED_TOOL_TOKENS` | `12000` | 为工具调用保留的 token 数 |
-| `memory.model_context_windows` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOWS` | `{"deepseek-v4-flash": 1000000}` | 各模型上下文窗口映射（JSON 字典） |
+| `memory.model_context_windows` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOWS` | `{}` | 按模型覆盖默认上下文窗口的映射（JSON 字典） |
 
 ### 4.7 `sandbox` — 沙箱配置
 

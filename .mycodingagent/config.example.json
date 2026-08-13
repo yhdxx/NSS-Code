@@ -75,7 +75,7 @@
     "state_dir": "",
     "db_path": "",
     "prompt_path": "",
-    "default_context_window": 128000,
+    "default_context_window": 1000000,
     "session_ttl_days": 90,
     "default_work_mode": "general",
     "workspace_snapshot_ttl_days": 30,
@@ -107,9 +107,7 @@
     "context_store_backend": "sqlite",
     "recent_rounds_for_average": 20,
     "recent_messages_after_summary": 12,
-    "model_context_windows": {
-      "deepseek-v4-flash": 1000000
-    }
+    "model_context_windows": {}
   },
   "sandbox": {
     "root": "",

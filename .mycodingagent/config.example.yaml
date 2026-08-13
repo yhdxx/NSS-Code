@@ -56,7 +56,7 @@
 #   output_context_compression: true
 #   state_dir: ""                  # 空值默认使用 ~/.mycodingagent/state；环境变量：MYCODINGAGENT_STATE_DIR
 #   db_path: ""                    # 空值默认使用 ~/.mycodingagent/state/sessions.sqlite3；环境变量：MYCODINGAGENT_MEMORY_DB_PATH
-#   default_context_window: 128000 # 环境变量：MYCODINGAGENT_MODEL_CONTEXT_WINDOW
+#   default_context_window: 1000000 # 环境变量：MYCODINGAGENT_MODEL_CONTEXT_WINDOW
 #   session_ttl_days: 90          # 环境变量：MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS
 #   default_work_mode: "general"  # 环境变量：MYCODINGAGENT_DEFAULT_WORK_MODE（general / code）
 #   workspace_snapshot_ttl_days: 30
@@ -88,8 +88,7 @@
 #   context_store_backend: "sqlite"
 #   recent_rounds_for_average: 20
 #   recent_messages_after_summary: 12
-#   model_context_windows:
-#     deepseek-v4-flash: 1000000  # 环境变量：MYCODINGAGENT_MODEL_CONTEXT_WINDOWS（JSON 字典）
+#   model_context_windows: {}     # 可按模型覆盖默认窗口；环境变量：MYCODINGAGENT_MODEL_CONTEXT_WINDOWS（JSON 字典）
 
 # sandbox:
 #   max_output_chars: 10000       # 环境变量：MYCODINGAGENT_MAX_OUTPUT_CHARS

@@ -132,6 +132,8 @@ def _run_config_probe(*, cwd: Path, env: dict[str, str]) -> dict:
         "  'milvus_has_legacy_metric_type': hasattr(CONFIG.milvus, 'metric_type'),\n"
         "  'memory_state_dir': str(CONFIG.memory.state_dir),\n"
         "  'memory_db_path': str(CONFIG.memory.db_path),\n"
+        "  'default_context_window': CONFIG.memory.default_context_window,\n"
+        "  'unknown_model_context_window': CONFIG.memory.context_window_for('unknown-model'),\n"
         "  'mcp_project_config_path': str(CONFIG.mcp.project_config_path),\n"
         "  'mcp_user_config_path': str(CONFIG.mcp.user_config_path),\n"
         "  'approval_mode': CONFIG.approval.mode,\n"
@@ -246,6 +248,16 @@ def test_max_tool_rounds_defaults_to_100_and_supports_user_override(tmp_path):
     assert _config_probe(missing_path)["max_tool_rounds"] == 100
     assert _config_probe(empty_path)["max_tool_rounds"] == 100
     assert _config_probe(custom_path)["max_tool_rounds"] == 240
+
+
+def test_model_context_window_defaults_to_one_million(tmp_path):
+    config_path = tmp_path / "config.json"
+    config_path.write_text("{}", encoding="utf-8")
+
+    data = _config_probe(config_path)
+
+    assert data["default_context_window"] == 1_000_000
+    assert data["unknown_model_context_window"] == 1_000_000
 
 
 def test_web_fetch_limits_are_loaded_and_capped(tmp_path):

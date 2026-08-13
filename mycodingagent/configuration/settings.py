@@ -690,7 +690,7 @@ class MemoryConfig:
         default_factory=lambda: _user_path("memory.prompt_path", ("MYCODINGAGENT_MEMORY_SUMMARY_PROMPT",))
     )
     default_context_window: int = field(
-        default_factory=lambda: _user_int("memory.default_context_window", ("MYCODINGAGENT_MODEL_CONTEXT_WINDOW",), 128_000)
+        default_factory=lambda: _user_int("memory.default_context_window", ("MYCODINGAGENT_MODEL_CONTEXT_WINDOW",), 1_000_000)
     )
     session_ttl_days: int = field(
         default_factory=lambda: _user_int("memory.session_ttl_days", ("MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS",), 90)
@@ -792,7 +792,7 @@ class MemoryConfig:
         default_factory=lambda: _user_dict(
             "memory.model_context_windows",
             ("MYCODINGAGENT_MODEL_CONTEXT_WINDOWS",),
-            {"deepseek-v4-flash": 1_000_000},
+            {},
         )
     )
 
