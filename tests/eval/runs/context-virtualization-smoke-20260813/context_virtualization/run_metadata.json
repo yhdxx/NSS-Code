@@ -1,0 +1,16 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "dataset_path": "tests/eval/datasets/context_virtualization_cases.jsonl",
+  "dataset_sha256": "72864cf81b32eedcebe3a6a552677bcad8bae89bba89dd5b2717abe38bfc3331",
+  "extra": {},
+  "generated_at": "2026-08-13T17:09:34+0800",
+  "git_commit": "ad4b1563ade58eff5e234d0bc106eccad5e7486e",
+  "git_dirty": false,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 1,
+  "run_id": "context-virtualization-smoke-20260813",
+  "tool_schema_hash": "f973b6028e66ecce13ff715b467bb2fbb456ea24e4935136aace4085e534f300"
+}

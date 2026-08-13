@@ -19,7 +19,7 @@
   "dataset_path": "tests/eval/datasets/context_virtualization_cases.jsonl",
   "dataset_sha256": "72864cf81b32eedcebe3a6a552677bcad8bae89bba89dd5b2717abe38bfc3331",
   "sample_count": 270,
-  "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
+  "tool_schema_hash": "f973b6028e66ecce13ff715b467bb2fbb456ea24e4935136aace4085e534f300"
 }
 ```
 
@@ -28,15 +28,15 @@
 ```json
 {
   "base_url": "https://api.deepseek.com",
-  "generated_at": "2026-08-01T19:11:19+0800",
-  "git_commit": "1c5e2b27423b9618a1c76f0a1c4b38542011420e",
+  "generated_at": "2026-08-13T17:10:24+0800",
+  "git_commit": "ad4b1563ade58eff5e234d0bc106eccad5e7486e",
   "git_dirty": true,
   "model": "deepseek-v4-pro",
   "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
   "python": "3.12.6",
   "random_seed": 20260801,
   "repeats": 3,
-  "run_id": "standard-context-20260801"
+  "run_id": "context-virtualization-rerun-20260813"
 }
 ```
 
@@ -53,9 +53,9 @@ python3 -m tests.eval.modern_runner run-context --dataset tests/eval/datasets/co
   "by_mode": {
     "raw": {
       "input_reduction_vs_raw": 0.0,
-      "prompt_tokens_mean": 14585.0,
-      "prompt_tokens_p50": 14585.0,
-      "prompt_tokens_p95": 14585.0,
+      "prompt_tokens_mean": 14664.0,
+      "prompt_tokens_p50": 14664.0,
+      "prompt_tokens_p95": 14664.0,
       "run_count": 90,
       "success_rate": 1.0,
       "success_rate_ci95": {
@@ -65,10 +65,10 @@ python3 -m tests.eval.modern_runner run-context --dataset tests/eval/datasets/co
       }
     },
     "recent_only": {
-      "input_reduction_vs_raw": 0.92794,
-      "prompt_tokens_mean": 1051.0,
-      "prompt_tokens_p50": 1051.0,
-      "prompt_tokens_p95": 1051.0,
+      "input_reduction_vs_raw": 0.922941,
+      "prompt_tokens_mean": 1130.0,
+      "prompt_tokens_p50": 1130.0,
+      "prompt_tokens_p95": 1130.0,
       "run_count": 90,
       "success_rate": 0.0,
       "success_rate_ci95": {
@@ -78,10 +78,10 @@ python3 -m tests.eval.modern_runner run-context --dataset tests/eval/datasets/co
       }
     },
     "virtualized": {
-      "input_reduction_vs_raw": 0.584573,
-      "prompt_tokens_mean": 6059.0,
-      "prompt_tokens_p50": 6059.0,
-      "prompt_tokens_p95": 6059.0,
+      "input_reduction_vs_raw": 0.581424,
+      "prompt_tokens_mean": 6138.0,
+      "prompt_tokens_p50": 6138.0,
+      "prompt_tokens_p95": 6138.0,
       "run_count": 90,
       "success_rate": 1.0,
       "success_rate_ci95": {
@@ -94,7 +94,6 @@ python3 -m tests.eval.modern_runner run-context --dataset tests/eval/datasets/co
   "case_count": 30,
   "completed_run_count": 270,
   "reason": "",
-  "resume_conclusion": "在 30 个合成长会话、每策略 3 次的受控证据恢复实验中，virtualized 保持 100% 锚点命中率，并相对 raw 减少 58.46% 输入 token；该结果不等同于真实开发任务端到端成功率。",
   "run_count": 270
 }
 ```
@@ -106,124 +105,124 @@ python3 -m tests.eval.modern_runner run-context --dataset tests/eval/datasets/co
   "count": 90,
   "examples": [
     {
-      "answer": "在可见的对话记录中，你并未提及任何项目约束、禁止修改的模块或适配文件名。所有消息仅为对“中间无关需求”的简短确认，没有包含这些信息。",
+      "answer": "当前可见对话中未包含会话初期的项目约束内容，因此我无法完整说出禁止修改的模块及适配文件名。请补充该约束原文或相关上下文。",
       "case_id": "ctx_01",
-      "duration_ms": 6757.942,
+      "duration_ms": 10847.726,
       "mode": "recent_only",
       "passed": false,
       "prompt_chars": 3968,
-      "prompt_tokens": 1051,
-      "repeat": 2,
-      "status": "passed",
-      "total_tokens": 1240
-    },
-    {
-      "answer": "根据提供的对话记录，无法找到任何关于项目约束的信息，包括禁止修改的模块或适配文件名。因此无法回答该问题。",
-      "case_id": "ctx_02",
-      "duration_ms": 12235.29,
-      "mode": "recent_only",
-      "passed": false,
-      "prompt_chars": 3968,
-      "prompt_tokens": 1051,
-      "repeat": 2,
-      "status": "passed",
-      "total_tokens": 1271
-    },
-    {
-      "answer": "从当前提供的对话记录中，未见到您初期提出的项目约束内容，因此无法给出禁止修改的模块及适配文件名的具体信息。",
-      "case_id": "ctx_02",
-      "duration_ms": 15109.492,
-      "mode": "recent_only",
-      "passed": false,
-      "prompt_chars": 3968,
-      "prompt_tokens": 1051,
-      "repeat": 1,
-      "status": "passed",
-      "total_tokens": 1405
-    },
-    {
-      "answer": "根据可见的对话历史，没有提及任何项目约束，包括禁止修改的模块和适配文件名。无法提供相关回答。",
-      "case_id": "ctx_02",
-      "duration_ms": 19533.499,
-      "mode": "recent_only",
-      "passed": false,
-      "prompt_chars": 3968,
-      "prompt_tokens": 1051,
+      "prompt_tokens": 1130,
       "repeat": 0,
       "status": "passed",
-      "total_tokens": 1615
+      "total_tokens": 1534
     },
     {
-      "answer": "在提供的可见对话中，没有任何关于项目约束的描述，因此无法回答禁止修改哪个模块以及适配文件名。",
-      "case_id": "ctx_03",
-      "duration_ms": 22276.99,
+      "answer": "当前可见的对话记录里没有包含会话初期你提出的项目约束原文，因此我无法完整说出“禁止修改哪个模块”以及“适配文件名”。请补充该约束内容，我可以帮你准确复述。",
+      "case_id": "ctx_01",
+      "duration_ms": 11309.938,
       "mode": "recent_only",
       "passed": false,
       "prompt_chars": 3968,
-      "prompt_tokens": 1051,
+      "prompt_tokens": 1130,
       "repeat": 1,
       "status": "passed",
-      "total_tokens": 1275
+      "total_tokens": 1571
     },
     {
-      "answer": "在现有的会话记录中，并未出现您所提及的“项目约束”及“禁止修改哪个模块以及适配文件名”的相关信息。仅能看到从“已确认中间需求 131”开始的一系列简短确认对话。若早期存在相关约束，请提供更完整的上下文。",
-      "case_id": "ctx_03",
-      "duration_ms": 22965.107,
+      "answer": "当前可见的对话记录中未包含会话初期你提出的项目约束内容，因此我无法完整说出“禁止修改哪个模块”以及“适配文件名”。请提供或补充该约束，我再按要求完整复述。",
+      "case_id": "ctx_02",
+      "duration_ms": 15669.993,
       "mode": "recent_only",
       "passed": false,
       "prompt_chars": 3968,
-      "prompt_tokens": 1051,
+      "prompt_tokens": 1130,
       "repeat": 0,
       "status": "passed",
-      "total_tokens": 1412
+      "total_tokens": 1571
     },
     {
-      "answer": "在可见的对话记录中，未出现任何关于项目约束、禁止修改的模块或适配文件名的内容，因此无法给出答案。",
-      "case_id": "ctx_03",
-      "duration_ms": 23852.515,
+      "answer": "当前可见对话中未包含您早期提出的项目约束内容，因此我无法完整说出禁止修改的模块及适配文件名。请补充该约束原文，我会严格按要求复述。",
+      "case_id": "ctx_02",
+      "duration_ms": 18232.576,
       "mode": "recent_only",
       "passed": false,
       "prompt_chars": 3968,
-      "prompt_tokens": 1051,
+      "prompt_tokens": 1130,
+      "repeat": 1,
+      "status": "passed",
+      "total_tokens": 1664
+    },
+    {
+      "answer": "当前可见的对话记录中未包含会话初期您提出的项目约束内容，因此我无法完整说出禁止修改的模块和适配文件名。请补充该约束原文。",
+      "case_id": "ctx_01",
+      "duration_ms": 27357.221,
+      "mode": "recent_only",
+      "passed": false,
+      "prompt_chars": 3968,
+      "prompt_tokens": 1130,
       "repeat": 2,
       "status": "passed",
-      "total_tokens": 1345
+      "total_tokens": 2413
     },
     {
-      "answer": "在目前可见的对话记录中，您并未提出任何项目约束，也没有提到禁止修改哪个模块或适配文件名。因此我无法回答。",
-      "case_id": "ctx_01",
-      "duration_ms": 29308.407,
+      "answer": "当前可见的对话内容中未包含你会话初期提出的项目约束，因此我无法完整说出禁止修改的模块及适配文件名。请补充该约束内容，我会严格按此遵守。",
+      "case_id": "ctx_03",
+      "duration_ms": 30129.126,
       "mode": "recent_only",
       "passed": false,
       "prompt_chars": 3968,
-      "prompt_tokens": 1051,
-      "repeat": 1,
-      "status": "passed",
-      "total_tokens": 2257
-    },
-    {
-      "answer": "在提供的对话记录中，未提及任何项目约束，也没有说明禁止修改哪个模块以及必须适配的文件名。因此无法作答。",
-      "case_id": "ctx_04",
-      "duration_ms": 35018.918,
-      "mode": "recent_only",
-      "passed": false,
-      "prompt_chars": 3968,
-      "prompt_tokens": 1051,
-      "repeat": 1,
-      "status": "passed",
-      "total_tokens": 1447
-    },
-    {
-      "answer": "从当前可见的对话记录（从“已确认中间需求 131”开始）中，没有找到你提出过任何项目约束，也没有关于禁止修改哪个模块或适配文件名的说明。因此，基于可见证据，无法回答该问题。",
-      "case_id": "ctx_04",
-      "duration_ms": 41786.823,
-      "mode": "recent_only",
-      "passed": false,
-      "prompt_chars": 3968,
-      "prompt_tokens": 1051,
+      "prompt_tokens": 1130,
       "repeat": 2,
       "status": "passed",
       "total_tokens": 1735
+    },
+    {
+      "answer": "当前可见的对话记录中未包含会话初期你提出的项目约束内容，因此我无法完整说出禁止修改哪个模块以及适配文件名。请补充相关原文，我再按要求完整回答。",
+      "case_id": "ctx_03",
+      "duration_ms": 31031.412,
+      "mode": "recent_only",
+      "passed": false,
+      "prompt_chars": 3968,
+      "prompt_tokens": 1130,
+      "repeat": 0,
+      "status": "passed",
+      "total_tokens": 1792
+    },
+    {
+      "answer": "当前可见的对话记录中未包含会话初期您提出的项目约束，因此我无法完整说出禁止修改的模块及适配文件名。请补充该约束内容，我可以帮您确认。",
+      "case_id": "ctx_02",
+      "duration_ms": 31323.139,
+      "mode": "recent_only",
+      "passed": false,
+      "prompt_chars": 3968,
+      "prompt_tokens": 1130,
+      "repeat": 2,
+      "status": "passed",
+      "total_tokens": 2279
+    },
+    {
+      "answer": "当前可见上下文中没有包含会话初期你提出的项目约束内容，因此我无法完整说出禁止修改的模块及适配文件名。请补充或重新发送相关约束内容。",
+      "case_id": "ctx_04",
+      "duration_ms": 38864.931,
+      "mode": "recent_only",
+      "passed": false,
+      "prompt_chars": 3968,
+      "prompt_tokens": 1130,
+      "repeat": 0,
+      "status": "passed",
+      "total_tokens": 1668
+    },
+    {
+      "answer": "当前可见的对话记录中并未包含会话初期你提出的项目约束内容，因此我无法完整说出“禁止修改哪个模块”以及“适配文件名”是什么。请补充或重新提供该约束，我可以帮你确认。",
+      "case_id": "ctx_03",
+      "duration_ms": 40004.676,
+      "mode": "recent_only",
+      "passed": false,
+      "prompt_chars": 3968,
+      "prompt_tokens": 1130,
+      "repeat": 1,
+      "status": "passed",
+      "total_tokens": 2193
     }
   ]
 }
@@ -237,4 +236,4 @@ python3 -m tests.eval.modern_runner run-context --dataset tests/eval/datasets/co
 
 ## 简历可用结论
 
-在 30 个合成长会话、每策略 3 次的受控证据恢复实验中，virtualized 保持 100% 锚点命中率，并相对 raw 减少 58.46% 输入 token；该结果不等同于真实开发任务端到端成功率。
+本次结果已执行，但仍须按门禁和局限限定表述。

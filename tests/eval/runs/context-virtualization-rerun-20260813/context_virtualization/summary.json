@@ -1,0 +1,49 @@
+{
+  "by_mode": {
+    "raw": {
+      "input_reduction_vs_raw": 0.0,
+      "prompt_tokens_mean": 14664.0,
+      "prompt_tokens_p50": 14664.0,
+      "prompt_tokens_p95": 14664.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      }
+    },
+    "recent_only": {
+      "input_reduction_vs_raw": 0.922941,
+      "prompt_tokens_mean": 1130.0,
+      "prompt_tokens_p50": 1130.0,
+      "prompt_tokens_p95": 1130.0,
+      "run_count": 90,
+      "success_rate": 0.0,
+      "success_rate_ci95": {
+        "high": 0.0,
+        "low": 0.0,
+        "mean": 0.0
+      }
+    },
+    "virtualized": {
+      "input_reduction_vs_raw": 0.581424,
+      "prompt_tokens_mean": 6138.0,
+      "prompt_tokens_p50": 6138.0,
+      "prompt_tokens_p95": 6138.0,
+      "run_count": 90,
+      "success_rate": 1.0,
+      "success_rate_ci95": {
+        "high": 1.0,
+        "low": 1.0,
+        "mean": 1.0
+      }
+    }
+  },
+  "case_count": 30,
+  "completed_run_count": 270,
+  "module": "context_virtualization",
+  "reason": "",
+  "run_count": 270,
+  "status": "passed"
+}
