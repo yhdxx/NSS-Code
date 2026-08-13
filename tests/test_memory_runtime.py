@@ -35,13 +35,12 @@ from mycodingagent.memory import (
     SQLiteMemoryStore,
     SnapshotDelta,
 )
-from mycodingagent.memory.budget import BudgetStage, PromptBudgetSnapshot
+from mycodingagent.memory.budget import BudgetStage, PromptBudgetSnapshot, estimate_tokens
 from mycodingagent.memory.checkpoint import SNAPSHOT_FIELD_ORDER, TurnState, format_snapshot_prompt
-from mycodingagent.memory.compressor import ContextCompressor, is_reproducible_tool
+from mycodingagent.memory.context_objects import is_reproducible_tool
 from mycodingagent.memory.runtime import (
     ContextMode,
     estimate_raw_uncached_tokens,
-    format_compression_report,
     render_historical_topology,
     render_virtualized_messages,
 )
@@ -948,10 +947,10 @@ def test_session_preview_falls_back_when_no_user_message():
 
 
 def test_current_turn_small_tool_output_stays_inline(tmp_path):
-    compressor = ContextCompressor(context_window=1000, tool_preview_chars=5)
+    context_window = 1000
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -1287,7 +1286,7 @@ def test_memory_lookup_tools_are_registered_when_memory_runtime_exists(tmp_path)
 def test_current_turn_summary_uses_single_recovery_path(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=1000),
+        context_window=1000,
     )
     session_id = runtime.start_session("test")
     runtime.force_context_virtualized(session_id)
@@ -1342,10 +1341,10 @@ def test_current_turn_summary_uses_single_recovery_path(tmp_path):
 
 
 def test_large_tool_output_becomes_recoverable_preview(tmp_path):
-    compressor = ContextCompressor(context_window=1000)
+    context_window = 1000
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     output = "abcdefg" * 20000
@@ -1376,10 +1375,10 @@ def test_large_tool_output_becomes_recoverable_preview(tmp_path):
 
 
 def test_raw_mode_large_tool_output_uses_preview_without_virtualizing_session(tmp_path):
-    compressor = ContextCompressor(context_window=20_000)
+    context_window = 20_000
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     output = "abcdefg" * 20000
@@ -1409,10 +1408,10 @@ def test_raw_mode_large_tool_output_uses_preview_without_virtualizing_session(tm
 
 
 def test_prepare_messages_can_skip_persisting_temporary_context_snapshot(tmp_path):
-    compressor = ContextCompressor(context_window=1000)
+    context_window = 1000
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     runtime.save_messages_now(session_id, [{"role": "user", "content": "persisted"}])
@@ -1578,10 +1577,10 @@ def test_short_session_keeps_raw_historical_tool_output(tmp_path):
 
 
 def test_context_switches_to_virtualized_when_raw_usage_exceeds_threshold(tmp_path):
-    compressor = ContextCompressor(context_window=1200)
+    context_window = 1200
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -1714,10 +1713,10 @@ def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
 
 
 def test_context_switch_prints_mode_transition_notice(tmp_path, capsys):
-    compressor = ContextCompressor(context_window=1200)
+    context_window = 1200
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     output_id = runtime.save_tool_output(
@@ -1773,10 +1772,10 @@ def test_context_switch_prints_mode_transition_notice(tmp_path, capsys):
 
 
 def test_context_virtualized_mode_is_one_way(tmp_path):
-    compressor = ContextCompressor(context_window=900)
+    context_window = 900
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     runtime.force_context_virtualized(session_id)
@@ -1813,10 +1812,10 @@ def test_raw_uncached_tokens_start_at_first_changed_message():
 
 
 def test_summary_stage_keeps_recent_context(tmp_path):
-    compressor = ContextCompressor(context_window=100, recent_messages_after_summary=1)
+    context_window = 100
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
+        context_window=context_window,
     )
     session_id = runtime.start_session("test")
     messages = [
@@ -1838,42 +1837,6 @@ def test_summary_stage_keeps_recent_context(tmp_path):
     assert compressed[-1] == messages[-1]
 
 
-def test_compression_report_contains_required_metrics(tmp_path):
-    compressor = ContextCompressor(context_window=1000, tool_preview_chars=5)
-    runtime = MemoryRuntime(
-        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=compressor,
-    )
-    session_id = runtime.start_session("test")
-    output_id = runtime.save_tool_output(
-        session_id=session_id,
-        tool_call_id="call_1",
-        tool_name="ReadFile",
-        arguments="{}",
-        output="abcdefg" * 20,
-    )
-    result = compressor.compress_messages(
-        [
-            {"role": "user", "content": "x" * 30},
-            {
-                "role": "tool",
-                "tool_call_id": "call_1",
-                "content": "abcdefg" * 20,
-                "metadata": {"output_id": output_id},
-            },
-        ],
-        current_prompt="next",
-        tool_output_refs=runtime._tool_output_refs,
-    )
-    report = format_compression_report(result)
-
-    assert "current_context_size:" in report
-    assert "context_window:" in report
-    assert "window_usage:" in report
-    assert "action:" in report
-    assert "compressed_context_size:" in report
-
-
 def test_reproducible_tool_classification():
     assert is_reproducible_tool("ReadFile", "content")
     assert is_reproducible_tool("Grep", "content")
@@ -1883,6 +1846,123 @@ def test_reproducible_tool_classification():
     assert not is_reproducible_tool("ReadFile", "Error: failed")
     assert not is_reproducible_tool("ReadFile", "错误：读取失败")
     assert not is_reproducible_tool("ReadFile", "工具执行错误：参数无效")
+
+
+def test_token_estimate_weights_ascii_and_non_ascii_characters():
+    assert estimate_tokens("") == 0
+    assert estimate_tokens("abcd") == 1
+    assert estimate_tokens("abcde") == 2
+    assert estimate_tokens("中文ab") == 3
+    assert estimate_tokens("中文🙂") == 3
+
+
+def test_prompt_budget_uses_last_exact_tokens_plus_estimated_delta(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+    runtime = MemoryRuntime(store=store, context_window=10_000, model="test-model")
+    session_id = runtime.start_session("test-model")
+    first_messages = [{"role": "user", "content": "a" * 40}]
+    first = runtime.prompt_budget_snapshot(first_messages, use_last_api_usage=True)
+
+    runtime.record_token_usage(
+        session_id=session_id,
+        prompt_tokens=123,
+        prompt_cache_hit_tokens=0,
+        prompt_cache_miss_tokens=123,
+        completion_tokens=5,
+        total_tokens=128,
+        model="test-model",
+        metadata={"budget_estimated_tokens": first.estimated_tokens},
+    )
+    second_messages = [{"role": "user", "content": "a" * 80}]
+    second = runtime.prompt_budget_snapshot(second_messages, use_last_api_usage=True)
+
+    assert second.calibrated_from_api is True
+    assert second.current_tokens == 123 + second.estimated_tokens - first.estimated_tokens
+
+
+def test_remember_prompt_estimate_uses_final_api_request_payload(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        context_window=10_000,
+        model="test-model",
+    )
+    session_id = runtime.start_session("test-model")
+    messages = [
+        {"role": "system", "content": "system"},
+        {"role": "user", "content": "<RUNTIME_CONTEXT>\n中文\n</RUNTIME_CONTEXT>"},
+    ]
+    tools = [{"type": "function", "function": {"name": "ReadFile"}}]
+
+    remembered = runtime.remember_prompt_estimate(
+        session_id=session_id,
+        messages=messages,
+        tools=tools,
+    )
+
+    assert remembered == estimate_tokens(messages) + estimate_tokens(tools)
+    assert runtime.last_prompt_estimate(session_id) == remembered
+
+
+def test_prompt_budget_restores_exact_token_baseline_from_store(tmp_path):
+    store = SQLiteMemoryStore(tmp_path / "memory.sqlite3")
+    runtime = MemoryRuntime(store=store, context_window=10_000, model="test-model")
+    session_id = runtime.start_session("test-model")
+    first = runtime.prompt_budget_snapshot(
+        [{"role": "user", "content": "initial"}],
+        use_last_api_usage=True,
+    )
+    runtime.record_token_usage(
+        session_id=session_id,
+        prompt_tokens=91,
+        prompt_cache_hit_tokens=0,
+        prompt_cache_miss_tokens=91,
+        completion_tokens=3,
+        total_tokens=94,
+        model="test-model",
+        metadata={"budget_estimated_tokens": first.estimated_tokens},
+    )
+
+    restored = MemoryRuntime(store=store, context_window=10_000, model="test-model")
+    restored.current_session_id = session_id
+    current = restored.prompt_budget_snapshot(
+        [{"role": "user", "content": "initial plus more"}],
+        use_last_api_usage=True,
+    )
+
+    assert current.calibrated_from_api is True
+    assert current.current_tokens == 91 + current.estimated_tokens - first.estimated_tokens
+
+
+def test_prompt_budget_does_not_reuse_baseline_for_another_model(tmp_path):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        context_window=10_000,
+        model="first-model",
+    )
+    session_id = runtime.start_session("first-model")
+    first = runtime.prompt_budget_snapshot(
+        [{"role": "user", "content": "initial"}],
+        use_last_api_usage=True,
+    )
+    runtime.record_token_usage(
+        session_id=session_id,
+        prompt_tokens=91,
+        prompt_cache_hit_tokens=0,
+        prompt_cache_miss_tokens=91,
+        completion_tokens=3,
+        total_tokens=94,
+        model="first-model",
+        metadata={"budget_estimated_tokens": first.estimated_tokens},
+    )
+
+    current = runtime.prompt_budget_snapshot(
+        [{"role": "user", "content": "initial plus more"}],
+        use_last_api_usage=True,
+        model="second-model",
+    )
+
+    assert current.calibrated_from_api is False
+    assert current.current_tokens == current.estimated_tokens
 
 
 def test_lrfu_snapshot_round_trip(tmp_path):
@@ -1912,6 +1992,7 @@ def budget_snapshot(usage_ratio: float) -> PromptBudgetSnapshot:
     return PromptBudgetSnapshot(
         context_window=100,
         current_tokens=int(usage_ratio * 100),
+        estimated_tokens=int(usage_ratio * 100),
         remaining_tokens=max(0, 100 - int(usage_ratio * 100)),
         reserved_reasoning_tokens=0,
         reserved_output_tokens=0,
@@ -2414,7 +2495,7 @@ def test_cold_tool_arguments_without_explicit_intent_preserve_full_arguments():
 def test_raw_and_virtualized_hot_arguments_stay_full_until_epoch_commit(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=100_000),
+        context_window=100_000,
     )
     session_id = runtime.start_session("test")
     full_content = "payload" * 200
@@ -2492,7 +2573,7 @@ def test_raw_and_virtualized_hot_arguments_stay_full_until_epoch_commit(tmp_path
 def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=100_000),
+        context_window=100_000,
     )
     session_id = runtime.start_session("test")
     runtime.force_context_virtualized(session_id)
@@ -2578,7 +2659,7 @@ def test_virtualized_session_keeps_multi_turn_working_context_raw_until_commit(t
 def test_runtime_does_not_rotate_after_one_unrelated_turn(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=100_000),
+        context_window=100_000,
     )
     session_id = runtime.start_session("test")
     messages = [
@@ -2613,7 +2694,7 @@ def test_runtime_does_not_rotate_after_one_unrelated_turn(tmp_path):
 def test_runtime_does_not_rotate_after_three_unrelated_turns(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=100_000),
+        context_window=100_000,
     )
     session_id = runtime.start_session("test")
     messages = [
@@ -2655,7 +2736,7 @@ def test_runtime_does_not_rotate_after_three_unrelated_turns(tmp_path):
 def test_hot_context_force_retains_recent_turns_as_new_hot_context(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=600),
+        context_window=600,
     )
     session_id = runtime.start_session("test")
     messages = [{"role": "system", "content": "system"}]
@@ -2698,7 +2779,7 @@ def test_cold_context_threshold_rolls_over_with_archive_tool_snapshot(tmp_path):
     async def scenario():
         runtime = MemoryRuntime(
             store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-            compressor=ContextCompressor(context_window=600),
+            context_window=600,
         )
         session_id = runtime.start_session("test")
         messages = [
@@ -2843,7 +2924,7 @@ def test_commit_working_context_accepts_commit_note_and_legacy_summary(tmp_path)
 def test_hot_context_threshold_schedules_runtime_commit(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=1_000),
+        context_window=1_000,
     )
     session_id = runtime.start_session("test")
     messages = [
@@ -2870,7 +2951,7 @@ def test_hot_context_threshold_schedules_runtime_commit(tmp_path):
 def test_hot_context_warning_does_not_schedule_commit(tmp_path):
     runtime = MemoryRuntime(
         store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
-        compressor=ContextCompressor(context_window=1_000),
+        context_window=1_000,
     )
     session_id = runtime.start_session("test")
     messages = [

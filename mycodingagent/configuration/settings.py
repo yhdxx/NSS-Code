@@ -693,15 +693,6 @@ class MemoryConfig:
     workspace_snapshot_ttl_days: int = field(
         default_factory=lambda: _user_int("memory.workspace_snapshot_ttl_days", ("MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS",), 30)
     )
-    tool_preview_chars: int = field(
-        default_factory=lambda: _user_int("memory.tool_preview_chars", ("MYCODINGAGENT_MEMORY_TOOL_PREVIEW_CHARS",), 2000)
-    )
-    context_preview_threshold_tokens: int = field(
-        default_factory=lambda: _user_int("memory.context_preview_threshold_tokens", ("MYCODINGAGENT_CONTEXT_PREVIEW_THRESHOLD_TOKENS",), 12000)
-    )
-    context_preview_tokens: int = field(
-        default_factory=lambda: _user_int("memory.context_preview_tokens", ("MYCODINGAGENT_CONTEXT_PREVIEW_TOKENS",), 2000)
-    )
     raw_tool_output_preview_chars: int = field(
         default_factory=lambda: _user_int("memory.raw_tool_output_preview_chars", ("MYCODINGAGENT_RAW_TOOL_OUTPUT_PREVIEW_CHARS",), 1000)
     )
@@ -770,12 +761,6 @@ class MemoryConfig:
     )
     context_store_backend: str = field(
         default_factory=lambda: _user_str("memory.context_store_backend", ("MYCODINGAGENT_CONTEXT_STORE_BACKEND",), "sqlite")
-    )
-    recent_rounds_for_average: int = field(
-        default_factory=lambda: _user_int("memory.recent_rounds_for_average", ("MYCODINGAGENT_MEMORY_RECENT_ROUNDS",), 20)
-    )
-    recent_messages_after_summary: int = field(
-        default_factory=lambda: _user_int("memory.recent_messages_after_summary", ("MYCODINGAGENT_MEMORY_RECENT_MESSAGES_AFTER_SUMMARY",), 12)
     )
     model_context_windows: dict = field(
         default_factory=lambda: _user_dict(

@@ -68,13 +68,6 @@ class MemoryQuery:
 
 
 @dataclass
-class CompressionResult:
-    content: str = ""
-    source_count: int = 0
-    metadata: dict[str, Any] = field(default_factory=dict)
-
-
-@dataclass
 class TokenUsageRecord:
     usage_id: str
     session_id: str

@@ -427,7 +427,7 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
     )
     from mycodingagent.configuration import CONFIG
     from mycodingagent.llm_runtime import client as agent_client
-    from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
+    from mycodingagent.memory import MemoryRuntime, SQLiteMemoryStore
     from mycodingagent.work_mode import WorkMode, WorkModeManager
     from tests.eval.runner import (
         _run_eval_test, _snapshot_project_files, _tool_call_names_from_messages,
@@ -444,7 +444,7 @@ async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int
         before = _snapshot_project_files(workspace)
         memory = MemoryRuntime(
             store=SQLiteMemoryStore(state / "sessions.sqlite3"),
-            compressor=ContextCompressor(context_window=96_000), model=_config()[0],
+            context_window=96_000, model=_config()[0],
             workspace_root=str(workspace),
         )
         index = WorkspaceCodeIndex(workspace, state / "code_index.sqlite3")

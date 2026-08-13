@@ -639,6 +639,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     session_id = ""
     active_model = model_manager.active_model
     if memory_runtime is not None and CONFIG.memory.enabled:
+        memory_runtime.model = active_model
         session_id = memory_runtime.start_session(active_model)
 
     def current_context_mode() -> str:
@@ -779,17 +780,38 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                     model_manager.active_provider(),
                     round_messages,
                 )
+        provisional_context_mode = current_context_mode()
+        if frozen_rendered_prompt is None:
+            runtime_context = replace(
+                base_runtime_context,
+                context_render_mode=provisional_context_mode,
+                task_snapshot=summary_text or None,
+            )
+            if runtime_attachments:
+                rendered_prompt = PromptRenderer.render_current_user_message(
+                    runtime_context,
+                    prompt,
+                    runtime_attachments=runtime_attachments,
+                )
+            else:
+                rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
+            prompt_wrapper_tokens = max(0, rendered_prompt.total_tokens - estimate_tokens(prompt))
+        else:
+            rendered_prompt = frozen_rendered_prompt
+            prompt_wrapper_tokens = 0
+        if memory_runtime is not None and session_id:
             prepared_messages = memory_runtime.prepare_messages_for_model(
                 session_id=session_id,
                 messages=round_messages,
                 tools=current_tools,
-                current_prompt=prompt,
+                current_prompt="",
                 summary_text=summary_text,
                 persist_snapshot=True,
                 current_turn_start=turn_start,
                 project_graph=project_graph if str(work_mode) == "code" else None,
+                extra_tokens=prompt_wrapper_tokens,
             )
-        if frozen_rendered_prompt is None:
+        if frozen_rendered_prompt is None and current_context_mode() != provisional_context_mode:
             runtime_context = replace(
                 base_runtime_context,
                 context_render_mode=current_context_mode(),
@@ -803,8 +825,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 )
             else:
                 rendered_prompt = PromptRenderer.render_current_user_message(runtime_context, prompt)
-        else:
-            rendered_prompt = frozen_rendered_prompt
         model_messages = render_current_turn_for_model(
             prepared_messages,
             current_turn_start=turn_start,
@@ -824,6 +844,13 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             tools=current_tools,
             rendered_prompt=rendered_prompt,
         )
+        budget_estimated_tokens = prompt_debug_snapshot.request_tokens
+        if memory_runtime is not None and session_id:
+            budget_estimated_tokens = memory_runtime.remember_prompt_estimate(
+                session_id=session_id,
+                messages=model_messages,
+                tools=current_tools,
+            )
         print_prompt_debug_with_previous(prompt_debug_snapshot)
         stream_kwargs = {"cancel_event": cancel_event} if cancel_event is not None else {}
         bash_classifier = bash_display_classifier_from_registry(registry)
@@ -859,6 +886,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                         "message_count": prompt_debug_snapshot.message_count,
                         "tool_count": prompt_debug_snapshot.tool_count,
                         "estimated_request_tokens": prompt_debug_snapshot.request_tokens,
+                        "budget_estimated_tokens": budget_estimated_tokens,
                         "fixed_system_tokens": prompt_debug_snapshot.fixed_system_tokens,
                         "temporary_system_tokens": prompt_debug_snapshot.temporary_system_tokens,
                         "historical_messages_tokens": prompt_debug_snapshot.historical_messages_tokens,
@@ -1341,7 +1369,8 @@ def should_generate_summary(
     snapshot = memory_runtime.prompt_budget_snapshot(
         messages,
         tools=tools,
-        current_prompt=prompt,
+        use_last_api_usage=True,
+        model=memory_runtime.model,
     )
     return snapshot.usage_ratio >= CONFIG.memory.budget_emergency_ratio
 

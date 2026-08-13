@@ -1,13 +1,11 @@
 from __future__ import annotations
 
-from mycodingagent.memory.budget import BudgetStage, PromptBudgetManager, PromptBudgetSnapshot
+from mycodingagent.memory.budget import BudgetStage, PromptBudgetManager, PromptBudgetSnapshot, PromptTokenBaseline
 from mycodingagent.memory.checkpoint import CheckpointDecision, CheckpointManager, RolloverResult, StructuredSnapshotGenerator, TurnState
-from mycodingagent.memory.compressor import ContextCompressor
 from mycodingagent.memory.context_epoch import ContextEpochManager
 from mycodingagent.memory.context_objects import RecoverableContextObject
 from mycodingagent.memory.models import (
     CheckpointRecord,
-    CompressionResult,
     ContextEpochState,
     ContextEpochStatus,
     ConversationSnapshot,
@@ -33,12 +31,10 @@ __all__ = [
     "CheckpointDecision",
     "CheckpointManager",
     "CheckpointRecord",
-    "CompressionResult",
     "ContextEpochState",
     "ContextEpochStatus",
     "ContextEpochManager",
     "ConversationSnapshot",
-    "ContextCompressor",
     "HistoricalTurn",
     "HistoricalSessionRef",
     "HotContextBudgetSnapshot",
@@ -48,6 +44,7 @@ __all__ = [
     "MemoryScope",
     "PromptBudgetManager",
     "PromptBudgetSnapshot",
+    "PromptTokenBaseline",
     "RecoverableContextObject",
     "RolloverResult",
     "SQLiteMemoryStore",

@@ -17,10 +17,9 @@ from pathlib import Path
 
 from mycodingagent.configuration import CONFIG
 from mycodingagent.async_utils import run_daemon_thread
-from mycodingagent.memory.budget import PromptBudgetManager, PromptBudgetSnapshot, estimate_tokens
+from mycodingagent.memory.budget import PromptBudgetManager, PromptBudgetSnapshot, PromptTokenBaseline, estimate_tokens
 from mycodingagent.memory.checkpoint import CheckpointManager, RolloverResult, TurnState
-from mycodingagent.memory.compressor import ContextCompressor, ToolOutputRef, is_reproducible_tool
-from mycodingagent.memory.context_objects import RecoverableContextObject, build_recoverable_context
+from mycodingagent.memory.context_objects import RecoverableContextObject, build_recoverable_context, is_reproducible_tool
 from mycodingagent.memory.context_epoch import (
     ContextEpochManager,
     automatic_context_epoch_summary,
@@ -30,7 +29,6 @@ from mycodingagent.memory.context_epoch import (
     retained_hot_start_index,
 )
 from mycodingagent.memory.models import (
-    CompressionResult,
     ContextEpochState,
     ContextEpochStatus,
     ExecutionRecord,
@@ -81,19 +79,14 @@ class MemoryRuntime:
         self,
         *,
         store: SQLiteMemoryStore | None = None,
-        compressor: ContextCompressor | None = None,
+        context_window: int | None = None,
         model: str | None = None,
         workspace_root: str | None = None,
     ) -> None:
         active_profile = CONFIG.model.active_profile
         self.model = model or (active_profile.model if active_profile is not None else "")
-        context_window = (
-            compressor.context_window
-            if compressor is not None
-            else CONFIG.memory.context_window_for(self.model)
-        )
+        context_window = context_window or CONFIG.memory.context_window_for(self.model)
         self.store = store or SQLiteMemoryStore(CONFIG.memory.db_path)
-        self.compressor = compressor or ContextCompressor(context_window=context_window)
         self.budget_manager = PromptBudgetManager(
             context_window=context_window,
             soft_ratio=CONFIG.memory.budget_soft_ratio,
@@ -117,8 +110,9 @@ class MemoryRuntime:
         )
         self.current_session_id: str | None = None
         self.latest_snapshot_id: str = ""
-        self._tool_output_refs: dict[str, ToolOutputRef] = {}
         self._context_metadata_refs: dict[str, RecoverableContextObject] = {}
+        self._prompt_token_baselines: dict[str, PromptTokenBaseline] = {}
+        self._last_prompt_estimates: dict[str, int] = {}
         self._context_modes: dict[str, ContextMode] = {}
         self.context_epoch_manager = ContextEpochManager(
             store=self.store,
@@ -566,10 +560,31 @@ class MemoryRuntime:
             created_at=time(),
         )
         self.store.save_token_usage(record)
+        estimated_request_tokens = int(record.metadata.get("budget_estimated_tokens", 0) or 0)
+        if prompt_tokens > 0 and estimated_request_tokens > 0:
+            self._prompt_token_baselines[session_id] = PromptTokenBaseline(
+                exact_tokens=prompt_tokens,
+                estimated_tokens=estimated_request_tokens,
+                model=model_name,
+            )
         return self.store.load_token_usage_summary(session_id)
 
     def load_token_usage_summary(self, session_id: str) -> TokenUsageSummary:
         return self.store.load_token_usage_summary(session_id)
+
+    def last_prompt_estimate(self, session_id: str) -> int:
+        return self._last_prompt_estimates.get(session_id, 0)
+
+    def remember_prompt_estimate(
+        self,
+        *,
+        session_id: str,
+        messages: list[dict[str, Any]],
+        tools: list[dict[str, Any]] | None = None,
+    ) -> int:
+        estimated_tokens = estimate_tokens(messages) + estimate_tokens(tools or [])
+        self._last_prompt_estimates[session_id] = estimated_tokens
+        return estimated_tokens
 
     def fork_session(
         self,
@@ -703,13 +718,6 @@ class MemoryRuntime:
                 self.store.save_context(context, output),
             ),
         )
-        self._tool_output_refs[output_id] = ToolOutputRef(
-            output_id=output_id,
-            tool_name=tool_name,
-            original_length=len(output),
-            preview=output[: CONFIG.memory.context_preview_tokens * 4],
-            reproducible=reproducible,
-        )
         self._context_metadata_refs[output_id] = context
         return output_id
 
@@ -757,12 +765,29 @@ class MemoryRuntime:
         tools: list[dict[str, Any]] | None = None,
         current_prompt: str = "",
         extra_tokens: int = 0,
+        use_last_api_usage: bool = False,
+        model: str = "",
     ) -> PromptBudgetSnapshot:
+        baseline = None
+        if use_last_api_usage:
+            session_id = self.current_session_id or ""
+            target_model = model or self.model
+            baseline = self._prompt_token_baselines.get(session_id)
+            if baseline is not None and baseline.model and baseline.model != target_model:
+                baseline = None
+            if baseline is None and session_id:
+                record = self.store.load_latest_token_usage(session_id)
+                if record is not None and record.model == target_model:
+                    estimated = int(record.metadata.get("budget_estimated_tokens", 0) or 0)
+                    if record.prompt_tokens > 0 and estimated > 0:
+                        baseline = PromptTokenBaseline(record.prompt_tokens, estimated, record.model)
+                        self._prompt_token_baselines[session_id] = baseline
         return self.budget_manager.snapshot(
             messages,
             tools=tools,
             current_prompt=current_prompt,
             extra_tokens=extra_tokens,
+            baseline=baseline,
         )
 
     def tool_output_prompt_content(
@@ -791,19 +816,10 @@ class MemoryRuntime:
     ) -> str:
         metadata = self.get_context_metadata(context_id)
         if metadata is None:
-            ref = self._tool_output_refs.get(context_id)
-            if ref is None:
-                return (
-                    "[Recoverable context stored]\n"
-                    f"context_id: {context_id}\n"
-                    "recover: Use BatchRecoverContext with this exact context_id in items."
-                )
             return (
                 "[Recoverable context stored]\n"
-                f"context_id: {ref.output_id}\n"
-                f"tool_name: {ref.tool_name}\n"
-                f"original_length: {ref.original_length}\n"
-                f"preview:\n{preview or ref.preview}\n"
+                f"context_id: {context_id}\n"
+                f"preview:\n{preview}\n"
                 "recover: Use BatchRecoverContext with this exact context_id in items."
             )
         budget_text = ("\n" + snapshot.to_prompt_text()) if snapshot is not None else ""
@@ -830,6 +846,7 @@ class MemoryRuntime:
         persist_snapshot: bool = True,
         current_turn_start: int | None = None,
         project_graph: Any | None = None,
+        extra_tokens: int = 0,
     ) -> list[dict[str, Any]]:
         return self.render_messages_for_model(
             session_id=session_id,
@@ -840,6 +857,7 @@ class MemoryRuntime:
             summary_text=summary_text,
             persist_snapshot=persist_snapshot,
             project_graph=project_graph,
+            extra_tokens=extra_tokens,
         )
 
     def render_messages_for_model(
@@ -853,7 +871,9 @@ class MemoryRuntime:
         summary_text: str = "",
         persist_snapshot: bool = True,
         project_graph: Any | None = None,
+        extra_tokens: int = 0,
     ) -> list[dict[str, Any]]:
+        active_model = self.model
         raw_rendered = sanitize_messages_for_model(messages)
         epoch = self.ensure_context_epoch(
             session_id=session_id,
@@ -875,15 +895,17 @@ class MemoryRuntime:
             historical_messages,
         )
         transition_epoch = self.latest_committed_context_epoch(session_id)
-        virtualized_rendered = render_virtualized_messages(
-            system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
-            historical_messages=historical_messages,
-            session_id=session_id,
-            historical_turns=historical_turns,
-            transition_epoch=transition_epoch,
-            current_messages=current_messages,
-            current_summaries=self._current_turn_summaries,
-            project_graph_bootstrap_messages=live_project_graph_bootstrap_messages(project_graph),
+        virtualized_rendered = sanitize_messages_for_model(
+            render_virtualized_messages(
+                system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
+                historical_messages=historical_messages,
+                session_id=session_id,
+                historical_turns=historical_turns,
+                transition_epoch=transition_epoch,
+                current_messages=current_messages,
+                current_summaries=self._current_turn_summaries,
+                project_graph_bootstrap_messages=live_project_graph_bootstrap_messages(project_graph),
+            )
         )
         decision = self._select_context_render(
             session_id=session_id,
@@ -891,9 +913,19 @@ class MemoryRuntime:
             virtualized_messages=virtualized_rendered,
             tools=tools,
             current_prompt=current_prompt,
+            model=active_model,
+            extra_tokens=extra_tokens,
         )
         rendered = virtualized_rendered if decision.mode == ContextMode.VIRTUALIZED else raw_rendered
-        snapshot = self.prompt_budget_snapshot(rendered, tools=tools, current_prompt=current_prompt)
+        snapshot = self.prompt_budget_snapshot(
+            rendered,
+            tools=tools,
+            current_prompt=current_prompt,
+            use_last_api_usage=True,
+            model=active_model,
+            extra_tokens=extra_tokens,
+        )
+        self._last_prompt_estimates[session_id] = snapshot.estimated_tokens
         if (
             CONFIG.memory.output_context_compression
             and decision.mode == ContextMode.VIRTUALIZED
@@ -925,12 +957,24 @@ class MemoryRuntime:
         virtualized_messages: list[dict[str, Any]],
         tools: list[dict[str, Any]],
         current_prompt: str,
+        model: str = "",
+        extra_tokens: int = 0,
     ) -> ContextRenderDecision:
-        raw_snapshot = self.prompt_budget_snapshot(raw_messages, tools=tools, current_prompt=current_prompt)
+        raw_snapshot = self.prompt_budget_snapshot(
+            raw_messages,
+            tools=tools,
+            current_prompt=current_prompt,
+            use_last_api_usage=True,
+            model=model,
+            extra_tokens=extra_tokens,
+        )
         virtualized_snapshot = self.prompt_budget_snapshot(
             virtualized_messages,
             tools=tools,
             current_prompt=current_prompt,
+            use_last_api_usage=True,
+            model=model,
+            extra_tokens=extra_tokens,
         )
         raw_uncached_tokens = estimate_raw_uncached_tokens(
             self._last_raw_rendered_messages.get(session_id),
@@ -1269,13 +1313,6 @@ class MemoryRuntime:
     def recall_long_term(self, query: MemoryQuery | None = None) -> list[MemoryEntry]:
         return []
 
-    def compress_context(self, messages: list[dict[str, Any]]) -> CompressionResult:
-        return self.compressor.compress_messages(messages)
-
-    def should_compress_context(self, messages: list[dict[str, Any]]) -> bool:
-        return self.compressor.should_compress(messages)
-
-
 def raw_tool_output_preview_text(
     output_id: str,
     output: str,
@@ -1304,23 +1341,6 @@ def raw_tool_output_preview_text(
     )
 
 
-def format_compression_report(result: CompressionResult) -> str:
-    metadata = result.metadata
-    current_size = int(metadata.get("current_size", 0))
-    context_window = int(metadata.get("context_window", 0))
-    compressed_size = int(metadata.get("compressed_size", 0))
-    pressure = float(metadata.get("pressure_ratio", 0.0))
-    action = metadata.get("action", "unknown")
-    return (
-        "[CONTEXT COMPRESSION]\n"
-        f"  current_context_size: {current_size}\n"
-        f"  context_window: {context_window}\n"
-        f"  window_usage: {pressure:.2%}\n"
-        f"  action: {action}\n"
-        f"  compressed_context_size: {compressed_size}"
-    )
-
-
 def format_virtualization_report(
     snapshot: PromptBudgetSnapshot,
     *,
@@ -1330,6 +1350,8 @@ def format_virtualization_report(
     lines = [
         title,
         f"  current_context_tokens: {snapshot.current_tokens}",
+        f"  estimated_context_tokens: {snapshot.estimated_tokens}",
+        f"  calibrated_from_api: {str(snapshot.calibrated_from_api).lower()}",
         f"  context_window: {snapshot.context_window}",
         f"  window_usage: {snapshot.usage_ratio:.2%}",
         f"  stage: {snapshot.stage.value}",

@@ -9,6 +9,24 @@ from typing import Any
 from uuid import uuid4
 
 
+REPRODUCIBLE_TOOLS = {
+    "ReadFile",
+    "Glob",
+    "Grep",
+    "Get_skill_reference",
+    "search_skill_references",
+    "search_skill",
+    "list_dynamic_skills",
+    "invoke_skill",
+}
+
+
+def is_reproducible_tool(tool_name: str, output: str = "") -> bool:
+    if output.startswith(("Tool execution error:", "Error:", "工具执行错误：", "错误：")):
+        return False
+    return tool_name in REPRODUCIBLE_TOOLS
+
+
 class ContextContentType(str, Enum):
     TEXT = "text"
     JSON = "json"

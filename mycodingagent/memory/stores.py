@@ -754,6 +754,35 @@ class SQLiteMemoryStore:
             total_tokens=int(row["total_tokens"] or 0),
         )
 
+    def load_latest_token_usage(self, session_id: str) -> TokenUsageRecord | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                """
+                SELECT * FROM session_token_usage
+                WHERE session_id = ?
+                ORDER BY request_index DESC
+                LIMIT 1
+                """,
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        return TokenUsageRecord(
+            usage_id=row["usage_id"],
+            session_id=row["session_id"],
+            request_index=int(row["request_index"]),
+            prompt_tokens=int(row["prompt_tokens"]),
+            prompt_cache_hit_tokens=int(row["prompt_cache_hit_tokens"]),
+            prompt_cache_miss_tokens=int(row["prompt_cache_miss_tokens"]),
+            completion_tokens=int(row["completion_tokens"]),
+            total_tokens=int(row["total_tokens"]),
+            model=row["model"],
+            prompt_hash=row["prompt_hash"],
+            tools_hash=row["tools_hash"],
+            metadata=json.loads(row["metadata_json"] or "{}"),
+            created_at=float(row["created_at"]),
+        )
+
     def load_historical_turns(self, session_id: str, *, limit: int | None = None) -> list[HistoricalTurn]:
         query = """
             SELECT * FROM historical_turns

@@ -113,7 +113,7 @@ async def _run_one_case(
     from mycodingagent.configuration import CONFIG
     from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
-    from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
+    from mycodingagent.memory import MemoryRuntime, SQLiteMemoryStore
     from mycodingagent.tool_runtime import create_default_registry
 
     started = time.perf_counter()
@@ -127,7 +127,7 @@ async def _run_one_case(
         db_path = state / "sessions.sqlite3"
         memory = MemoryRuntime(
             store=SQLiteMemoryStore(db_path),
-            compressor=ContextCompressor(context_window=context_window),
+            context_window=context_window,
             model=model,
             workspace_root=str(workspace),
         )

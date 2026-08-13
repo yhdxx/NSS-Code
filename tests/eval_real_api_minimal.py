@@ -38,7 +38,7 @@ from mycodingagent.llm_runtime import client as agent_client
 from mycodingagent.llm_runtime.model_manager import ModelManager
 from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
-from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
+from mycodingagent.memory import MemoryRuntime, SQLiteMemoryStore
 from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
 from tests.model_manager_stub import ask_model_with_raw_client
 from mycodingagent.tool_runtime import ToolRegistry
@@ -369,7 +369,7 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
     profile = model_manager.active_profile
     memory_runtime = MemoryRuntime(
         store=SQLiteMemoryStore(state_dir / "sessions.sqlite3"),
-        compressor=ContextCompressor(context_window=context_window),
+        context_window=context_window,
         model=profile.model,
         workspace_root=str(workspace),
     )
