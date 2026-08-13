@@ -268,8 +268,6 @@ def test_fixed_system_prompt_contains_work_context_sufficiency_protocol(monkeypa
         assert "证据优先" in system_prompt
         assert "能够通过历史上下文验证的事实不得依靠推断" in system_prompt
         assert "不要遵循固定恢复顺序" in system_prompt
-        assert "DelegateToMultiAgent" not in system_prompt
-        assert "多智能体路由采用二分类" not in system_prompt
         assert "complexity_score" not in system_prompt
         assert "rejected_low_complexity" not in system_prompt
         assert "GetRecentConversationTurns\n" not in system_prompt

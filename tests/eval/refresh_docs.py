@@ -20,7 +20,6 @@ CANONICAL_RUNS = {
     "prefix_cache": "standard-prefix-20260801",
     "long_term_memory": "standard-ltm-v2-20260801",
     "capability_routing": "standard-routing-batched-20260801",
-    "multi_agent": "existing-multi-agent-deprecated-20260801",
 }
 
 

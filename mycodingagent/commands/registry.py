@@ -13,7 +13,6 @@ class CommandContext:
     workspace_tracker: Any = None
     registry: Any = None
     model_manager: Any = None
-    multi_agent_store: Any = None
     long_term_memory_runtime: Any = None
     cancel_event: Any = None
     work_mode: Any = None

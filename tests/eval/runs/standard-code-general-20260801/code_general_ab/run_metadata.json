@@ -1,6 +1,6 @@
 {
   "base_url": "https://api.deepseek.com",
-  "dataset_path": "tests/eval/datasets/multi_agent_tasks.jsonl",
+  "dataset_path": "tests/eval/datasets/code_general_tasks.jsonl",
   "dataset_sha256": "5213c55b18c41f1db7c0edd33f197e479103f92ddee00793f7edda4609c4aa7a",
   "extra": {
     "graph_message_pinning": false,

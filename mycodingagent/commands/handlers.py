@@ -27,8 +27,6 @@ from mycodingagent.terminal_ui.application import (
 from mycodingagent.terminal_ui.output import clear_terminal
 from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
-from mycodingagent.multi_agent import MultiAgentStore
-from mycodingagent.multi_agent.context import run_summary_for_main_context
 from mycodingagent.work_mode import WorkMode
 
 
@@ -253,14 +251,6 @@ def build_command_registry() -> CommandRegistry:
             handler=handle_delete_command,
         )
     )
-    registry.register(
-        CommandSpec(
-            name="/multiAgent",
-            aliases=("/multiagent", "multiAgent", "multiagent", "多智能体"),
-            description="输入任务或操作后启动多智能体工作流",
-            handler=handle_multi_agent_command,
-        )
-    )
     return registry
 
 
@@ -462,112 +452,6 @@ async def handle_rewind_command(context: CommandContext, arguments: str) -> Comm
         clear_terminal()
         render_conversation_history(updated_messages)
         print(f"已恢复会话（{len(updated_messages)} 条消息）。", flush=True)
-    return CommandResult(messages=updated_messages)
-
-
-async def handle_multi_agent_command(context: CommandContext, arguments: str) -> CommandResult:
-    store = context.multi_agent_store or MultiAgentStore()
-    argument = arguments.strip()
-    if not argument:
-        if not sys.stdin.isatty():
-            print("当前终端不支持交互输入多智能体任务。", flush=True)
-            return CommandResult()
-        try:
-            argument = (await request_text(
-                "请输入多智能体任务，或 status / resume <run_id> / inspect <run_id>："
-            )).strip()
-        except (TerminalCancelled, EOFError, KeyboardInterrupt):
-            print("已取消多智能体操作。", flush=True)
-            return CommandResult()
-    use_worktree = argument.startswith("--worktree ")
-    if use_worktree:
-        argument = argument[len("--worktree ") :].strip()
-    if not argument:
-        print("已取消多智能体操作。", flush=True)
-        return CommandResult()
-    if argument in {"--help", "-h", "help"}:
-        print(build_command_registry().match("/multiAgent")[0].help_text(), flush=True)
-        return CommandResult()
-
-    if argument == "status":
-        runs = store.list_unfinished(limit=10)
-        if not runs:
-            print("没有未完成的多智能体任务。", flush=True)
-            return CommandResult()
-        for run in runs:
-            print(f"{run.run_id} | {run.status.value} | {run.title or run.task[:80]}", flush=True)
-        return CommandResult()
-
-    if argument.startswith("inspect "):
-        run_id = argument.split(maxsplit=1)[1].strip()
-        run = store.load_run(run_id)
-        if run is None:
-            print(f"未找到多智能体任务：{run_id}", flush=True)
-            return CommandResult()
-        print(run_summary_for_main_context(run), flush=True)
-        return CommandResult()
-
-    if context.registry is None or context.model_manager is None:
-        print("多智能体运行缺少 registry 或 model_manager，无法执行。", flush=True)
-        return CommandResult()
-
-    from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
-    from mycodingagent.multi_agent.models import RunStatus
-    from mycodingagent.multi_agent.worktree import WorktreeManager
-
-    worktree_manager = None
-    worktree_handle = None
-    if use_worktree:
-        worktree_manager = WorktreeManager(CONFIG.sandbox.root, store.path.parent)
-        try:
-            worktree_handle = await worktree_manager.create()
-        except ValueError as exc:
-            print(str(exc), flush=True)
-            return CommandResult()
-
-    orchestrator = MultiAgentOrchestrator(
-        store=store,
-        registry=context.registry,
-        model_manager=context.model_manager,
-        memory_runtime=context.memory_runtime,
-        cancel_event=context.cancel_event,
-        workspace_root=worktree_handle.path if worktree_handle is not None else None,
-    )
-
-    try:
-        if argument.startswith("resume "):
-            run_id = argument.split(maxsplit=1)[1].strip()
-            run = await orchestrator.resume(run_id=run_id, main_messages=context.messages)
-            user_content = f"/multiAgent resume {run_id}"
-        else:
-            if worktree_handle is None:
-                run = await orchestrator.start(task=argument, main_messages=context.messages)
-            else:
-                with context.registry.retarget_sandbox(worktree_handle.path):
-                    run = await orchestrator.start(task=argument, main_messages=context.messages)
-            user_content = f"/multiAgent {argument}"
-    except ValueError as exc:
-        print(str(exc), flush=True)
-        return CommandResult()
-
-    if worktree_manager is not None and worktree_handle is not None:
-        if run.status == RunStatus.COMPLETED:
-            delivery = await worktree_manager.deliver(worktree_handle)
-            if delivery.delivered:
-                print("已将 worktree 变更交付到当前工作区。", flush=True)
-            else:
-                print(f"worktree 交付未完成：{delivery.error}", flush=True)
-                print(f"已保留：{delivery.preserved_path}", flush=True)
-        else:
-            print(f"任务未完成，worktree 已保留：{worktree_handle.path}", flush=True)
-
-    result_message = orchestrator.result_message(run)
-    updated_messages = [
-        *context.messages,
-        {"role": "user", "content": user_content},
-        result_message,
-    ]
-    print(result_message["content"], flush=True)
     return CommandResult(messages=updated_messages)
 
 

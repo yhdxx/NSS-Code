@@ -1,9 +1,6 @@
 from __future__ import annotations  # 启用未来版本语法特性。
 
 from typing import TYPE_CHECKING, Any  # 导入当前模块需要的依赖。
-from contextlib import contextmanager
-from pathlib import Path
-
 from mycodingagent.tool_runtime.base import Tool, get_sandbox_root  # 导入当前模块需要的依赖。
 
 if TYPE_CHECKING:  # 根据条件决定是否执行后续分支。
@@ -58,29 +55,6 @@ class ToolRegistry:  # 定义用于封装相关状态和行为的类。
             else:  # 处理前面条件都不满足的默认分支。
                 schemas.append(base)  # 执行当前步骤的业务逻辑。
         return schemas  # 返回当前函数的处理结果。
-
-    @contextmanager
-    def retarget_sandbox(self, root: Path):
-        """Temporarily point filesystem tools at an isolated worktree."""
-        saved: list[tuple[Any, str, Any]] = []
-        disabled_before = set(self._disabled)
-        for tool in self._tools.values():
-            if hasattr(tool, "_sandbox_root"):
-                saved.append((tool, "_sandbox_root", getattr(tool, "_sandbox_root")))
-                setattr(tool, "_sandbox_root", root)
-            if hasattr(tool, "_checkpoint_hook"):
-                saved.append((tool, "_checkpoint_hook", getattr(tool, "_checkpoint_hook")))
-                setattr(tool, "_checkpoint_hook", None)
-        self.disable("ProjectArchitecture")
-        self.disable("UnitDependencyGraph")
-        self.disable("UpdateProjectDescription")
-        try:
-            yield
-        finally:
-            for target, attribute, value in reversed(saved):
-                setattr(target, attribute, value)
-            self._disabled = disabled_before
-
 
 def create_default_registry(  # 定义函数，封装可复用逻辑。
     file_cache: FileCache | None = None,

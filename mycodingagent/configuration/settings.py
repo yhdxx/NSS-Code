@@ -628,17 +628,6 @@ class ApprovalConfig:
 
 
 @dataclass(frozen=True)
-class MultiAgentConfig:
-    """多智能体并发和轮次限制。"""
-    max_agent_rounds: int = field(
-        default_factory=lambda: max(1, _user_int("multi_agent.max_agent_rounds", ("MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS",), 50))
-    )
-    max_parallel_tasks: int = field(
-        default_factory=lambda: max(1, _user_int("multi_agent.max_parallel_tasks", ("MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS",), 5))
-    )
-
-
-@dataclass(frozen=True)
 class LongTermMemoryConfig:
     """长期记忆存储和查询行为配置。模型选择位于 model.long_term_memory。"""
     enabled: bool = field(
@@ -1329,7 +1318,6 @@ class AppConfig:
     model: ModelConfig = field(default_factory=ModelConfig)
     client: ClientConfig = field(default_factory=ClientConfig)
     approval: ApprovalConfig = field(default_factory=ApprovalConfig)
-    multi_agent: MultiAgentConfig = field(default_factory=MultiAgentConfig)
     long_term_memory: LongTermMemoryConfig = field(default_factory=LongTermMemoryConfig)
     memory: MemoryConfig = field(default_factory=MemoryConfig)
     sandbox: SandboxConfig = field(default_factory=SandboxConfig)

@@ -16,7 +16,7 @@
 
 ```json
 {
-  "dataset_path": "tests/eval/datasets/multi_agent_tasks.jsonl",
+  "dataset_path": "tests/eval/datasets/code_general_tasks.jsonl",
   "dataset_sha256": "5213c55b18c41f1db7c0edd33f197e479103f92ddee00793f7edda4609c4aa7a",
   "sample_count": 180,
   "tool_schema_hash": "ccaa0fa594218d90a15bf9600d3016018f7d96fd10770016dccde643ae705bfc"
@@ -43,7 +43,7 @@
 ## 执行命令
 
 ```bash
-python3 -m tests.eval.modern_runner run-code-general-ab --dataset tests/eval/datasets/multi_agent_tasks.jsonl --repeats 3
+python3 -m tests.eval.modern_runner run-code-general-ab --dataset tests/eval/datasets/code_general_tasks.jsonl --repeats 3
 ```
 
 ## 结果与置信区间

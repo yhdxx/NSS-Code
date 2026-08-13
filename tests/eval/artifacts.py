@@ -78,15 +78,6 @@ METRIC_SPECS: dict[str, dict[str, Any]] = {
         ],
         "gate": "至少 1200 个能力（含 900 Skill、300 MCP）与 200 条人工风格查询；纯模板同名数据不得作为精准路由结论。",
     },
-    "multi_agent": {
-        "title": "Multi-Agent 协作 A/B 评测",
-        "definition": "比较 direct 与 Planner-Scheduler-Test 协作流程在分层代码任务上的成功率、耗时、token、工具调用和冲突/重试情况。",
-        "formulas": [
-            "任务成功率 = 验收测试通过运行数 / 总运行数",
-            "相对开销 = Multi-Agent 均值 / Direct 均值",
-        ],
-        "gate": "至少 30 个任务、每模式 3 次；成功率收益和复杂任务收益明确前，只表述实现了状态机协作与冲突控制。",
-    },
 }
 
 

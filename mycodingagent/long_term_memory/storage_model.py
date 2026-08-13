@@ -11,7 +11,7 @@ from mycodingagent.long_term_memory.tools import SubmitLongTermMemoryPatch
 from mycodingagent.tool_runtime.execution import ToolExecution, execute_tool, parse_tool_arguments_object
 
 
-PROMPT_PATH = Path(__file__).resolve().parents[1] / "multi_agent" / "prompts" / "long_term_memory_storage" / "SYSTEM.md"
+PROMPT_PATH = Path(__file__).resolve().parent / "prompts" / "storage" / "SYSTEM.md"
 
 
 class LongTermMemoryStorageModel:

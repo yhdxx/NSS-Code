@@ -33,9 +33,6 @@ pytest.importorskip("openai")
 
 from openai import AsyncOpenAI
 
-from mycodingagent.multi_agent.context import run_summary_for_main_context
-from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
-from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.capability_discovery.router import CapabilityRouter
 from mycodingagent.llm_runtime import client as agent_client
 from mycodingagent.llm_runtime.model_manager import ModelManager
@@ -43,7 +40,7 @@ from mycodingagent.long_term_memory.runtime import LongTermMemoryRuntime
 from mycodingagent.long_term_memory.store import SQLiteLongTermMemoryStore
 from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
 from mycodingagent.skill_runtime.models import SearchResult, SkillRecord
-from tests.model_manager_stub import RawClientModelManager, ask_model_with_raw_client
+from tests.model_manager_stub import ask_model_with_raw_client
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.bash import Bash, get_docker_image
 from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
@@ -75,7 +72,6 @@ class EvalHarness:
     state_dir: Path
     registry: ToolRegistry
     memory_runtime: MemoryRuntime
-    multi_agent_store: MultiAgentStore
     api_client: AsyncOpenAI
     model_manager: ModelManager
 
@@ -130,12 +126,6 @@ def test_real_api_context_virtualization_recovers_omitted_output(tmp_path: Path)
 
 def test_real_api_long_term_memory_cross_session(tmp_path: Path):
     result = _run_case("long_term_memory_cross_session", tmp_path, _case_long_term_memory_cross_session)
-    assert result["success"], result["failure_reason"]
-
-
-def test_real_api_multi_agent_minimal_workflow(tmp_path: Path):
-    _require_docker_image()
-    result = _run_case("multi_agent_minimal_workflow", tmp_path, _case_multi_agent_minimal_workflow)
     assert result["success"], result["failure_reason"]
 
 
@@ -341,55 +331,6 @@ async def _case_long_term_memory_cross_session(tmp_path: Path) -> dict[str, Any]
         await harness.close()
 
 
-async def _case_multi_agent_minimal_workflow(tmp_path: Path) -> dict[str, Any]:
-    harness = _make_harness(tmp_path / "workspace", tmp_path / "state", context_window=96_000)
-    try:
-        _write_multi_agent_project(harness.workspace)
-        orchestrator = MultiAgentOrchestrator(
-            store=harness.multi_agent_store,
-            registry=harness.registry,
-            model_manager=harness.model_manager,
-            memory_runtime=harness.memory_runtime,
-        )
-        run = await orchestrator.start(
-            task=(
-                "修复 /workspace 中的小型 Python 项目。当前 test_app.py 失败，"
-                "需要让 app.user_label(user) 使用 user['name'] 和 user['role']，"
-                "最终返回形如 'User: Ada (admin)'，并运行 python -m pytest -q 验证。"
-            ),
-            main_messages=[],
-        )
-        payload = json.loads(run_summary_for_main_context(run))
-        run_id = payload.get("run_id", "")
-        run = harness.multi_agent_store.load_run(run_id)
-        verify = _run_pytest(harness.workspace)
-        success = (
-            payload.get("status") == "completed"
-            and run is not None
-            and verify.returncode == 0
-            and bool(run.approved_plan)
-            and bool(run.step_submissions)
-            and run.test_result.get("status") == "approved"
-            and run.review_result.get("status") == "approved"
-        )
-        return {
-            "success": success,
-            "failure_reason": "" if success else f"multi-agent failed: {payload}, pytest={verify.stdout[-1000:]} {verify.stderr[-1000:]}",
-            "multi_agent_result": payload,
-            "run_id": run_id,
-            "plan_approved": bool(run and run.approved_plan),
-            "submitted_steps": len(run.step_submissions) if run else 0,
-            "test_result": run.test_result if run else {},
-            "execute_review_result": run.review_result if run else {},
-            "test_passed": verify.returncode == 0,
-            "subagent_rounds": run.subagent_rounds_used if run else {},
-            "subagent_tool_calls": run.subagent_tool_calls_used if run else {},
-            "tokens": _token_summary(harness.memory_runtime),
-        }
-    finally:
-        await harness.close()
-
-
 def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> EvalHarness:
     workspace.mkdir(parents=True, exist_ok=True)
     state_dir.mkdir(parents=True, exist_ok=True)
@@ -441,13 +382,11 @@ def _make_harness(workspace: Path, state_dir: Path, *, context_window: int) -> E
     registry.register(SummarizeCurrentTurnMessage(memory_runtime))
 
     api_client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
-    multi_agent_store = MultiAgentStore(state_dir / "multi_agent.sqlite3")
     return EvalHarness(
         workspace=workspace,
         state_dir=state_dir,
         registry=registry,
         memory_runtime=memory_runtime,
-        multi_agent_store=multi_agent_store,
         api_client=api_client,
         model_manager=model_manager,
     )
@@ -469,25 +408,6 @@ def _write_large_context_file(path: Path, secret: str) -> None:
     lines.append(secret)
     lines.extend(f"tail filler line {index:03d}: not the answer" for index in range(90, 260))
     path.write_text("\n".join(lines) + "\n", encoding="utf-8")
-
-
-def _write_multi_agent_project(workspace: Path) -> None:
-    (workspace / "service.py").write_text(
-        "def format_user(name, role):\n    return f\"User: {name} ({role})\"\n",
-        encoding="utf-8",
-    )
-    (workspace / "app.py").write_text(
-        "from service import format_user\n\n\n"
-        "def user_label(user):\n"
-        "    return format_user(user[\"name\"])\n",
-        encoding="utf-8",
-    )
-    (workspace / "test_app.py").write_text(
-        "from app import user_label\n\n\n"
-        "def test_user_label():\n"
-        "    assert user_label({\"name\": \"Ada\", \"role\": \"admin\"}) == \"User: Ada (admin)\"\n",
-        encoding="utf-8",
-    )
 
 
 def _run_pytest(workspace: Path) -> subprocess.CompletedProcess[str]:

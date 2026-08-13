@@ -37,14 +37,13 @@ myAgent
 
 ## 3. 配置结构总览
 
-`~/.mycodingagent/config.json` 包含以下 15 个顶层模块：
+`~/.mycodingagent/config.json` 包含以下 14 个顶层模块：
 
 | Key | 说明 |
 |-----|------|
 | `model` | 推理模型配置（厂商级 API、模型 profile、长期记忆模型选择） |
 | `client` | LLM 客户端行为（重试、调试、展示） |
 | `approval` | Bash 与 MCP 的进程级审批模式 |
-| `multi_agent` | 多智能体并发与轮次限制 |
 | `long_term_memory` | 长期记忆存储、检索和候选推荐行为配置 |
 | `memory` | 会话持久化、上下文虚拟化、检查点 |
 | `sandbox` | Docker 沙箱工作区设置 |
@@ -158,14 +157,7 @@ myAgent
 
 `/approval` 可以在当前 myAgent 进程内临时切换模式，重启后重新使用配置默认值。`auto` 不会关闭风险分类和风险颜色，但会自动放行包括高危操作在内的全部审批请求。
 
-### 4.4 `multi_agent` — 多智能体
-
-| JSON 路径 | 环境变量 | 默认值 | 说明 |
-|-----------|----------|--------|------|
-| `multi_agent.max_agent_rounds` | `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `50` | 多智能体最大轮次 |
-| `multi_agent.max_parallel_tasks` | `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `5` | 最大并发任务数 |
-
-### 4.5 `long_term_memory` — 长期记忆
+### 4.4 `long_term_memory` — 长期记忆
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
@@ -182,7 +174,7 @@ myAgent
 |-----------|----------|--------|------|
 | `memory.enabled` | `MYCODINGAGENT_MEMORY_ENABLED` | `true` | 启用会话持久化 |
 | `memory.state_dir` | `MYCODINGAGENT_STATE_DIR` | `~/.mycodingagent/state` | 用户全局配置/跨项目记忆的默认目录；当前工作区的运行状态使用工作区 `.mycodingagent/state/` |
-| `memory.db_path` | `MYCODINGAGENT_MEMORY_DB_PATH` | `~/.mycodingagent/state/sessions.sqlite3` | 用户全局长期记忆库；会话、项目事实、代码索引、项目图谱、MCP cache 和多智能体状态落在 `<workspace>/.mycodingagent/state/` |
+| `memory.db_path` | `MYCODINGAGENT_MEMORY_DB_PATH` | `~/.mycodingagent/state/sessions.sqlite3` | 用户全局长期记忆库；会话、项目事实、代码索引、项目图谱和 MCP cache 落在 `<workspace>/.mycodingagent/state/` |
 | `memory.default_work_mode` | `MYCODINGAGENT_DEFAULT_WORK_MODE` | `"general"` | 默认工作模式（`general` / `code`） |
 | `memory.default_context_window` | `MYCODINGAGENT_MODEL_CONTEXT_WINDOW` | `1000000` | 默认上下文窗口大小；未单独配置的模型均按 1M 计算 |
 | `memory.session_ttl_days` | `MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS` | `90` | 会话保留天数 |
@@ -201,7 +193,10 @@ myAgent
 
 | JSON 路径 | 环境变量 | 默认值 | 说明 |
 |-----------|----------|--------|------|
-| `sandbox.root` | `MYCODINGAGENT_SANDBOX_ROOT` | 当前工作目录 | 沙箱根目录 |
+| `sandbox.root` | `MYCODINGAGENT_SANDBOX_ROOT` | 当前工作目录 | 沙箱根目录（写作用域） |
+| `sandbox.access_mode` | `MYCODINGAGENT_SANDBOX_ACCESS_MODE` | `global_read` | 文件访问模式：`workspace_only` / `global_read` / `global_write` |
+| `sandbox.read_allowlist` | `MYCODINGAGENT_SANDBOX_READ_ALLOWLIST` | 空 | 额外只读目录白名单（仅授读） |
+| `sandbox.read_denylist` | `MYCODINGAGENT_SANDBOX_READ_DENYLIST` | 空 | 禁止读写的目录黑名单（追加内置 `~/.ssh`、`~/.aws`、`~/.gnupg`） |
 | `sandbox.max_output_chars` | `MYCODINGAGENT_MAX_OUTPUT_CHARS` | `10000` | 单次命令输出最大字符数 |
 | `sandbox.workspace_lease_enabled` | `MYCODINGAGENT_WORKSPACE_LEASE_ENABLED` | `true` | 启用工作区租约锁 |
 
@@ -362,8 +357,6 @@ system prompt，不参与检索或 LRFU；`Dynamic/` 中的 Skill 参与检索�
 | `MYCODINGAGENT_MODEL_VISION_PROVIDER` | `model.vision.provider` | string |
 | `MYCODINGAGENT_MODEL_VISION_MODEL` | `model.vision.model` | string |
 | `MYCODINGAGENT_DEBUG` | `client.debug` | bool |
-| `MYCODINGAGENT_MULTI_AGENT_MAX_AGENT_ROUNDS` | `multi_agent.max_agent_rounds` | int |
-| `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` | `multi_agent.max_parallel_tasks` | int |
 | `MYCODINGAGENT_LONG_TERM_MEMORY_ENABLED` | `long_term_memory.enabled` | bool |
 | `MYCODINGAGENT_MEMORY_ENABLED` | `memory.enabled` | bool |
 | `MYCODINGAGENT_STATE_DIR` | `memory.state_dir` | path |
@@ -405,7 +398,7 @@ system prompt，不参与检索或 LRFU；`Dynamic/` 中的 Skill 参与检索�
 | `MYCODINGAGENT_MCP_ENABLED` | `mcp.enabled` | bool |
 | `MYCODINGAGENT_MCP_USER_CONFIG` | `mcp.user_config_path` | path |
 
-项目专属状态不再写入用户目录：会话、检查点、项目事实、代码索引、项目图谱、MCP metadata cache 和多智能体状态位于 `<workspace>/.mycodingagent/state/`，删除项目目录会一并删除这些数据。用户画像、偏好、工作流/Skill 候选仍保留在 `memory.db_path` 指向的全局库；用户批准沉淀后的正式 Skill 位于 `skills.user_root/Dynamic/`。启动过程不会迁移旧目录或修补旧 SQLite schema；不兼容时请删除对应数据库后由当前版本重建。
+项目专属状态不再写入用户目录：会话、检查点、项目事实、代码索引、项目图谱和 MCP metadata cache 位于 `<workspace>/.mycodingagent/state/`，删除项目目录会一并删除这些数据。用户画像、偏好、工作流/Skill 候选仍保留在 `memory.db_path` 指向的全局库；用户批准沉淀后的正式 Skill 位于 `skills.user_root/Dynamic/`。启动过程不会迁移旧目录或修补旧 SQLite schema；不兼容时请删除对应数据库后由当前版本重建。
 
 ---
 

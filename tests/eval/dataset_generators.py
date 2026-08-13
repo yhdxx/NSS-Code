@@ -18,7 +18,7 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def generate_all(output_dir: Path = DATASET_DIR) -> dict[str, int]:
     datasets = {
-        "multi_agent_tasks.jsonl": generate_multi_agent_tasks(),
+        "code_general_tasks.jsonl": generate_code_general_tasks(),
         "context_virtualization_cases.jsonl": generate_context_virtualization_cases(),
         "runtime_context_virtualization_cases.jsonl": generate_runtime_context_virtualization_cases(),
         "long_term_workflow_cases.jsonl": generate_long_term_workflow_cases(),
@@ -95,7 +95,7 @@ def _hidden_evidence_blob(index: int, critical_line: str) -> str:
     return f"{critical_line}\n{prefix}\n{suffix}\n"
 
 
-def generate_multi_agent_tasks() -> list[dict[str, Any]]:
+def generate_code_general_tasks() -> list[dict[str, Any]]:
     rows: list[dict[str, Any]] = []
     small_specs = [
         ("add", "calculator.py", "def add(a, b):\n    return a - b\n", "from calculator import add\n\ndef test_add():\n    assert add(2, 3) == 5\n"),
@@ -113,8 +113,8 @@ def generate_multi_agent_tasks() -> list[dict[str, Any]]:
     ]
     for index, (slug, file_name, source, test_source) in enumerate(small_specs, start=1):
         rows.append({
-            "case_id": f"ma_small_{index:02d}_{slug}",
-            "category": "multi_agent",
+            "case_id": f"code_small_{index:02d}_{slug}",
+            "category": "code_general",
             "project_size": "small",
             "expected_mode": "direct",
             "input_task": "修复这个小型 Python 项目的失败测试，只做必要修改并运行 pytest。",
@@ -129,10 +129,10 @@ def generate_multi_agent_tasks() -> list[dict[str, Any]]:
     ]
     for index, feature in enumerate(medium_features, start=1):
         rows.append({
-            "case_id": f"ma_medium_{index:02d}_{feature}",
-            "category": "multi_agent",
+            "case_id": f"code_medium_{index:02d}_{feature}",
+            "category": "code_general",
             "project_size": "medium",
-            "expected_mode": "multi_agent",
+            "expected_mode": "code",
             "input_task": (
                 f"在中规模 Python 项目中完成 {feature} 模块的跨层修复：保持 public API 兼容，"
                 "更新 service/repository/validator 链路，并运行全部测试。"
@@ -146,10 +146,10 @@ def generate_multi_agent_tasks() -> list[dict[str, Any]]:
     ]
     for index, feature in enumerate(large_features, start=1):
         rows.append({
-            "case_id": f"ma_large_{index:02d}_{feature}",
-            "category": "multi_agent",
+            "case_id": f"code_large_{index:02d}_{feature}",
+            "category": "code_general",
             "project_size": "large",
-            "expected_mode": "multi_agent",
+            "expected_mode": "code",
             "input_task": (
                 "在大规模 Python 项目中完成跨模块业务修复：先理解 domain/repository/service/api/test 调用链，"
                 f"修复 {feature} 场景，保持 public API 兼容，不重写无关模块，并运行全部测试。"
@@ -549,7 +549,7 @@ def generate_skill_router_cases() -> list[dict[str, Any]]:
         "backend": ["API 设计", "数据库迁移", "缓存策略", "认证鉴权", "日志治理", "异常处理", "任务队列", "数据校验", "接口测试", "权限模型"],
         "content": ["公众号写作", "小红书文案", "视频脚本", "SEO 改写", "商品文案", "课程大纲", "演讲稿", "新闻改写", "标题优化", "营销邮件"],
         "data": ["CSV 清洗", "SQL 分析", "指标解释", "报表生成", "可视化建议", "漏斗分析", "留存分析", "异常检测", "数据字典", "口径治理"],
-        "agent": ["上下文恢复", "工具审计", "多智能体规划", "长期记忆", "Skill 路由", "MCP 能力发现", "沙箱执行", "Prompt 调试", "会话恢复", "能力评测"],
+        "agent": ["上下文恢复", "工具审计", "任务规划", "长期记忆", "Skill 路由", "MCP 能力发现", "沙箱执行", "Prompt 调试", "会话恢复", "能力评测"],
         "devops": ["Docker 构建", "CI 配置", "部署脚本", "日志采集", "资源限制", "环境变量", "依赖升级", "回滚流程", "健康检查", "监控告警"],
     }
     skills: list[dict[str, Any]] = []

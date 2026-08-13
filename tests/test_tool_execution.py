@@ -6,10 +6,6 @@ import json
 from pydantic import BaseModel
 
 from mycodingagent.llm_runtime.client import execute_local_tool
-from mycodingagent.multi_agent.models import AgentRole, MultiAgentRun
-from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
-from tests.model_manager_stub import RawClientModelManager
-from mycodingagent.multi_agent.store import MultiAgentStore
 from mycodingagent.tool_runtime import ToolRegistry
 from mycodingagent.tool_runtime.base import Tool, ToolResult
 from mycodingagent.tool_runtime.execution import (
@@ -50,33 +46,6 @@ def test_main_agent_does_not_sniff_error_text():
     )
 
     assert result.is_error is False
-
-
-def test_subagent_does_not_sniff_error_text(tmp_path):
-    registry = ToolRegistry()
-    registry.register(_JsonTool())
-    store = MultiAgentStore(tmp_path / "multi_agent.sqlite3")
-    run = MultiAgentRun.create(task="test shared execution")
-    store.save_run(run)
-    orchestrator = MultiAgentOrchestrator(
-        store=store,
-        registry=registry,
-        model_manager=RawClientModelManager(object()),
-        memory_runtime=None,
-    )
-
-    result = asyncio.run(
-        orchestrator._execute_subagent_tool(
-            role=AgentRole.PLAN,
-            run_id=run.run_id,
-            tool_call_id="call_1",
-            tool_name="JsonTool",
-            raw_args='{"value":"normal payload"}',
-        )
-    )
-
-    assert result.is_error is False
-    assert json.loads(result.output)["error"] == "normal payload"
 
 
 def test_argument_parser_rejects_invalid_or_non_object_json():

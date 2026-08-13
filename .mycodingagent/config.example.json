@@ -53,10 +53,6 @@
   "approval": {
     "mode": "default"
   },
-  "multi_agent": {
-    "max_agent_rounds": 50,
-    "max_parallel_tasks": 5
-  },
   "long_term_memory": {
     "enabled": true,
     "query_recent_turns": 10,
@@ -111,6 +107,9 @@
   },
   "sandbox": {
     "root": "",
+    "access_mode": "global_read",
+    "read_allowlist": [],
+    "read_denylist": [],
     "max_output_chars": 10000,
     "workspace_lease_enabled": true
   },

@@ -64,7 +64,6 @@ from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprov
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from mycodingagent.llm_runtime.model_manager import ModelManager
-from mycodingagent.multi_agent import MultiAgentStore
 from mycodingagent.work_mode import WorkMode, WorkModeManager
 from mycodingagent.plan_runtime import CreatePlan, PlanRuntime, UpdatePlanStep
 from mycodingagent.app.shutdown import (
@@ -265,7 +264,7 @@ async def _run(terminal: TerminalApplication) -> None:
         """Classify one command name/event through one no-argument tool."""
         prompt = (
             Path(__file__).resolve().parents[1]
-            / "multi_agent"
+            / "tool_runtime"
             / "prompts"
             / "bash_command_classification"
             / "SYSTEM.md"
@@ -336,7 +335,6 @@ async def _run(terminal: TerminalApplication) -> None:
     )
     registry.register(CreatePlan(plan_runtime))
     registry.register(UpdatePlanStep(plan_runtime))
-    multi_agent_store = MultiAgentStore(workspace_state_path(workspace_root, "multi_agent.sqlite3"))
     long_term_memory_runtime = None
     if memory_runtime is not None and CONFIG.long_term_memory.enabled:
         long_term_memory_runtime = LongTermMemoryRuntime(
@@ -537,7 +535,6 @@ async def _run(terminal: TerminalApplication) -> None:
                         workspace_tracker=workspace_tracker,
                         registry=registry,
                         model_manager=model_manager,
-                        multi_agent_store=multi_agent_store,
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=command_cancel,
                         work_mode=work_mode,

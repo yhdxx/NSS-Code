@@ -12,7 +12,7 @@ myCodingAgent 是一个本地 Coding Agent 运行框架。用户在终端用自�
 启动 CLI
   -> 初始化配置、Docker 沙箱、MemoryRuntime、SkillRuntime、MCP、工具注册表
   -> 读取用户输入
-  -> 命令分流：仅当输入完整匹配 /resume、/multiAgent、/clear、/delete 等命令时由 Runtime 处理
+  -> 命令分流：仅当输入完整匹配 /resume、/clear、/delete 等命令时由 Runtime 处理
   -> 普通用户请求进入模型执行流程
   -> 能力路由与长期记忆检索
   -> 构造 Runtime Context + 当前用户请求
@@ -104,7 +104,6 @@ myAgent --upgrade
 - MCP 配置路径和后台重连频率
 - `MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS`：workspace checkpoint/blob 保留天数，默认 30 天
 - `MYCODINGAGENT_LSP_<LANGUAGE>_COMMAND`：覆盖某语言的 LSP 启动命令，例如 `MYCODINGAGENT_LSP_PYTHON_COMMAND="pyright-langserver --stdio"`
-- 多智能体最大轮次和并发任务数
 - 长期记忆存储/查询模型、抽取超时和启动回填开关
 
 Embedding 支持本地模型、Ollama HTTP、OpenAI-compatible 在线接口、DashScope 原生接口和 hash fallback。
@@ -127,7 +126,6 @@ Agent 自己生成的系统规则、工具说明、Runtime Context 说明值和�
 8. 启动时从 Playwright 容器读取当前工具清单，并把全部 `browser_*` 能力直接注册到模型 Tool Schema；模型侧不需要 Playwright MCP discovery。
 9. `SkillRuntime`，扫描 Skill、更新索引、启动文件监听和 LRFU 缓存。
 10. `LongTermMemoryRuntime`，启动未完成 extraction 的异步回填。
-11. `MultiAgentStore`，为 `/multiAgent` 命令提供持久化运行状态。
 
 ### 2.3 终端输入准备
 
@@ -162,7 +160,6 @@ Code 中的后续文件变化会去抖并异步刷新，刷新过程默认静默
 - `/fork`：从历史会话分叉出新会话。
 - `/clear`：保存当前会话后开启新会话。
 - `/delete`：删除历史会话或过期会话。
-- `/multiAgent` / `/multiagent`：显式启动多智能体任务。
 
 命令执行前会保存当前会话，避免切换、恢复、删除时丢失状态。
 
@@ -244,8 +241,6 @@ Capability Router 统一检索 Skill 与 MCP 能力：
 Skill **不再**为每个 Skill 注册独立 function schema，而是统一通过 `invoke_skill` 单入口按名称调用；
 Capability Router 的推荐结果只作为文本进入 Runtime Context，不改变 tool schema。
 这样 Skill 和 MCP server 数量增长都不会让工具列表膨胀，也让整轮的 schema 保持稳定、利于 prompt 缓存命中。
-
-多智能体委托工具不再暴露给主模型。多智能体只能由用户显式输入 `/multiAgent` 触发。
 
 ### 5.2 模型流式输出
 
@@ -405,7 +400,7 @@ MCP 工具执行分为 discovery 和 execution：
 - 每个用户回合建立工作区 checkpoint；输入精确命令 `/rewind` 后先按 `turn` 选择轮次，再选择恢复 `code`、`conversation` 或 `both`。带其他文本的输入不会触发命令，而会交给模型。
 - workspace checkpoint/blob 默认保留 30 天；清理时只删除已过期且不再被任何 checkpoint 引用的 blob。
 - 恢复前校验当前文件 hash，外部修改不会被静默覆盖。
-- Bash 和远程 MCP 副作用不属于文件 rewind；高自治任务可输入 `/multiAgent`，再在任务提示中使用 `--worktree <task>` 隔离。
+- Bash 和远程 MCP 副作用不属于文件 rewind。
 - 所有工具执行记录 `running/succeeded/failed/interrupted`，重启时不会自动重放未完成变更。
 
 ---
@@ -632,7 +627,7 @@ ContextEpoch 提交后，旧阶段进入冷历史：
 3. 当前 workspace 项目事实：`project_fact`
 
 项目事实只保存抽象架构逻辑，例如项目目的、模块职责、控制流、稳定技术选择和关键设计决策，不保存具体代码片段、行号、diff 或测试日志。
-项目专属会话、检查点、项目事实、代码索引、项目图谱、MCP 元数据缓存和多智能体运行状态统一位于
+项目专属会话、检查点、项目事实、代码索引、项目图谱和 MCP 元数据缓存统一位于
 `<workspace>/.mycodingagent/state/`；用户删除项目目录时这些状态会随目录一起删除。跨项目的用户画像、偏好、工作流和
 Skill 候选仍位于用户级 `memory.db_path`，不会因切换项目而丢失。
 
@@ -651,67 +646,7 @@ Runtime 会记录 workflow/skill 是否被模型实际使用：
 
 ---
 
-## 11. 多智能体流程
-
-多智能体不会自动暴露给主模型，只能由用户显式输入 `/multiAgent` 或 `/multiagent`。
-
-### 11.1 状态机
-
-```text
-PLANNING
-  -> plan 调用 SubmitPlan
-PLAN_REVIEW
-  -> plan_review 调用 ApprovePlan / RejectPlan
-SCHEDULING
-  -> scheduling 调用 DispatchTasks 批量派发任务
-TASK EXECUTION
-  -> execute 执行任务并 SubmitTaskExecution
-  -> task_test 验证并 ApproveTaskTest / ReportTaskFailure
-FINAL_TESTING
-  -> final_test 全局验证
-COMPLETED / FAILED
-```
-
-### 11.2 子智能体职责
-
-- `plan`：读取任务和最近主对话，提交结构化计划。
-- `plan_review`：审查计划是否完整、顺序合理、可测试。
-- `scheduling`：批量派发任务，接收执行结果，决定修复或进入最终测试。
-- `execute`：只依据 assigned task 执行代码修改。
-- `test`：验证对应 execute task。
-- `final_test`：对完整任务做最终验证。
-
-### 11.3 并发与文件协调
-
-`scheduling` 使用 `DispatchTasks` 批量派发任务。Runtime 根据 `MYCODINGAGENT_MULTI_AGENT_MAX_PARALLEL_TASKS` 并行推进，默认 5。
-
-文件协调由 `mycodingagent/multi_agent/file_coordination.py` 管理：
-
-- 文件级写锁
-- 文件 revision 校验
-- stale file 拒绝
-- Bash `declared_write_files` 监督
-- 未声明写入回滚
-- Runtime Context 中的 `workspace_changes`
-- 等待通知队列
-
-`execute` 工具调用必须携带正确 `task_id`。Bash 在 execute 中必须声明潜在写入文件，Runtime 会在命令前后做快照，拒绝未声明源文件变更。
-
-### 11.4 反重复读取策略
-
-大型单文件拆分、模块抽取、迁移任务要求优先：
-
-```text
-一次性定位边界
-  -> 批量生成变更
-  -> 批量验证
-```
-
-避免每个叶子任务反复 `ReadFile` / `Grep` 同一个大文件导致上下文膨胀。
-
----
-
-## 12. 目录结构
+## 11. 目录结构
 
 ```text
 mycodingagent/
@@ -732,7 +667,6 @@ mycodingagent/
 ├── tool_runtime/           # 工具实现和注册表
 └── workspace/              # 工作区身份和文件缓存
 
-mycodingagent/multi_agent/   # 多智能体编排、上下文、工具权限和文件协调
 skills/                     # Skill 插件资产根目录
 ├── fixed/                  # 每轮 system prompt 注入 name + description 卡片
 └── Dynamic/                # 动态检索、LRFU 与长期记忆沉淀 Skill
@@ -741,12 +675,12 @@ tests/                      # 单元、集成和评测测试
 
 ---
 
-## 13. 验证
+## 12. 验证
 
 常用测试命令：
 
 ```bash
-PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/test_memory_runtime.py tests/test_multi_agent.py
+PYTHONPATH=. .venv/bin/python -m pytest -q tests/test_long_term_memory.py tests/test_memory_runtime.py
 ```
 
 主循环、API 重试和命令审批：

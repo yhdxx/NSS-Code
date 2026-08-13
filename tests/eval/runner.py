@@ -2,8 +2,6 @@ from __future__ import annotations
 
 import argparse
 import asyncio
-import contextlib
-import io
 import json
 import math
 import os
@@ -15,9 +13,6 @@ import tempfile
 import time
 from pathlib import Path
 from typing import Any
-
-from tests.model_manager_stub import RawClientModelManager, ask_model_with_raw_client
-
 
 DATASET_DIR = Path("tests/eval/datasets")
 RESULTS_DIR = Path("tests/eval/results")
@@ -398,153 +393,6 @@ async def _run_long_term_workflow_async(cases: list[dict[str, Any]]) -> list[dic
     return rows
 
 
-def run_multi_agent_ab(dataset_path: Path, *, limit: int | None = None, project_size: str | None = None) -> dict[str, Any]:
-    cases = read_jsonl(dataset_path)[:limit] if limit else read_jsonl(dataset_path)
-    if project_size:
-        cases = [case for case in cases if str(case.get("project_size", "")) == project_size]
-    details_path = RESULTS_DIR / "multi_agent_ab_details.jsonl"
-    details_path.parent.mkdir(parents=True, exist_ok=True)
-    rows: list[dict[str, Any]] = []
-    details_path.write_text("", encoding="utf-8")
-    for index, case in enumerate(cases, start=1):
-        for mode in ("direct", "multi_agent"):
-            row = asyncio.run(_run_multi_agent_case(case, mode=mode, ordinal=index))
-            rows.append(row)
-            with details_path.open("a", encoding="utf-8") as handle:
-                handle.write(json.dumps(row, ensure_ascii=False, sort_keys=True, default=str) + "\n")
-    summary = _summarize_multi_agent_ab(rows)
-    write_jsonl(RESULTS_DIR / "multi_agent_ab.jsonl", [summary])
-    return summary
-
-
-async def _run_multi_agent_case(
-    case: dict[str, Any], *, mode: str, ordinal: int, capture_stdout: bool = True,
-) -> dict[str, Any]:
-    os.environ.setdefault("MYCODINGAGENT_STEP_TOKEN", "0")
-    os.environ.setdefault("MYCODINGAGENT_ROUND_TOKEN", "0")
-    os.environ.setdefault("MYCODINGAGENT_CONVERSATION_TOKEN", "0")
-    os.environ.setdefault("MYCODINGAGENT_LONG_TERM_MEMORY_STARTUP_BACKFILL_ENABLED", "0")
-
-    from openai import AsyncOpenAI
-    from mycodingagent.multi_agent.context import run_summary_for_main_context
-    from mycodingagent.multi_agent.orchestrator import MultiAgentOrchestrator
-    from mycodingagent.multi_agent.store import MultiAgentStore
-    from mycodingagent.llm_runtime import client as agent_client
-    from mycodingagent.memory import ContextCompressor, MemoryRuntime, SQLiteMemoryStore
-    from mycodingagent.tool_runtime import create_default_registry
-    from mycodingagent.tool_runtime.file_state_cache import FileStateCache
-    from mycodingagent.workspace.file_cache import FileCache
-
-    profile = _active_profile()
-    started = time.time()
-    with tempfile.TemporaryDirectory(prefix=f"mca_eval_{mode}_{ordinal:02d}_") as tmp:
-        root = Path(tmp)
-        workspace = root / "workspace"
-        state_dir = root / "state"
-        workspace.mkdir(parents=True, exist_ok=True)
-        state_dir.mkdir(parents=True, exist_ok=True)
-        _write_eval_project(workspace, case["files"])
-        before = _snapshot_project_files(workspace)
-
-        memory_runtime = MemoryRuntime(
-            store=SQLiteMemoryStore(state_dir / f"{mode}_sessions.sqlite3"),
-            compressor=ContextCompressor(context_window=96_000),
-            model=profile.model,
-            workspace_root=str(workspace),
-        )
-        api_client = AsyncOpenAI(api_key=profile.api, base_url=profile.base_url)
-        # Replace default sandbox-rooted tools with workspace-rooted tools for this isolated case.
-        registry = _workspace_registry(workspace, memory_runtime)
-        multi_store = MultiAgentStore(state_dir / f"{mode}_multi_agent.sqlite3")
-        run_log = io.StringIO()
-        output_context = (
-            contextlib.redirect_stdout(run_log) if capture_stdout else contextlib.nullcontext()
-        )
-        try:
-            with output_context:
-                if mode == "direct":
-                    prompt = (
-                        f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
-                        f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
-                    )
-                    text, messages = await ask_model_with_raw_client(
-                        api_client,
-                        prompt,
-                        registry,
-                        agent_client.format_openai_tools(registry.get_all_schemas("openai")),
-                        messages=agent_client.create_initial_messages(
-                            registry, memory_runtime=memory_runtime
-                        ),
-                        memory_runtime=memory_runtime,
-                        core_tool_schemas=registry.get_all_schemas("openai"),
-                    )
-                    multi_agent_payload: dict[str, Any] = {}
-                    tool_names = _tool_call_names_from_messages(messages)
-                else:
-                    orchestrator = MultiAgentOrchestrator(
-                        store=multi_store,
-                        registry=registry,
-                        model_manager=RawClientModelManager(api_client, profile.model),
-                        memory_runtime=memory_runtime,
-                    )
-                    run = await orchestrator.start(
-                        task=(
-                            f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
-                            f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
-                        ),
-                        main_messages=[],
-                    )
-                    text = run_summary_for_main_context(run)
-                    multi_agent_payload = _json_loads(text)
-                    tool_names = []
-            verify = _run_eval_test(workspace, case["test_command"])
-            after = _snapshot_project_files(workspace)
-            changed_files = sorted(path for path in after if before.get(path) != after.get(path))
-            token_summary = _memory_token_summary(memory_runtime)
-            run_id = str(multi_agent_payload.get("run_id") or "")
-            run = multi_store.load_run(run_id) if run_id else None
-            passed = verify.returncode == 0
-            return {
-                "case_id": case["case_id"],
-                "ordinal": ordinal,
-                "mode": mode,
-                "project_size": case.get("project_size", ""),
-                "passed": passed,
-                "duration_seconds": round(time.time() - started, 3),
-                "tool_call_count": len(tool_names) if mode == "direct" else sum((run.subagent_tool_calls_used or {}).values()) if run else 0,
-                "tool_names": tool_names,
-                "changed_files": changed_files,
-                "pytest_returncode": verify.returncode,
-                "pytest_stdout_tail": verify.stdout[-1000:],
-                "pytest_stderr_tail": verify.stderr[-1000:],
-                "prompt_tokens": token_summary.get("prompt_tokens", 0),
-                "completion_tokens": token_summary.get("completion_tokens", 0),
-                "total_tokens": token_summary.get("total_tokens", 0) if mode == "direct" else None,
-                "token_accounting_status": "available" if mode == "direct" else "unavailable_subagent_aggregation",
-                "multi_agent_status": multi_agent_payload.get("status", "") if multi_agent_payload else "",
-                "multi_agent_run_id": run_id,
-                "subagent_rounds": run.subagent_rounds_used if run else {},
-                "subagent_tool_calls": run.subagent_tool_calls_used if run else {},
-                "submitted_steps": len(run.step_submissions) if run else 0,
-                "final_answer_tail": text[-1000:],
-                "run_log_tail": run_log.getvalue()[-2000:],
-            }
-        except Exception as exc:
-            return {
-                "case_id": case["case_id"],
-                "ordinal": ordinal,
-                "mode": mode,
-                "project_size": case.get("project_size", ""),
-                "passed": False,
-                "duration_seconds": round(time.time() - started, 3),
-                "error": f"{type(exc).__name__}: {exc}",
-                "run_log_tail": run_log.getvalue()[-2000:] if 'run_log' in locals() else "",
-            }
-        finally:
-            await memory_runtime.close()
-            await api_client.close()
-
-
 def _workspace_registry(workspace: Path, memory_runtime: Any, project_graph_service: Any | None = None) -> Any:
     from mycodingagent.tool_runtime import ToolRegistry
     from mycodingagent.tool_runtime.bash import Bash
@@ -641,56 +489,6 @@ def _tool_call_names_from_messages(messages: list[dict[str, Any]]) -> list[str]:
     return names
 
 
-def _memory_token_summary(memory_runtime: Any) -> dict[str, int]:
-    session_id = memory_runtime.get_current_session_id()
-    if not session_id:
-        return {}
-    summary = memory_runtime.load_token_usage_summary(session_id)
-    return {
-        "prompt_tokens": summary.prompt_tokens,
-        "completion_tokens": summary.completion_tokens,
-        "total_tokens": summary.total_tokens,
-    }
-
-
-def _json_loads(text: str) -> dict[str, Any]:
-    try:
-        value = json.loads(text)
-    except json.JSONDecodeError:
-        return {}
-    return value if isinstance(value, dict) else {}
-
-
-def _summarize_multi_agent_ab(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    by_mode = {mode: [row for row in rows if row.get("mode") == mode] for mode in ("direct", "multi_agent")}
-    by_size_mode: dict[str, dict[str, Any]] = {}
-    for size in sorted({str(row.get("project_size", "")) for row in rows}):
-        by_size_mode[size] = {}
-        for mode in ("direct", "multi_agent"):
-            selected = [row for row in rows if row.get("project_size") == size and row.get("mode") == mode]
-            by_size_mode[size][mode] = {
-                "case_count": len(selected),
-                "accuracy": _mean(row.get("passed", False) for row in selected),
-                "avg_duration_seconds": _mean(row.get("duration_seconds", 0) for row in selected),
-                "avg_tool_calls": _mean(row.get("tool_call_count", 0) for row in selected),
-                "avg_total_tokens": _mean(row.get("total_tokens", 0) for row in selected),
-            }
-    summary = {
-        "module": "multi_agent_ab",
-        "status": "passed" if all(bool(row.get("passed", False)) for row in rows) else "failed",
-        "case_count": len({row.get("case_id") for row in rows}),
-        "run_count": len(rows),
-        "direct_accuracy": _mean(row.get("passed", False) for row in by_mode["direct"]),
-        "multi_agent_accuracy": _mean(row.get("passed", False) for row in by_mode["multi_agent"]),
-        "direct_avg_duration_seconds": _mean(row.get("duration_seconds", 0) for row in by_mode["direct"]),
-        "multi_agent_avg_duration_seconds": _mean(row.get("duration_seconds", 0) for row in by_mode["multi_agent"]),
-        "direct_avg_tool_calls": _mean(row.get("tool_call_count", 0) for row in by_mode["direct"]),
-        "multi_agent_avg_tool_calls": _mean(row.get("tool_call_count", 0) for row in by_mode["multi_agent"]),
-        "by_project_size": by_size_mode,
-    }
-    return summary
-
-
 def write_report() -> Path:
     REPORT_PATH.parent.mkdir(parents=True, exist_ok=True)
     dataset_counts = {
@@ -728,7 +526,6 @@ def write_report() -> Path:
         "",
         "## 模块覆盖说明",
         "",
-        "- 多智能体：比较 direct_mode 与 multi_agent_mode 在小/中/大规模代码任务上的准确率、耗时、工具调用和 token。",
         "- 上下文虚拟化：比较 raw、virtualized、summary_baseline、recent_only 四种上下文策略对早期需求召回和成本的影响。",
         "- 长期记忆：重点验证 workflow_candidate 跨会话检索后是否减少重复工具调用并提高成功率。",
         "- Skill 路由：在 500+ name/description Skill 下测试目标 Skill 是否进入 Top-K 候选。",
@@ -870,8 +667,7 @@ def _compact_summary(summary: dict[str, Any]) -> str:
     keys = [
         "endpoint", "model", "dimension", "skill_count", "query_count",
         "recall_at_1", "recall_at_3", "recall_at_5", "mrr", "reason",
-        "case_count", "run_count", "direct_accuracy", "multi_agent_accuracy",
-        "direct_avg_duration_seconds", "multi_agent_avg_duration_seconds",
+        "case_count", "run_count", "direct_accuracy", "direct_avg_duration_seconds",
     ]
     parts = [f"{key}={summary[key]}" for key in keys if key in summary]
     return "; ".join(parts) if parts else json.dumps(summary, ensure_ascii=False)[:160]
@@ -897,10 +693,6 @@ def main() -> int:
     ltm_parser = sub.add_parser("run-long-term-workflow")
     ltm_parser.add_argument("--dataset", default=str(DATASET_DIR / "long_term_workflow_cases.jsonl"))
     ltm_parser.add_argument("--limit", type=int, default=None)
-    ma_parser = sub.add_parser("run-multi-agent-ab")
-    ma_parser.add_argument("--dataset", default=str(DATASET_DIR / "multi_agent_tasks.jsonl"))
-    ma_parser.add_argument("--limit", type=int, default=None)
-    ma_parser.add_argument("--project-size", choices=["small", "medium", "large"], default=None)
     sub.add_parser("report")
     args = parser.parse_args()
 
@@ -926,10 +718,6 @@ def main() -> int:
         return 0
     if args.command == "run-long-term-workflow":
         result = run_long_term_workflow(Path(args.dataset), limit=args.limit)
-        print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
-        return 0
-    if args.command == "run-multi-agent-ab":
-        result = run_multi_agent_ab(Path(args.dataset), limit=args.limit, project_size=args.project_size)
         print(json.dumps(result, ensure_ascii=False, indent=2, sort_keys=True, default=str))
         return 0
     if args.command == "report":

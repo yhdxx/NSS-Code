@@ -107,6 +107,8 @@ def test_system_prompt_keeps_runtime_rules_but_not_engineering_workflows() -> No
     assert "## 安全" in prompt
     assert "## 工具选择" in prompt
     assert "## Runtime Context 字段说明" in prompt
+    assert "/workspace 不是宿主机用户主目录" in prompt
+    assert "读取工作区外的宿主机路径必须使用 ReadFile、Grep 或 Glob" in prompt
     assert "skill_name: skill_project_reading" in prompt
     assert "普通仓库任务无需搜索 Dynamic Skill，但仍必须检查并调用匹配的 fixed Skill" in prompt
     assert "recommendations 只是本轮候选提示" in prompt

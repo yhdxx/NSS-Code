@@ -371,55 +371,6 @@ def run_capability_routing(*, dataset: Path, run_id: str | None) -> tuple[dict[s
     return summary, run_dir
 
 
-def run_multi_agent(*, dataset: Path, run_id: str | None, repeats: int, limit: int | None, project_size: str | None) -> tuple[dict[str, Any], Path]:
-    actual_id, run_dir, metadata = _start("multi_agent", run_id, dataset, repeats)
-    cases = _read_jsonl(dataset)
-    if project_size:
-        cases = [case for case in cases if case.get("project_size") == project_size]
-    if limit:
-        cases = cases[:limit]
-    details = asyncio.run(_run_multi_agent_cases(
-        cases, repeats=repeats, checkpoint=run_dir / "details.in_progress.jsonl",
-        concurrency=30,
-    ))
-    summary = _multi_agent_summary(cases, details, repeats)
-    complete_metric_run(metric="multi_agent", run_dir=run_dir, summary=summary, metadata=metadata, details=details, command=f"python3 -m tests.eval.modern_runner run-multi-agent --dataset {dataset} --repeats {repeats}")
-    return summary, run_dir
-
-
-async def _run_multi_agent_cases(
-    cases: list[dict[str, Any]], *, repeats: int, checkpoint: Path, concurrency: int,
-) -> list[dict[str, Any]]:
-    from tests.eval.runner import _run_multi_agent_case
-
-    details = _read_jsonl(checkpoint) if checkpoint.exists() else []
-    completed = {(row.get("case_id"), row.get("mode"), row.get("repeat")) for row in details}
-    semaphore = asyncio.Semaphore(max(1, concurrency))
-    lock = asyncio.Lock()
-
-    async def execute(case: dict[str, Any], mode: str, repeat: int, ordinal: int) -> None:
-        if (case["case_id"], mode, repeat) in completed:
-            return
-        async with semaphore:
-            row = await _run_multi_agent_case(
-                case, mode=mode, ordinal=ordinal, capture_stdout=False,
-            )
-        row["repeat"] = repeat
-        row.setdefault("status", "passed" if row.get("passed") else "failed")
-        async with lock:
-            details.append(row)
-            from tests.eval.artifacts import write_jsonl
-            write_jsonl(checkpoint, details)
-
-    await asyncio.gather(*(
-        execute(case, mode, repeat, ordinal)
-        for repeat in range(repeats)
-        for ordinal, case in enumerate(cases, 1)
-        for mode in ("direct", "multi_agent")
-    ))
-    return details
-
-
 def run_code_general_ab(*, dataset: Path, run_id: str | None, repeats: int, limit: int | None) -> tuple[dict[str, Any], Path]:
     actual_id, run_dir, metadata = _start("code_general_ab", run_id, dataset, repeats, extra={
         "graph_message_pinning": False, "tool_schema_stable_between_modes": True,
@@ -663,108 +614,10 @@ def _tool_error_details(messages: list[dict[str, Any]], calls: list[dict[str, st
     return errors
 
 
-def _multi_agent_summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: int) -> dict[str, Any]:
-    by_mode = {}
-    for mode in ("direct", "multi_agent"):
-        selected = [row for row in rows if row.get("mode") == mode]
-        pass_values = [bool(row.get("passed")) for row in selected]
-        durations = [float(row.get("duration_seconds", 0)) for row in selected]
-        tokens = [int(row["total_tokens"]) for row in selected if row.get("total_tokens") is not None]
-        by_mode[mode] = {
-            "run_count": len(selected), "success_rate": mean(pass_values), "success_rate_ci95": bootstrap_mean_ci(pass_values),
-            "duration_mean_seconds": mean(durations), "duration_p50_seconds": percentile(durations, .5), "duration_p95_seconds": percentile(durations, .95),
-            "duration_mean_ci95": bootstrap_mean_ci(durations),
-            "total_tokens_mean": mean(tokens) if tokens else None, "tool_calls_mean": mean(row.get("tool_call_count", 0) for row in selected),
-            "total_tokens_mean_ci95": bootstrap_mean_ci(tokens) if tokens else None,
-            "token_accounting_status": "available" if len(tokens) == len(selected) else "unavailable_subagent_aggregation",
-            "tool_calls_mean_ci95": bootstrap_mean_ci([row.get("tool_call_count", 0) for row in selected]),
-            "failed_or_timeout_count": sum(row.get("status") in {"failed", "timeout"} or not row.get("passed") for row in selected),
-        }
-    status = "passed" if len(cases) >= 30 and repeats >= 3 and len(rows) == len(cases) * repeats * 2 else "insufficient_sample"
-    summary = {"module": "multi_agent", "status": status, "case_count": len(cases), "run_count": len(rows), "repeats": repeats, "by_mode": by_mode, "reason": "" if status == "passed" else "requires 30 cases and 3 repeats per mode"}
-    if status == "passed":
-        delta = by_mode["multi_agent"]["success_rate"] - by_mode["direct"]["success_rate"]
-        summary["multi_agent_success_rate_delta"] = delta
-        summary["resume_conclusion"] = (
-            "仅当 Multi-Agent 在复杂任务上的成功率收益和开销可接受时，才可声明协作带来效果提升；"
-            f"本次总体成功率差为 {delta:+.1%}。"
-        )
-    return summary
-
-
-def document_existing_multi_agent(*, run_id: str | None = None) -> tuple[dict[str, Any], Path]:
-    """Document retained evidence without continuing the deprecated benchmark."""
-    dataset = DATASETS / "multi_agent_tasks.jsonl"
-    _actual_id, run_dir, metadata = _start(
-        "multi_agent", run_id, dataset, 3,
-        extra={
-            "module_lifecycle": "planned_for_removal",
-            "standard_run_stopped_by_user": True,
-            "subagent_token_accounting": "unavailable",
-        },
-    )
-    historical_path = Path("tests/eval/results/multi_agent_ab_details.jsonl")
-    partial_path = Path("tests/eval/runs/standard-multi-agent-20260801/multi_agent/details.in_progress.jsonl")
-    historical = _read_jsonl(historical_path) if historical_path.exists() else []
-    partial = _read_jsonl(partial_path) if partial_path.exists() else []
-    summary = {
-        "module": "multi_agent",
-        "status": "deprecated_incomplete",
-        "reason": "用户计划废弃 Multi-Agent 模块；标准 30 任务 × 3 重复实验已停止。",
-        "case_count": len({row.get("case_id") for row in historical}),
-        "run_count": len(historical) + len(partial),
-        "historical_complete_small_sample": _existing_multi_agent_group(historical),
-        "partial_standard_run_unpaired": _existing_multi_agent_group(partial),
-        "partial_standard_run_counts": {
-            mode: sum(row.get("mode") == mode for row in partial)
-            for mode in ("direct", "multi_agent")
-        },
-        "token_accounting_status": "unavailable_subagent_aggregation",
-        "resume_conclusion": (
-            "不可声明 Multi-Agent 提高效率或成功率；历史 6-case 对照中成功率更低且耗时显著更高，"
-            "新版标准实验未完成，且模块计划废弃。"
-        ),
-    }
-    details = [
-        {**row, "evidence_source": "historical_complete_small_sample"}
-        for row in historical
-    ] + [
-        {**row, "evidence_source": "partial_standard_run_unpaired"}
-        for row in partial
-    ]
-    complete_metric_run(
-        metric="multi_agent", run_dir=run_dir, summary=summary, metadata=metadata, details=details,
-        command="python3 -m tests.eval.modern_runner document-multi-agent-existing",
-    )
-    return summary, run_dir
-
-
-def _existing_multi_agent_group(rows: list[dict[str, Any]]) -> dict[str, Any]:
-    grouped: dict[str, Any] = {}
-    for mode in ("direct", "multi_agent"):
-        selected = [row for row in rows if row.get("mode") == mode]
-        passed = [bool(row.get("passed")) for row in selected]
-        durations = [float(row.get("duration_seconds", 0)) for row in selected]
-        tools = [float(row.get("tool_call_count", 0)) for row in selected]
-        grouped[mode] = {
-            "run_count": len(selected),
-            "success_rate": mean(passed) if selected else None,
-            "success_rate_ci95": bootstrap_mean_ci(passed) if selected else None,
-            "duration_mean_seconds": mean(durations) if selected else None,
-            "duration_mean_ci95": bootstrap_mean_ci(durations) if selected else None,
-            "tool_calls_mean": mean(tools) if selected else None,
-            "tool_calls_mean_ci95": bootstrap_mean_ci(tools) if selected else None,
-        }
-    return grouped
-
-
 def write_index() -> Path:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     lines = ["# myCodingAgent 评测索引", "", "每个指标都有独立、可审计的测试文档。`not_run`、`blocked`、`unavailable` 和 `deferred_by_user` 均不构成效果证据。", ""]
-    notes = {
-        "multi_agent": "（模块计划废弃，标准实验已停止）",
-        "project_graph": "（性能完成，准确率 `not_run`）",
-    }
+    notes = {"project_graph": "（性能完成，准确率 `not_run`）"}
     for path in sorted(DOCS_DIR.glob("*.md")):
         if path.name == "README.md":
             continue
@@ -851,8 +704,6 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("generate-datasets")
     sub.add_parser("init-docs")
-    document_multi = sub.add_parser("document-multi-agent-existing")
-    document_multi.add_argument("--run-id")
     prepare = sub.add_parser("prepare-projects")
     prepare.add_argument("--manifest", default=str(PROJECT_MANIFEST))
     prepare.add_argument("--destination", default=str(DEFAULT_PROJECTS_ROOT))
@@ -868,16 +719,13 @@ def main() -> int:
         ("run-runtime-context-virtualization", "runtime_context_virtualization_cases.jsonl", 3),
         ("run-long-term-memory", "long_term_workflow_cases.jsonl", 3),
         ("run-capability-routing", "capability_routing_1200_cases.jsonl", 1),
-        ("run-multi-agent", "multi_agent_tasks.jsonl", 3),
-        ("run-code-general-ab", "multi_agent_tasks.jsonl", 3),
+        ("run-code-general-ab", "code_general_tasks.jsonl", 3),
     ]:
         item = sub.add_parser(name)
         item.add_argument("--dataset", default=str(DATASETS / default))
         item.add_argument("--run-id")
         item.add_argument("--repeats", type=int, default=repeats)
         item.add_argument("--limit", type=int)
-        if name == "run-multi-agent":
-            item.add_argument("--project-size", choices=["small", "medium", "large"])
     for metric in ("project-graph", "code-general-ab"):
         item = sub.add_parser(f"defer-{metric}")
         item.add_argument("--run-id")
@@ -887,10 +735,6 @@ def main() -> int:
         print(json.dumps(generate_all(), ensure_ascii=False, indent=2, sort_keys=True)); return 0
     if args.command == "init-docs":
         initialize_not_run_documents(); print(write_index()); return 0
-    if args.command == "document-multi-agent-existing":
-        result, directory = document_existing_multi_agent(run_id=args.run_id)
-        print(json.dumps({"result": result, "run_dir": str(directory)}, ensure_ascii=False, indent=2, sort_keys=True))
-        write_index(); return 0
     if args.command == "prepare-projects":
         rows = prepare_public_projects(manifest=Path(args.manifest), destination=Path(args.destination), force=args.force)
         print(json.dumps(rows, ensure_ascii=False, indent=2, sort_keys=True)); return 0
@@ -906,8 +750,6 @@ def main() -> int:
         result, directory = run_long_term_memory(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-capability-routing":
         result, directory = run_capability_routing(dataset=Path(args.dataset), run_id=args.run_id)
-    elif args.command == "run-multi-agent":
-        result, directory = run_multi_agent(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit, project_size=args.project_size)
     elif args.command == "run-code-general-ab":
         result, directory = run_code_general_ab(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command.startswith("defer-"):

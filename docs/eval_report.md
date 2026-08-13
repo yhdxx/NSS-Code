@@ -6,7 +6,6 @@
 - [code_general_ab](eval_metrics/code_general_ab.md)：`passed`
 - [context_virtualization](eval_metrics/context_virtualization.md)：`passed`
 - [long_term_memory](eval_metrics/long_term_memory.md)：`passed`
-- [multi_agent](eval_metrics/multi_agent.md)：`deprecated_incomplete`（模块计划废弃，标准实验已停止）
 - [prefix_cache](eval_metrics/prefix_cache.md)：`passed`
 - [project_graph](eval_metrics/project_graph.md)：`passed`（性能完成，准确率 `not_run`）
 - [runtime_context_virtualization](eval_metrics/runtime_context_virtualization.md)：`passed`
