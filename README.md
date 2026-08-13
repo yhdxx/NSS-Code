@@ -309,6 +309,19 @@ WriteFile/EditFile
 
 这样可以避免模型在没有上下文的情况下覆盖用户代码，也能发现用户在 Agent 外部修改了同一文件。
 
+#### 文件访问权限模式
+
+读写作用域分离：
+
+- 写工具 `WriteFile` / `EditFile` 只能写入沙箱根目录（工作区）；越界返回「当前操作位于沙箱工作区域之外，你对工作区域之外只允许只读操作，不允许修改非工作区文件」。
+- 读工具 `ReadFile` / `Grep` / `Glob` 按 `sandbox.access_mode` 决定范围：
+  - `workspace_only`：仅工作区可读；
+  - `global_read`（默认）：全局可读，工作区可写；
+  - `global_write`：全局可读写。
+- `sandbox.read_allowlist`：额外只读目录白名单（默认空；所有 agent 共享 `config.json`，需按各自工作区自行配置）。
+- `sandbox.read_denylist`：任何模式下都禁止读写的目录黑名单（含工作区时忽略）；内置硬基线 `~/.ssh`、`~/.aws`、`~/.gnupg` 并追加用户配置。
+- `Bash` 仍在 Docker 容器内执行，不受上述文件作用域规则影响。
+
 ### 6.2 Bash 沙箱
 
 `Bash` 工具在当前会话复用的工作区 Docker 容器内执行：

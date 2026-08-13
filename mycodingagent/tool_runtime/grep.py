@@ -16,8 +16,9 @@ from mycodingagent.tool_runtime.base import (
     expand_brace_patterns,
     get_sandbox_root,
     glob_pattern_matches,
-    is_path_in_sandbox,
-    resolve_sandbox_path,
+    is_path_denied,
+    is_path_readable,
+    resolve_read_path,
 )
 
 MAX_GREP_MATCHES = 200
@@ -51,7 +52,7 @@ class Grep(Tool):  # 定义用于封装相关状态和行为的类。
             stop.set()
 
     def _search(self, params: Params, stop: Event) -> ToolResult:
-        base, error = resolve_sandbox_path(params.path, self._sandbox_root)  # 保存配置值或中间计算结果。
+        base, error = resolve_read_path(params.path, self._sandbox_root)  # 保存配置值或中间计算结果。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not base.exists():  # 根据条件决定是否执行后续分支。
@@ -108,17 +109,21 @@ def _iter_search_files(base: Path, include_patterns: tuple[str, ...], sandbox_ro
     if base.is_file():
         resolved = base.resolve(strict=False)
         relative = Path(base.name)
-        if is_path_in_sandbox(resolved, sandbox_root) and _include_matches(relative.as_posix(), include_patterns):
+        if is_path_readable(resolved, sandbox_root) and _include_matches(relative.as_posix(), include_patterns):
             yield base, relative
         return
 
     for root, dirnames, filenames in os.walk(base):
-        dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
+        dirnames[:] = sorted(
+            name
+            for name in dirnames
+            if name not in SKIP_DIRS and not is_path_denied(Path(root) / name, sandbox_root)
+        )
         root_path = Path(root)
         for filename in sorted(filenames):
             file_path = root_path / filename
             resolved = file_path.resolve(strict=False)  # 保存配置值或中间计算结果。
-            if not is_path_in_sandbox(resolved, sandbox_root):  # 根据条件决定是否执行后续分支。
+            if not is_path_readable(resolved, sandbox_root):  # 根据条件决定是否执行后续分支。
                 continue
             try:  # 开始可能抛出异常的保护代码块。
                 rel = file_path.relative_to(base)  # 保存配置值或中间计算结果。

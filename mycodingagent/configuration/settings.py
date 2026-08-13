@@ -803,6 +803,9 @@ class MemoryConfig:
         return self.default_context_window
 
 
+BUILTIN_READ_DENYLIST = ("~/.ssh", "~/.aws", "~/.gnupg")
+
+
 @dataclass(frozen=True)
 class SandboxConfig:
     """Docker 沙箱工作区配置。"""
@@ -811,6 +814,15 @@ class SandboxConfig:
         default_factory=lambda: Path(_user_str("sandbox.root", ("MYCODINGAGENT_SANDBOX_ROOT",), os.getcwd()))
     )
     docker_workspace_alias: Path = Path("/workspace")
+    access_mode: str = field(
+        default_factory=lambda: _user_str("sandbox.access_mode", ("MYCODINGAGENT_SANDBOX_ACCESS_MODE",), "global_read")
+    )
+    read_allowlist: tuple[str, ...] = field(
+        default_factory=lambda: _user_list("sandbox.read_allowlist", ("MYCODINGAGENT_SANDBOX_READ_ALLOWLIST",), ())
+    )
+    read_denylist: tuple[str, ...] = field(
+        default_factory=lambda: _user_list("sandbox.read_denylist", ("MYCODINGAGENT_SANDBOX_READ_DENYLIST",), ())
+    )
     max_output_chars: int = field(
         default_factory=lambda: _user_int("sandbox.max_output_chars", ("MYCODINGAGENT_MAX_OUTPUT_CHARS",), 10000)
     )
@@ -832,6 +844,11 @@ class SandboxConfig:
         "build",
         "dist",
     })
+
+    def effective_read_denylist(self) -> tuple[Path, ...]:
+        builtin = tuple(Path(item).expanduser() for item in BUILTIN_READ_DENYLIST)
+        user = tuple(Path(item).expanduser() for item in self.read_denylist)
+        return _dedupe_paths(builtin + user)
 
 
 @dataclass(frozen=True)

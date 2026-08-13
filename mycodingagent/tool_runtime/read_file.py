@@ -6,7 +6,7 @@ from typing import TYPE_CHECKING  # 导入当前模块需要的依赖。
 
 from pydantic import BaseModel, Field  # 导入当前模块需要的依赖。
 
-from mycodingagent.tool_runtime.base import MAX_OUTPUT_CHARS, Tool, ToolResult, resolve_sandbox_path  # 导入当前模块需要的依赖。
+from mycodingagent.tool_runtime.base import MAX_OUTPUT_CHARS, Tool, ToolResult, resolve_read_path  # 导入当前模块需要的依赖。
 from mycodingagent.tool_runtime.text_files import read_text_preserving_newlines
 
 if TYPE_CHECKING:  # 根据条件决定是否执行后续分支。
@@ -43,7 +43,7 @@ class ReadFile(Tool):  # 定义用于封装相关状态和行为的类。
         return await asyncio.to_thread(self._read, params)
 
     def _read(self, params: Params) -> ToolResult:
-        path, error = resolve_sandbox_path(params.file_path, self._sandbox_root)  # 保存配置值或中间计算结果。
+        path, error = resolve_read_path(params.file_path, self._sandbox_root)  # 保存配置值或中间计算结果。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not path.exists():  # 根据条件决定是否执行后续分支。

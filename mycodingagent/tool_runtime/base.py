@@ -2,6 +2,7 @@ from __future__ import annotations  # 启用未来版本语法特性。
 
 from abc import ABC, abstractmethod  # 导入当前模块需要的依赖。
 from dataclasses import dataclass  # 导入当前模块需要的依赖。
+from enum import Enum
 from pathlib import Path, PurePosixPath  # 导入当前模块需要的依赖。
 from typing import Any, Literal  # 导入当前模块需要的依赖。
 
@@ -17,6 +18,24 @@ SANDBOX_ROOT_ENV = CONFIG.sandbox.root_env  # 保存配置值或中间计算结�
 
 ToolCategory = Literal["read", "write", "command"]  # 保存配置值或中间计算结果。
 DOCKER_WORKSPACE_ALIAS = CONFIG.sandbox.docker_workspace_alias  # 兼容 Docker 容器内常见的工作区根路径别名。
+
+
+class AccessMode(str, Enum):
+    WORKSPACE_ONLY = "workspace_only"
+    GLOBAL_READ = "global_read"
+    GLOBAL_WRITE = "global_write"
+
+
+def get_access_mode() -> AccessMode:
+    try:
+        return AccessMode(CONFIG.sandbox.access_mode)
+    except ValueError:
+        return AccessMode.GLOBAL_READ
+
+
+OUT_OF_WORKSPACE_WRITE_MESSAGE = (
+    "当前操作位于沙箱工作区域之外，你对工作区域之外只允许只读操作，不允许修改非工作区文件"
+)
 
 
 def expand_brace_patterns(pattern: str, *, max_expansions: int = 32) -> tuple[str, ...]:
@@ -81,27 +100,116 @@ def is_path_in_sandbox(path: Path, sandbox_root: Path) -> bool:  # 定义函数�
     return True  # 返回当前函数的处理结果。
 
 
-def resolve_sandbox_path(raw_path: str, sandbox_root: Path | None = None) -> tuple[Path | None, str]:  # 定义函数，封装可复用逻辑。
-    root = (sandbox_root or get_sandbox_root()).resolve(strict=False)  # 保存配置值或中间计算结果。
-    raw_path = raw_path.strip()  # 统一去掉首尾空白，避免空格影响路径判断。
-    if not raw_path:  # 根据条件决定是否执行后续分支。
-        return None, "错误：路径为空"  # 返回当前函数的处理结果。
+def _resolve_raw_path(raw_path: str, root: Path) -> tuple[Path | None, str]:
+    raw_path = raw_path.strip()
+    if not raw_path:
+        return None, "错误：路径为空"
+    path = Path(raw_path).expanduser()
+    if not path.is_absolute():
+        path = root / path
+    elif path == DOCKER_WORKSPACE_ALIAS or DOCKER_WORKSPACE_ALIAS in path.parents:
+        path = root / path.relative_to(DOCKER_WORKSPACE_ALIAS)
+    try:
+        resolved = path.resolve(strict=False)
+    except RuntimeError as exc:
+        return None, f"解析路径失败：{exc}"
+    return resolved, ""
 
-    path = Path(raw_path).expanduser()  # 保存配置值或中间计算结果。
-    if not path.is_absolute():  # 根据条件决定是否执行后续分支。
-        path = root / path  # 保存配置值或中间计算结果。
-    elif path == DOCKER_WORKSPACE_ALIAS or DOCKER_WORKSPACE_ALIAS in path.parents:  # 根据条件决定是否执行后续分支。
-        path = root / path.relative_to(DOCKER_WORKSPACE_ALIAS)  # 将 Docker 容器内的 /workspace 路径别名映射到本机沙箱根目录。
 
-    try:  # 开始可能抛出异常的保护代码块。
-        resolved = path.resolve(strict=False)  # 保存配置值或中间计算结果。
-    except RuntimeError as exc:  # 捕获并处理指定异常。
-        return None, f"解析路径失败：{exc}"  # 返回当前函数的处理结果。
+def is_path_within(path: Path, roots: tuple[Path, ...]) -> bool:
+    for root in roots:
+        try:
+            path.relative_to(root)
+        except ValueError:
+            continue
+        return True
+    return False
 
-    if not is_path_in_sandbox(resolved, root):  # 根据条件决定是否执行后续分支。
-        return None, f"错误：路径位于沙箱之外：{raw_path}\n沙箱根目录：{root}"  # 返回当前函数的处理结果。
 
-    return resolved, ""  # 返回当前函数的处理结果。
+def _allowlist_paths() -> tuple[Path, ...]:
+    return tuple(
+        Path(item).expanduser().resolve(strict=False)
+        for item in CONFIG.sandbox.read_allowlist
+    )
+
+
+def _denylist_paths() -> tuple[Path, ...]:
+    return tuple(
+        Path(item).resolve(strict=False)
+        for item in CONFIG.sandbox.effective_read_denylist()
+    )
+
+
+def _is_isolated_root(root: Path) -> bool:
+    return root != get_sandbox_root()
+
+
+def resolve_read_path(raw_path: str, sandbox_root: Path | None = None) -> tuple[Path | None, str]:
+    root = (sandbox_root or get_sandbox_root()).resolve(strict=False)
+    resolved, error = _resolve_raw_path(raw_path, root)
+    if error:
+        return None, error
+    if is_path_in_sandbox(resolved, root):
+        return resolved, ""
+    if _is_isolated_root(root):
+        return None, f"错误：路径位于沙箱之外：{raw_path}\n沙箱根目录：{root}"
+    if is_path_within(resolved, _denylist_paths()):
+        return None, f"错误：路径位于不可读目录内：{raw_path}"
+    if is_path_within(resolved, _allowlist_paths()):
+        return resolved, ""
+    if get_access_mode() in (AccessMode.GLOBAL_READ, AccessMode.GLOBAL_WRITE):
+        return resolved, ""
+    return None, f"错误：路径位于沙箱之外：{raw_path}\n沙箱根目录：{root}"
+
+
+def resolve_write_path(raw_path: str, sandbox_root: Path | None = None) -> tuple[Path | None, str]:
+    root = (sandbox_root or get_sandbox_root()).resolve(strict=False)
+    resolved, error = _resolve_raw_path(raw_path, root)
+    if error:
+        return None, error
+    if is_path_in_sandbox(resolved, root):
+        return resolved, ""
+    if _is_isolated_root(root):
+        return None, OUT_OF_WORKSPACE_WRITE_MESSAGE
+    if is_path_within(resolved, _denylist_paths()):
+        return None, OUT_OF_WORKSPACE_WRITE_MESSAGE
+    if get_access_mode() == AccessMode.GLOBAL_WRITE:
+        return resolved, ""
+    return None, OUT_OF_WORKSPACE_WRITE_MESSAGE
+
+
+def is_path_readable(path: Path, sandbox_root: Path | None = None) -> bool:
+    root = (sandbox_root or get_sandbox_root()).resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    if is_path_in_sandbox(resolved, root):
+        return True
+    if _is_isolated_root(root):
+        return False
+    if is_path_within(resolved, _denylist_paths()):
+        return False
+    if is_path_within(resolved, _allowlist_paths()):
+        return True
+    return get_access_mode() in (AccessMode.GLOBAL_READ, AccessMode.GLOBAL_WRITE)
+
+
+def is_path_denied(path: Path, sandbox_root: Path | None = None) -> bool:
+    root = (sandbox_root or get_sandbox_root()).resolve(strict=False)
+    resolved = path.resolve(strict=False)
+    if is_path_in_sandbox(resolved, root):
+        return False
+    if _is_isolated_root(root):
+        return True
+    return is_path_within(resolved, _denylist_paths())
+
+
+def resolve_sandbox_path(raw_path: str, sandbox_root: Path | None = None) -> tuple[Path | None, str]:
+    root = (sandbox_root or get_sandbox_root()).resolve(strict=False)
+    resolved, error = _resolve_raw_path(raw_path, root)
+    if error:
+        return None, error
+    if not is_path_in_sandbox(resolved, root):
+        return None, f"错误：路径位于沙箱之外：{raw_path}\n沙箱根目录：{root}"
+    return resolved, ""
 
 
 @dataclass  # 声明装饰器，调整下一行定义的行为。

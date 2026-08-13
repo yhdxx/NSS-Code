@@ -13,8 +13,9 @@ from mycodingagent.tool_runtime.base import (
     expand_brace_patterns,
     get_sandbox_root,
     glob_pattern_matches,
-    is_path_in_sandbox,
-    resolve_sandbox_path,
+    is_path_denied,
+    is_path_readable,
+    resolve_read_path,
 )
 
 MAX_GLOB_MATCHES = 200
@@ -40,7 +41,7 @@ class Glob(Tool):  # 定义用于封装相关状态和行为的类。
 
 
     async def execute(self, params: Params) -> ToolResult:  # 定义异步函数，供事件循环调用。
-        base, error = resolve_sandbox_path(params.path, self._sandbox_root)  # 保存配置值或中间计算结果。
+        base, error = resolve_read_path(params.path, self._sandbox_root)  # 保存配置值或中间计算结果。
         if error:  # 根据条件决定是否执行后续分支。
             return ToolResult(output=error, is_error=True)  # 返回当前函数的处理结果。
         if not base.exists():  # 根据条件决定是否执行后续分支。
@@ -73,6 +74,20 @@ class Glob(Tool):  # 定义用于封装相关状态和行为的类。
         return ToolResult(output=output)  # 返回当前函数的处理结果。
 
 
+def _static_glob_root(pattern_path: Path) -> Path | None:
+    static_parts: list[str] = []
+    for part in pattern_path.parts:
+        if any(ch in part for ch in "*?[]{}"):
+            break
+        static_parts.append(part)
+    if not static_parts:
+        return None
+    root = Path(*static_parts)
+    if root == Path("/"):
+        return root
+    return root if root.is_dir() else root.parent
+
+
 def _normalize_glob_target(base: Path, pattern: str, sandbox_root: Path) -> tuple[Path, str]:
     pattern_path = Path(pattern)
     if not pattern_path.is_absolute():
@@ -85,8 +100,11 @@ def _normalize_glob_target(base: Path, pattern: str, sandbox_root: Path) -> tupl
     else:
         try:
             relative = pattern_path.relative_to(sandbox_root)
-        except ValueError as exc:
-            raise ValueError("绝对 Glob pattern 必须位于 /workspace 或沙箱根目录内") from exc
+        except ValueError:
+            static_root = _static_glob_root(pattern_path)
+            if static_root is None or not is_path_readable(static_root, sandbox_root):
+                raise ValueError("绝对 Glob pattern 必须位于 /workspace、沙箱根目录或可读目录内")
+            return static_root, pattern_path.relative_to(static_root).as_posix()
     if ".." in relative.parts:
         raise ValueError("Glob pattern 不能包含 '..'")
     return sandbox_root, relative.as_posix()
@@ -97,7 +115,11 @@ def _iter_matching_files(base: Path, patterns: tuple[str, ...], sandbox_root: Pa
     seen: set[Path] = set()
     if recursive:
         for root, dirnames, filenames in os.walk(base):
-            dirnames[:] = sorted(name for name in dirnames if name not in SKIP_DIRS)
+            dirnames[:] = sorted(
+                name
+                for name in dirnames
+                if name not in SKIP_DIRS and not is_path_denied(Path(root) / name, sandbox_root)
+            )
             root_path = Path(root)
             for filename in sorted(filenames):
                 file_path = root_path / filename
@@ -120,7 +142,7 @@ def _matches(file_path: Path, base: Path, patterns: tuple[str, ...], sandbox_roo
     if not file_path.is_file():  # 根据条件决定是否执行后续分支。
         return False
     resolved = file_path.resolve(strict=False)  # 保存配置值或中间计算结果。
-    if not is_path_in_sandbox(resolved, sandbox_root):  # 根据条件决定是否执行后续分支。
+    if not is_path_readable(resolved, sandbox_root):  # 根据条件决定是否执行后续分支。
         return False
     try:  # 开始可能抛出异常的保护代码块。
         relative = file_path.relative_to(base)  # 保存配置值或中间计算结果。

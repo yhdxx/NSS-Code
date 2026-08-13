@@ -101,8 +101,11 @@ These are enforced by `tests/test_architecture_boundaries.py` or by design, and 
 - **Config is one frozen dataclass tree**, `CONFIG` in `mycodingagent/configuration/settings.py`, built at import
   time. Every knob is an env var; nothing is read from a config file at runtime. Because the dataclasses are frozen and
   evaluated at import, tests that need different settings must set the env var *before* importing, or monkeypatch.
-- **The sandbox root is `os.getcwd()` at startup** unless `MYCODINGAGENT_SANDBOX_ROOT` is set. All file tools reject
-  paths outside it, and `resolve_sandbox_path` maps container-side `/workspace/...` paths back onto the host root.
+- **The sandbox root is `os.getcwd()` at startup** unless `MYCODINGAGENT_SANDBOX_ROOT` is set. File access is split by
+  read/write scope: `WriteFile`/`EditFile` write only inside the sandbox root, while `ReadFile`/`Grep`/`Glob` follow
+  `sandbox.access_mode` (`workspace_only` | `global_read` | `global_write`, default `global_read`) plus
+  `sandbox.read_allowlist` (read-only extras) and `sandbox.read_denylist` (always denied, merged with the builtin
+  `~/.ssh`, `~/.aws`, `~/.gnupg` baseline). `Bash` stays inside the Docker container and is unaffected by these rules.
 - **`Bash` runs in a throwaway Docker container** (`mycodingagent-sandbox:py312`, network `none` by default). Startup
   aborts if the image can't be prepared. Packages installed inside a running container do not persist — add them to
   `requirements-sandbox.txt` and rebuild (see `Docker_Image_Configuration.md`).
