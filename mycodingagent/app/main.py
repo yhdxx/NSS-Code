@@ -17,10 +17,9 @@ import pyfiglet  # 导入当前模块需要的依赖。
 
 from mycodingagent.approval import ApprovalRuntime
 from mycodingagent.capability_discovery import CapabilityRouter
-from mycodingagent.code_intelligence import ProjectGraphRuntime, ProjectGraphService, WorkspaceCodeIndex
+from mycodingagent.code_intelligence import DynamicDependencyRuntime, PathTaskGraphRuntime
 from mycodingagent.workspace_runtime import WorkspaceRuntime
 from mycodingagent.terminal_ui.application import TerminalApplication, TerminalCancelled
-from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.commands import CommandContext
 from mycodingagent.commands.handlers import build_command_registry
 from mycodingagent.configuration.bootstrap import USER_CONFIG_PATH, USER_CONFIG_README_PATH
@@ -64,7 +63,6 @@ from mycodingagent.mcp_integration.hooks import CLIApprovalHook, CLILaunchApprov
 from mycodingagent.mcp_integration.policy import MCPToolPermissionPolicy
 from mycodingagent.llm_runtime import client  # 导入当前模块需要的依赖。
 from mycodingagent.llm_runtime.model_manager import ModelManager
-from mycodingagent.work_mode import WorkMode, WorkModeManager
 from mycodingagent.plan_runtime import CreatePlan, PlanRuntime, UpdatePlanStep
 from mycodingagent.app.shutdown import (
     close_with_network_dependency,
@@ -233,23 +231,15 @@ async def _run(terminal: TerminalApplication) -> None:
         lambda mode: terminal.set_interaction_mode(mode.value)
     )
     approval_runtime = ApprovalRuntime(CONFIG.approval.mode)
-    code_index = WorkspaceCodeIndex(
-        workspace_root, workspace_state_path(workspace_root, "code_index.sqlite3")
-    )
-    project_graph = ProjectGraphService(
+    dynamic_dependency_runtime = DynamicDependencyRuntime(
         workspace_root,
-        workspace_state_path(workspace_root, "project_graph.sqlite3"),
-        code_index,
+        workspace_state_path(workspace_root, "dynamic_dependency.sqlite3"),
     )
-    requested_work_mode = (
-        memory_runtime.work_mode if memory_runtime is not None else CONFIG.memory.default_work_mode
+    task_graph_runtime = PathTaskGraphRuntime(
+        workspace_root,
+        store=memory_runtime.store if memory_runtime is not None else None,
+        session_id_provider=lambda: memory_runtime.get_current_session_id() if memory_runtime is not None else "",
     )
-    work_mode = WorkModeManager(
-        WorkMode.GENERAL,
-        persist=memory_runtime.set_work_mode if memory_runtime is not None else None,
-    )
-    project_graph_runtime = ProjectGraphRuntime(project_graph, code_index, work_mode)
-    workspace_tracker.subscribe(project_graph_runtime.mark_dirty)
     if memory_runtime is not None:
         deleted_count = memory_runtime.cleanup_expired_sessions()
         if deleted_count:
@@ -324,7 +314,8 @@ async def _run(terminal: TerminalApplication) -> None:
         memory_runtime=memory_runtime,
         command_approval_hook=command_approval_hook,
         terminal_input=terminal,
-        project_graph_service=project_graph_runtime,
+        dynamic_dependency_runtime=dynamic_dependency_runtime,
+        task_graph_runtime=task_graph_runtime,
         bash_policy_evaluator=BashPolicyEvaluator(
             BashPolicyStore(CONFIG.memory.db_path),
             classify_bash_policy,
@@ -470,26 +461,6 @@ async def _run(terminal: TerminalApplication) -> None:
     if long_term_memory_runtime is not None:
         long_term_memory_runtime.schedule_startup_backfill()
 
-    if WorkMode.parse(requested_work_mode) is WorkMode.CODE:
-        print("[项目图谱] Code 模式初始化开始。", flush=True)
-        try:
-            status = await project_graph_runtime.activate(
-                lambda message: print(f"[项目图谱] {message}", flush=True)
-            )
-            print(
-                "[项目图谱] Code 模式已就绪："
-                f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
-                flush=True,
-            )
-            update = await project_graph_runtime.prepare_bootstrap(messages, force=True)
-            if update is not None:
-                messages.extend(update.messages)
-                render_project_graph_bootstrap_tree(update.payload)
-        except Exception as exc:
-            if memory_runtime is not None:
-                memory_runtime.set_work_mode(WorkMode.GENERAL.value)
-            print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
-
     terminal.mark_ready()
     terminal.bind_shift_tab_handler(
         lambda: _exit_plan_mode_from_terminal(plan_runtime)
@@ -537,8 +508,6 @@ async def _run(terminal: TerminalApplication) -> None:
                         model_manager=model_manager,
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=command_cancel,
-                        work_mode=work_mode,
-                        project_graph_runtime=project_graph_runtime,
                         plan_runtime=plan_runtime,
                         approval_runtime=approval_runtime,
                         network_access=network_access,
@@ -573,8 +542,6 @@ async def _run(terminal: TerminalApplication) -> None:
                         messages = await client.resume_pending_plan_decision(
                             messages,
                             plan_runtime=plan_runtime,
-                            project_graph=project_graph_runtime,
-                            work_mode=work_mode.current.value,
                         )
                         if memory_runtime is not None:
                             session_id = memory_runtime.get_current_session_id()
@@ -600,8 +567,7 @@ async def _run(terminal: TerminalApplication) -> None:
                         workspace_tracker=workspace_tracker,
                         memory_runtime=memory_runtime,
                         capability_router=capability_router,
-                        project_graph=project_graph_runtime,
-                        work_mode=work_mode.current.value,
+                        task_graph_runtime=task_graph_runtime,
                         long_term_memory_runtime=long_term_memory_runtime,
                         cancel_event=turn_cancel,
                         follow_up_event=terminal.follow_up_signal,
@@ -647,14 +613,11 @@ async def _run(terminal: TerminalApplication) -> None:
                 memory_runtime.save_messages_now(session_id, messages)
                 long_term_memory_runtime.schedule_deferred_extraction(session_id)
 
-        workspace_tracker.unsubscribe(project_graph_runtime.mark_dirty)
         workspace_tracker.close()  # 停止工作区文件监听线程。
         skill_runtime.close()  # 停止 SKILL 文件监听线程。
         if CONFIG.sandbox.workspace_lease_enabled:
             workspace_lease.release()
         workspace_runtime.detach()
-        graph_task = project_graph_runtime.begin_shutdown()
-
         resources: list[tuple[str, Awaitable[Any]]] = []
         # MCP only depends on the proxy. All other local resources can close
         # concurrently with MCP, keeping exit latency bounded by the slowest
@@ -670,8 +633,6 @@ async def _run(terminal: TerminalApplication) -> None:
             resources.append(("long_term_memory", long_term_memory_runtime.close()))
         if memory_runtime is not None:
             resources.append(("memory_runtime", memory_runtime.close_for_exit()))
-        if graph_task is not None:
-            resources.append(("project_graph", graph_task))
         # Stop proxy traffic as soon as MCP is closed. Other resources keep
         # closing concurrently and do not delay either dependency edge.
         close_errors = await close_with_network_dependency(

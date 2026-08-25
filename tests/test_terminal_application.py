@@ -2,6 +2,7 @@ from __future__ import annotations
 
 import asyncio
 import fcntl
+import io
 import os
 import pty
 import struct
@@ -527,6 +528,22 @@ def test_streaming_assistant_region_survives_resize_and_keeps_input_working() ->
             output_stream.close()
             os.close(master_fd)
             os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
+def test_builtin_stream_commits_final_answer_once(monkeypatch) -> None:
+    async def scenario() -> None:
+        output = io.StringIO()
+        terminal = TerminalApplication(stdin=io.StringIO(), stdout=output)
+        await terminal.start()
+        try:
+            stream = terminal.begin_assistant_stream("模型")
+            stream.delta("answer")
+            stream.finish("answer")
+            assert output.getvalue() == "模型：answer\n"
+        finally:
+            await terminal.close()
 
     asyncio.run(scenario())
 

@@ -15,8 +15,6 @@ class CommandContext:
     model_manager: Any = None
     long_term_memory_runtime: Any = None
     cancel_event: Any = None
-    work_mode: Any = None
-    project_graph_runtime: Any = None
     plan_runtime: Any = None
     approval_runtime: Any = None
     network_access: Any = None

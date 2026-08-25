@@ -139,7 +139,7 @@ def _finish_record(recorder: Any | None, execution_id: str, status: str, error: 
 
 
 def _tool_risk(tool: Tool) -> str:
-    return {"read": "read", "write": "write", "command": "process"}.get(tool.category, "unknown")
+    return {"read": "read", "write": "write", "command": "process", "state": "state"}.get(tool.category, "unknown")
 
 
 def _tool_effects(tool: Tool, args: dict[str, Any]) -> list[dict[str, Any]]:

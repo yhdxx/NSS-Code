@@ -352,6 +352,44 @@ def test_openai_provider_emits_text_deltas_before_final_render() -> None:
     ]
 
 
+def test_openai_provider_does_not_render_final_twice_for_builtin_stream_sink(monkeypatch) -> None:
+    events: list[tuple] = []
+
+    class Sink:
+        commits_final = True
+
+        def delta(self, text: str) -> None:
+            events.append(("delta", text))
+
+        def finish(self, text: str, *, markdown: bool = True) -> None:
+            events.append(("finish", text, markdown))
+
+        def abort(self, text: str) -> None:
+            events.append(("abort", text))
+
+        def reset(self) -> None:
+            events.append(("reset",))
+
+    rendered: list[str] = []
+    monkeypatch.setattr(
+        "mycodingagent.llm_runtime.providers.openai_compatible.render_assistant_markdown",
+        lambda text, **_kwargs: rendered.append(text),
+    )
+    provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
+    provider.profile = ModelProfile(key="test", provider="test", model="test-model", api="test-key")
+    provider._client = _FakeClient([_FakeStream([_text_chunk("answer")])])
+
+    result = asyncio.run(
+        provider.stream_chat(
+            ChatRequest(messages=[{"role": "user", "content": "hi"}], stream_sink=Sink())
+        )
+    )
+
+    assert result.text == "answer"
+    assert events == [("delta", "answer"), ("finish", "answer", True)]
+    assert rendered == []
+
+
 def test_stream_chat_preserves_reasoning_content_for_tool_round() -> None:
     provider = OpenAICompatibleProvider.__new__(OpenAICompatibleProvider)
     provider.profile = ModelProfile(key="test", provider="test", model="test-model", api="test-key")

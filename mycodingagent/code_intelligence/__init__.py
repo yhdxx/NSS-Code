@@ -1,16 +1,11 @@
+from mycodingagent.code_intelligence.dynamic_dependency import DynamicDependencyRuntime
 from mycodingagent.code_intelligence.index import WorkspaceCodeIndex
 from mycodingagent.code_intelligence.lsp import LSPManager
-from mycodingagent.code_intelligence.project_graph import ProjectGraphService
-from mycodingagent.code_intelligence.project_graph_runtime import BootstrapUpdate, ProjectGraphRuntime
+from mycodingagent.code_intelligence.task_graph import PathTaskGraphRuntime
 
 __all__ = [
-    "BootstrapUpdate",
+    "DynamicDependencyRuntime",
     "LSPManager",
-    "ProjectGraphRuntime",
-    "ProjectGraphService",
+    "PathTaskGraphRuntime",
     "WorkspaceCodeIndex",
 ]
-
-__all__ = ["LSPManager", "ProjectGraphService", "WorkspaceCodeIndex"]
-
-__all__ = ["LSPManager", "WorkspaceCodeIndex"]

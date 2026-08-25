@@ -25,9 +25,7 @@ from mycodingagent.terminal_ui.application import (
     request_text,
 )
 from mycodingagent.terminal_ui.output import clear_terminal
-from mycodingagent.terminal_ui.output import render_project_graph_bootstrap_tree
 from mycodingagent.terminal_ui.session_selector import select_session_interactively
-from mycodingagent.work_mode import WorkMode
 
 
 def mark_long_term_memory_pending(context: CommandContext, session_id: str) -> None:
@@ -203,15 +201,6 @@ def build_command_registry() -> CommandRegistry:
     )
     registry.register(
         CommandSpec(
-            name="/mode",
-            aliases=("mode", "工作模式"),
-            description="交互选择 General 或 Code 工作模式",
-            usages=(("", "显示并选择 General 或 Code"),),
-            handler=handle_mode_command,
-        )
-    )
-    registry.register(
-        CommandSpec(
             name="/rewind",
             aliases=("rewind", "回退"),
             description="选择用户轮次，并恢复该轮前的代码、会话或两者",
@@ -351,65 +340,6 @@ async def handle_plan_command(context: CommandContext, arguments: str) -> Comman
     return CommandResult(messages=context.messages)
 
 
-async def handle_mode_command(context: CommandContext, arguments: str) -> CommandResult:
-    work_mode = context.work_mode
-    graph_runtime = context.project_graph_runtime
-    if work_mode is None or graph_runtime is None:
-        print("工作模式运行时未启用。", flush=True)
-        return CommandResult()
-    try:
-        answer = (await request_text(
-            f"当前工作模式：{work_mode.current.value}。请选择 General 或 Code [general/code]："
-        )).strip().lower()
-    except (TerminalCancelled, EOFError, KeyboardInterrupt):
-        print("已取消模式切换。", flush=True)
-        return CommandResult()
-    if answer not in {"general", "code"}:
-        print("已取消模式切换；请输入 general 或 code。", flush=True)
-        return CommandResult()
-    selected = WorkMode.parse(answer)
-    if selected is WorkMode.GENERAL:
-        await graph_runtime.deactivate()
-        print("工作模式已切换为 General。", flush=True)
-        return CommandResult(messages=context.messages)
-    if work_mode.current is WorkMode.CODE:
-        print("当前已处于 Code 模式。", flush=True)
-        return CommandResult(messages=context.messages)
-    await _activate_code_mode(context, context.messages, force=work_mode.current is WorkMode.GENERAL)
-    return CommandResult(messages=context.messages)
-
-
-async def _activate_code_mode(
-    context: CommandContext,
-    messages: list[dict],
-    *,
-    force: bool,
-) -> bool:
-    graph_runtime = context.project_graph_runtime
-    if graph_runtime is None:
-        return False
-    print("[项目图谱] Code 模式初始化开始。", flush=True)
-    try:
-        status = await graph_runtime.activate(
-            lambda message: print(f"[项目图谱] {message}", flush=True)
-        )
-        print(
-            "[项目图谱] Code 模式已就绪："
-            f"{status.get('modules', 0)} 个模块，{status.get('units', 0)} 个单位。",
-            flush=True,
-        )
-        update = await graph_runtime.prepare_bootstrap(messages, force=force)
-        if update is not None:
-            messages.extend(update.messages)
-            render_project_graph_bootstrap_tree(update.payload)
-        return True
-    except Exception as exc:
-        if context.work_mode is not None and context.work_mode.current is not WorkMode.GENERAL:
-            await graph_runtime.deactivate()
-        print(f"[项目图谱] 初始化失败：{type(exc).__name__}: {exc}", flush=True)
-        return False
-
-
 async def handle_rewind_command(context: CommandContext, arguments: str) -> CommandResult:
     memory_runtime = context.memory_runtime
     if memory_runtime is None:
@@ -506,12 +436,6 @@ async def handle_resume_command(context: CommandContext, arguments: str) -> Comm
         context.file_state_cache,
         context.workspace_tracker,
     )
-    if context.work_mode is not None and context.project_graph_runtime is not None:
-        requested_mode = WorkMode.parse(state.work_mode)
-        if requested_mode is WorkMode.CODE:
-            await _activate_code_mode(context, state.messages, force=context.work_mode.current is WorkMode.GENERAL)
-        elif context.work_mode.current is WorkMode.CODE:
-            await context.project_graph_runtime.deactivate()
     clear_terminal()
     render_conversation_history(state.messages)
     print(f"已恢复会话：{resume_session_id}（{len(state.messages)} 条消息）", flush=True)
@@ -579,12 +503,6 @@ async def handle_fork_command(context: CommandContext, arguments: str) -> Comman
         context.file_state_cache,
         context.workspace_tracker,
     )
-    if context.work_mode is not None and context.project_graph_runtime is not None:
-        requested_mode = WorkMode.parse(source_state.work_mode)
-        if requested_mode is WorkMode.CODE:
-            await _activate_code_mode(context, fork_messages, force=context.work_mode.current is WorkMode.GENERAL)
-        elif context.work_mode.current is WorkMode.CODE:
-            await context.project_graph_runtime.deactivate()
     clear_terminal()
     render_conversation_history(fork_messages)
     print(

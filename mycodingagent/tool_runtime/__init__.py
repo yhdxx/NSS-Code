@@ -64,7 +64,8 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
     memory_runtime: MemoryRuntime | None = None,
     command_approval_hook: Any = None,
     terminal_input: Any = None,
-    project_graph_service: Any = None,
+    dynamic_dependency_runtime: Any = None,
+    task_graph_runtime: Any = None,
     bash_policy_evaluator: Any = None,
     media_runtime: Any = None,
     web_fetch_runtime: Any = None,
@@ -144,16 +145,19 @@ def create_default_registry(  # 定义函数，封装可复用逻辑。
         from mycodingagent.tool_runtime.fetch_url import FetchUrl
 
         registry.register(FetchUrl(web_fetch_runtime))
-    if project_graph_service is not None:
+    if dynamic_dependency_runtime is not None:
         from mycodingagent.tool_runtime.project_graph import (
-            ProjectArchitectureTool,
-            UnitDependencyGraphTool,
-            UpdateProjectDescriptionTool,
+            QueryUnitDependencyTool,
+            UpdateUnitDescriptionTool,
         )
 
-        registry.register(ProjectArchitectureTool(project_graph_service))
-        registry.register(UnitDependencyGraphTool(project_graph_service))
-        registry.register(UpdateProjectDescriptionTool(project_graph_service))
+        registry.register(UpdateUnitDescriptionTool(dynamic_dependency_runtime))
+        registry.register(QueryUnitDependencyTool(dynamic_dependency_runtime))
+    if task_graph_runtime is not None:
+        from mycodingagent.tool_runtime.task_graph import CreateTaskGraphTool, UpdateTaskGraphTool
+
+        registry.register(CreateTaskGraphTool(task_graph_runtime))
+        registry.register(UpdateTaskGraphTool(task_graph_runtime))
     if memory_runtime is not None:
         registry.register(CommitWorkingContext(memory_runtime))
         registry.register(BatchRecoverContext(memory_runtime))

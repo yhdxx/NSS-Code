@@ -112,7 +112,7 @@ class OpenAICompatibleProvider:
                             text = "".join(content_parts)
                             if request.stream_sink is not None and text:
                                 request.stream_sink.abort(text)
-                            if request.display and text:
+                            if request.display and text and not getattr(request.stream_sink, "commits_final", False):
                                 render_assistant_text(text, label=request.output_label)
                             return StreamRoundResult(
                                 text,
@@ -173,13 +173,13 @@ class OpenAICompatibleProvider:
             if request.stream_sink is not None and text:
                 request.stream_sink.finish(text, markdown=not calls)
             if calls:
-                if text:
+                if text and not getattr(request.stream_sink, "commits_final", False):
                     render_assistant_text(text, label=request.output_label)
                 render_tool_calls(
                     calls,
                     bash_classifier=request.bash_classifier or default_bash_display_level,
                 )
-            else:
+            elif request.stream_sink is None or not getattr(request.stream_sink, "commits_final", False):
                 render_assistant_markdown(text, label=request.output_label)
         return StreamRoundResult(
             text,

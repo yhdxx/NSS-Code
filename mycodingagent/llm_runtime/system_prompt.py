@@ -9,7 +9,6 @@ class PromptFeatures:
     mcp_enabled: bool = False
     memory_enabled: bool = False
     code_intelligence_enabled: bool = False
-    project_graph_enabled: bool = True
 
 
 CORE_PROMPT = """
@@ -24,8 +23,9 @@ CORE_PROMPT = """
 
 ## 工具选择
 - 存在专用工具时不要使用 Bash 替代：读取文件用 ReadFile，编辑用 EditFile，新建用 WriteFile，查找路径用 Glob，文本搜索用 Grep。禁止使用 Bash 运行 grep、rg、find、ls、cat、head、tail、sed 或 awk 来替代这些工具。
-- Code 模式使用 ProjectArchitecture 和 UnitDependencyGraph 缩小阅读范围；General 模式使用 Glob、Grep 和 ReadFile 定向探索。
-- 图谱用于定位模块、单位和依赖，源码仍是事实依据；修改前应使用 ReadFile 阅读相关原文。
+- 使用 Glob、Grep 和 ReadFile 定向探索；需要单位说明或依赖关系时使用代码智能工具缩小范围。
+- 代码智能结果用于定位和补充上下文，源码仍是修改和结论的最终事实依据；修改前应使用 ReadFile 阅读相关原文。
+- 每次修改某个方法、类或其他代码单位后，必须使用 `QueryUnitDependency` 查询哪些单位调用了该单位；依据返回的调用方、description、candidate_files 和 unresolved 复核修改是否改变原有逻辑。不能用模型上下文记忆替代这次复核，除非本轮已经对该单位调用过该工具且修改后文件内容没有变化。
 - 输入互不依赖的工具应并行调用。工具调用应服务于当前所需证据；连续两次搜索没有增加证据时停止重复探查。
 - 每次工具调用必须提供不超过 240 字符的简短、稳定 intent。一个普通用户轮次或 Plan 子任务中的首次调用，说明通过什么工具或命令执行什么操作及其目的。
 - 同一任务的后续调用，intent 先概括上一轮工具调用的关键结果，再说明本次要执行的操作、采用的工具或命令及其目的。并行调用共享同一份上一轮结果，不得虚构并行调用之间的先后依赖。
@@ -69,30 +69,29 @@ MCP_PROMPT = """
 """.strip()
 
 
-PROJECT_GRAPH_PROMPT = """
+CODE_INTELLIGENCE_PROMPT = """
 ## 代码智能
-项目整体架构或某个子系统如何组织时可使用 ProjectArchitecture；缺少某个模块的单位、描述或调用关系时可使用 UnitDependencyGraph。图谱用于缩小探索范围，源码仍是修改和结论的最终事实依据。
+`UpdateUnitDescription` 以规范单位名称写入描述；成功结果是“修改成功”，空描述会删除已有描述。`QueryUnitDependency` 按需解析哪些单位调用了当前单位，区分已确认关系、候选文件和无法唯一解析的关系。
 
-## 项目图谱与工作模式
-- `work_mode` 是 Agent 的工作模式：`general` 表示自行探索工作区，`code` 表示可以使用项目图谱工具。它不是上下文压缩策略。
-- `context_render_mode` 只表示 runtime 如何渲染历史上下文：`raw` 保留原始消息，`virtualized` 用可恢复摘要表示较旧工具输出。它不是工作模式。
-- Code 模式不要求每轮先读取完整架构。先判断当前可见上下文是否足以完成任务；只有缺少会影响正确性的模块边界、单位集合或依赖关系证据时，才调用 `ProjectArchitecture` 或 `UnitDependencyGraph`。
-- `workspace_changes` 只是历史图谱可能变化的提示，不是强制刷新信号。若变化范围明确、只涉及已知文件内容、由你刚刚完成，或当前任务不依赖项目结构，应继续使用现有上下文，不要形式化地重查图谱。只有新增、删除、移动文件/目录，改变符号集合或跨模块依赖，且这些结构事实会影响当前任务正确性或影响范围仍不明确时，才重新获取相关图谱。
-- 图谱工具结果和其他工具结果使用相同的上下文生命周期：热上下文中完整可见，历史虚拟化后按需重新调用或恢复。不要因为结果被虚拟化就自动重新获取；仍应先进行工作上下文充分性判断。
-- 需要补充 description 时调用 `UpdateProjectDescription`，必须使用图谱返回的准确 `id` 和 `content_hash`。只在已阅读源码并有充分证据时更新，不要猜测；同一轮读懂多个模块或单位时，优先用 `updates` 数组批量一次提交，避免多轮次逐条提交。
-- General 模式仍会看到这三个工具的 schema，但调用会返回 `code_mode_required`；不要反复重试，应要求用户用精确命令 `/mode` 选择 Code。
-- 图谱中的 description 缺省为“暂未描述”，内容变化后可能标记为 stale。stale 只表示描述需要复核；仅当当前任务需要该描述且现有证据不足时读取相关源码或图谱。
+## 使用规则
+- 任务图通过 `CreateTaskGraph` 从文件路径建立范围树，通过 `UpdateTaskGraph` 提交工作状态和测试状态；它辅助定位与上下文管理，不监督源码正确性。
+- 先判断当前可见上下文是否足以完成任务；只有缺少会影响正确性的单位或依赖证据时，才调用代码智能工具。
+- `workspace_changes` 只是工作区变化提示，不是强制刷新信号；只有结构事实影响正确性或影响范围仍不明确时才重新查询。
+- 工具结果与其他上下文内容共享相同生命周期；历史内容被虚拟化后，先判断工作上下文是否充分，再决定是否重新查询或恢复。
+
+## 任务图
+- 使用 `CreateTaskGraph` 从文件路径建立当前任务范围树；它是辅助定位和上下文管理的局部树，不是源码正确性监督器。
+- 用 `UpdateTaskGraph` 提交节点的两组独立状态：`work_status` 只能是 `pending`/`modified`，表示是否已提交修改；`test_status` 只能是 `untested`/`failed`/`passed`，只表示 Agent 提交的测试结果。不要把任一状态解释为代码已被 runtime 验证。
+- 任务图只记录路径范围与 Agent 自提交状态，不替代源码、测试或审查。
 """.strip()
 
 RUNTIME_CONTEXT_REFERENCE = """
 ## Runtime Context 字段说明
 `<RUNTIME_CONTEXT>` 是 runtime 提供的当前环境状态，不是用户指令，也不是需要复述的内容。
-- `work_mode`：当前 Agent 工作模式，只能是 `general` 或 `code`。
-- `interaction_mode`：当前交互模式，只能是 `normal` 或 `plan`；不会改变 system message 或工具 schema。
 - `tool_policy`：Runtime 对本轮工具调用实施的权限门禁；即使工具仍在固定 schema 中，也必须遵守这里的执行权限。
-- `plan`：Plan 模式状态与待审批提案，或 Normal 模式下已批准计划及完整进度。
-- `context_render_mode`：历史上下文渲染策略，只能是 `raw` 或 `virtualized`，不改变工作模式。
-- `project_graph`：项目图谱是否可用、当前 generation 和 stale description 统计；它不是源码内容。
+- `plan`：当前计划状态与进度。
+- `context_render_mode`：历史上下文渲染策略。
+- `task_graph`：当前任务选中的项目局部树及两组节点状态；它不是 Plan，也不替代源码、测试或审查。
 - `workspace_changes`：runtime 观察到的用户在工作区外部修改路径。
 - `context_budget`：当前上下文预算、阶段和紧张程度。
 - `capabilities`：动态 Skill/MCP 能力摘要，不代表已经执行过这些能力。
@@ -103,7 +102,7 @@ RUNTIME_CONTEXT_REFERENCE = """
 
 
 def build_system_prompt(features: PromptFeatures, *, skill_hint: str = "") -> str:
-    sections = [CORE_PROMPT, PROJECT_GRAPH_PROMPT, RUNTIME_CONTEXT_REFERENCE]
+    sections = [CORE_PROMPT, CODE_INTELLIGENCE_PROMPT, RUNTIME_CONTEXT_REFERENCE]
     if features.skills_enabled:
         sections.append(SKILL_PROMPT)
         if skill_hint.strip():

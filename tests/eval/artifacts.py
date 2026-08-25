@@ -11,25 +11,6 @@ RUNS_DIR = Path("tests/eval/runs")
 DOCS_DIR = Path("docs/eval_metrics")
 
 METRIC_SPECS: dict[str, dict[str, Any]] = {
-    "project_graph": {
-        "title": "项目图谱评测",
-        "definition": "衡量固定项目快照上的首次建图、热读取、单文件增量刷新、资源开销，以及人工标注存在时的符号覆盖率和语法级调用边准确性。",
-        "formulas": [
-            "符号覆盖率 = 正确检出的标注符号数 / 标注符号总数",
-            "调用精确率 = 正确调用边数 / 标注文件范围内检出的调用边数",
-            "调用召回率 = 正确调用边数 / 标注调用边总数",
-        ],
-        "gate": "性能结果需覆盖 10 个固定 commit；准确性结果还需每项目至少 30 个符号和 20 条调用边的人工标注。",
-    },
-    "code_general_ab": {
-        "title": "Code / General 工作模式 A/B 评测",
-        "definition": "在相同模型、任务和工具 schema 下，对比 Code 图谱导航与 General 自主探索的任务成功率和执行成本。",
-        "formulas": [
-            "任务成功率 = 验收测试通过的运行数 / 总运行数",
-            "成本降幅 = (General 均值 - Code 均值) / General 均值",
-        ],
-        "gate": "至少 30 个任务、每模式 3 次；Code 成功率不得比 General 低超过 5 个百分点，且 token 或读取/工具调用成本显著下降，才可表述为提高效率。",
-    },
     "context_virtualization": {
         "title": "上下文虚拟化评测",
         "definition": "比较 raw、virtualized 与 recent_only 在多轮长会话中的任务成功率、历史证据恢复率和输入成本。",

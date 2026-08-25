@@ -251,30 +251,37 @@ class TerminalApplication:
     def commit_runtime_user_message(self, text: str) -> None:
         self._commit_user_message(text)
 
-    def begin_assistant_stream(self, label: str = "模型") -> "TerminalAssistantStream":
+    def begin_assistant_stream(
+        self,
+        label: str = "模型",
+    ) -> "TerminalAssistantStream":
         return TerminalAssistantStream(self, label)
 
     def _stream_start(self, label: str) -> None:
         self._stream_active = True
         self._stream_label = label
         self._stream_text = ""
+        self.emit(f"{label}：")
         self._invalidate()
 
     def _stream_delta(self, text: str) -> None:
         if not text:
             return
         self._stream_text += text
+        self.emit(text)
         self.notify_agent_output()
         self._invalidate()
 
     def _stream_finish(self, _text: str, *, markdown: bool) -> None:
         self._stream_active = False
         self._stream_text = ""
+        self.emit("\n")
         self._invalidate()
 
     def _stream_abort(self, _text: str) -> None:
         self._stream_active = False
         self._stream_text = ""
+        self.emit("\n")
         self._invalidate()
 
     def mark_ready(self) -> None:
@@ -528,7 +535,9 @@ class TerminalApplication:
                 wrap_lines=True,
                 style="class:stream.text",
             ),
-            filter=Condition(lambda: self._stream_active),
+            # Text is emitted incrementally; keeping the cumulative preview
+            # window would print old frames into terminal scrollback.
+            filter=Condition(lambda: False),
         )
         plan_selection = ConditionalContainer(
             Window(
@@ -1003,7 +1012,15 @@ class TerminalApplication:
 
 
 class TerminalAssistantStream:
-    def __init__(self, terminal: TerminalApplication, label: str) -> None:
+    # Providers use this marker to distinguish the built-in sink, which
+    # commits the final answer in _stream_finish, from external sinks.
+    commits_final = True
+
+    def __init__(
+        self,
+        terminal: TerminalApplication,
+        label: str,
+    ) -> None:
         self._terminal = terminal
         self._label = label
         self._started = False
@@ -1039,6 +1056,8 @@ class TerminalAssistantStream:
     def reset(self) -> None:
         if self._finished:
             return
+        if self._started and self._terminal._stream_text:
+            self._terminal.emit("\n")
         self._started = False
         self._terminal._stream_active = False
         self._terminal._stream_text = ""
@@ -1049,7 +1068,9 @@ def current_terminal() -> TerminalApplication | None:
     return _CURRENT_TERMINAL.get()
 
 
-def create_assistant_stream(label: str = "模型") -> TerminalAssistantStream | None:
+def create_assistant_stream(
+    label: str = "模型",
+) -> TerminalAssistantStream | None:
     terminal = current_terminal()
     if terminal is None or not terminal.is_tty:
         return None

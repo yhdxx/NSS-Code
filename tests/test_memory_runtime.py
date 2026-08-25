@@ -26,7 +26,6 @@ except ModuleNotFoundError:
     sys.modules["openai"] = openai_stub
 
 from mycodingagent.llm_runtime import client as agent_client
-from mycodingagent.code_intelligence.project_graph_runtime import BootstrapUpdate
 from mycodingagent.configuration import CONFIG
 from mycodingagent.memory import (
     ContextEpochStatus,
@@ -113,17 +112,12 @@ class WorkspaceTrackerStub:
         return [], 0
 
 
-def test_runtime_context_exposes_project_graph_availability():
-    payload = {
-        "index": {"available": True, "generation": 3},
-        "lsp": {"languages": {"python": {"available": False}}},
-    }
-
+def test_runtime_context_exposes_task_graph_state():
+    payload = {"task_graph_id": "tg", "status": "active", "nodes": []}
     rendered = PromptRenderer.render_current_user_message(
-        RuntimeContextBuilder(project_graph=payload).build(), "inspect code"
+        RuntimeContextBuilder(task_graph=payload).build(), "inspect code"
     )
-
-    assert json.loads(rendered.runtime_context_json)["project_graph"] == payload
+    assert json.loads(rendered.runtime_context_json)["task_graph"] == payload
 
 
 def test_build_round_tools_falls_back_to_default_tools():
@@ -3037,99 +3031,3 @@ def test_legacy_session_migration_keeps_last_complete_turn_hot(tmp_path):
     assert restored is not None
     assert restored.context_epoch is not None
     assert restored.context_epoch.epoch_id == epoch.epoch_id
-
-
-def test_virtualized_context_uses_live_project_graph_bootstrap():
-    def bootstrap_pair(value: str) -> list[dict]:
-        payload = {
-            "graph": "project_architecture",
-            "bootstrap": True,
-            "generation": 1,
-            "navigation_hash": value,
-            "modules": [{"id": "module_root", "name": value, "path": ".", "parent_id": ""}],
-        }
-        return [
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": f"project_graph_bootstrap_{value}",
-                        "type": "function",
-                        "function": {
-                            "name": "ProjectArchitecture",
-                            "arguments": json.dumps({"module": "", "depth": 3, "bootstrap": True}),
-                        },
-                    }
-                ],
-                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
-            },
-            {
-                "role": "tool",
-                "tool_call_id": f"project_graph_bootstrap_{value}",
-                "content": json.dumps(payload),
-                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
-            },
-        ]
-
-    rendered = render_virtualized_messages(
-        system_messages=[{"role": "system", "content": "system"}],
-        historical_messages=[{"role": "system", "content": "system"}, *bootstrap_pair("old")],
-        session_id="session",
-        historical_turns=[],
-        current_messages=[],
-        current_summaries={},
-        project_graph_bootstrap_messages=bootstrap_pair("live"),
-    )
-
-    rendered_text = json.dumps(rendered, ensure_ascii=False)
-    assert "live" in rendered_text
-    assert "old" not in rendered_text
-
-
-def test_project_graph_bootstrap_appends_runtime_update(capsys):
-    def bootstrap_pair(value: str) -> list[dict]:
-        payload = {
-            "graph": "project_architecture",
-            "bootstrap": True,
-            "generation": 1,
-            "navigation_hash": value,
-            "primary_language": "python",
-            "modules": [{"id": "module_root", "name": value, "path": ".", "parent_id": ""}],
-        }
-        return [
-            {
-                "role": "assistant",
-                "tool_calls": [
-                    {
-                        "id": f"project_graph_bootstrap_{value}",
-                        "type": "function",
-                        "function": {
-                            "name": "ProjectArchitecture",
-                            "arguments": json.dumps({"module": "", "depth": 3, "bootstrap": True}),
-                        },
-                    }
-                ],
-                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
-            },
-            {
-                "role": "tool",
-                "tool_call_id": f"project_graph_bootstrap_{value}",
-                "content": json.dumps(payload),
-                "metadata": {"project_graph_bootstrap": True, "navigation_hash": value},
-            },
-        ]
-
-    class FakeGraphRuntime:
-        async def prepare_bootstrap(self, messages):
-            pair = bootstrap_pair("h1")
-            return BootstrapUpdate(tuple(pair), json.loads(pair[-1]["content"]), "h1")
-
-    messages = [{"role": "system", "content": "system"}]
-
-    assert asyncio.run(
-        agent_client.append_project_graph_bootstrap_if_needed(
-            messages, FakeGraphRuntime(), work_mode="code"
-        )
-    )
-    assert len(messages) == 3
-    assert "Bootstrap" in capsys.readouterr().out

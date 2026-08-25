@@ -16,7 +16,7 @@ SKIP_DIRS = set(CONFIG.sandbox.skip_dirs)  # 保存配置值或中间计算结�
 MAX_OUTPUT_CHARS = CONFIG.sandbox.max_output_chars  # 保存配置值或中间计算结果。
 SANDBOX_ROOT_ENV = CONFIG.sandbox.root_env  # 保存配置值或中间计算结果。
 
-ToolCategory = Literal["read", "write", "command"]  # 保存配置值或中间计算结果。
+ToolCategory = Literal["read", "write", "command", "state"]  # 保存配置值或中间计算结果。
 DOCKER_WORKSPACE_ALIAS = CONFIG.sandbox.docker_workspace_alias  # 兼容 Docker 容器内常见的工作区根路径别名。
 
 

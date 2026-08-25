@@ -32,13 +32,25 @@ class TurnToolPolicy:
         if self.interaction_mode is InteractionMode.PLAN:
             if bool(getattr(tool, "is_playwright_tool", False)):
                 return False
-            if name in MCP_TOOL_NAMES or name in {"Bash", "WriteFile", "EditFile", "update_plan_step"}:
+            if name in MCP_TOOL_NAMES or name in {"Bash", "WriteFile", "EditFile"}:
                 return False
-            return getattr(tool, "category", "read") != "write" or name == "UpdateProjectDescription"
-        if name == "create_plan":
-            return False
-        if name == "update_plan_step":
-            return self.has_active_plan
+            return (
+                getattr(tool, "category", "read") in {"read", "state"}
+                or name in {
+                    "create_plan",
+                    "update_plan_step",
+                    "invoke_skill",
+                    "search_skill",
+                    "Get_skill_reference",
+                    "CommitWorkingContext",
+                    "BatchRecoverContext",
+                    "RestoreSession",
+                    "SearchRecoverableContext",
+                    "SearchSessionHistory",
+                    "GetRecentConversationTurns",
+                    "SummarizeCurrentTurnMessage",
+                }
+            )
         return True
 
     def runtime_payload(self) -> dict[str, Any]:
@@ -49,16 +61,18 @@ class TurnToolPolicy:
                 "mcp": "denied",
                 "skills": "allowed",
                 "context_operations": "allowed",
-                "project_description_updates": "allowed",
+                "unit_description_updates": "allowed",
                 "create_plan": "allowed",
-                "update_plan_step": "denied",
+                "update_plan_step": "allowed",
+                "task_graph": "allowed",
                 "enforcement": "runtime_execution_gate",
             }
         return {
             "workspace_write": "allowed",
             "bash": "allowed_with_existing_policy",
             "mcp": "allowed_with_existing_policy",
-            "create_plan": "denied",
-            "update_plan_step": "allowed" if self.has_active_plan else "denied",
+            "create_plan": "allowed",
+            "update_plan_step": "allowed",
+            "task_graph": "allowed",
             "enforcement": "runtime_execution_gate",
         }

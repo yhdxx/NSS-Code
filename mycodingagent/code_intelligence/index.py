@@ -174,6 +174,9 @@ class WorkspaceCodeIndex:
                 calls = [dict(row) for row in conn.execute(
                     "SELECT * FROM code_calls ORDER BY path, line"
                 )]
+                imports = [dict(row) for row in conn.execute(
+                    "SELECT * FROM code_imports ORDER BY path, line, imported_name"
+                )]
         language_stats: dict[str, dict[str, int]] = {}
         for item in files:
             language = str(item.get("language") or "")
@@ -190,6 +193,7 @@ class WorkspaceCodeIndex:
             "files": files,
             "symbols": symbols,
             "calls": calls,
+            "imports": imports,
             "language_stats": language_stats,
             "primary_language": primary_language,
             "filter_stats": {

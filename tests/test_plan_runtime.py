@@ -118,6 +118,13 @@ def test_plan_policy_blocks_workspace_writes_bash_and_mcp_but_allows_requested_r
     assert policy.allows(Tool("CommitWorkingContext", "command"))
     assert policy.allows(Tool("RestoreSession", "read"))
     assert policy.allows(Tool("UpdateProjectDescription", "read"))
+    assert policy.allows(Tool("UpdateUnitDescription", "state"))
+    assert policy.allows(Tool("CreateTaskGraph", "state"))
+
+    normal = TurnToolPolicy(InteractionMode.NORMAL)
+    assert normal.allows(Tool("create_plan", "command"))
+    assert normal.allows(Tool("update_plan_step", "command"))
+    assert normal.allows(Tool("UpdateUnitDescription", "state"))
 
 
 def test_plan_runtime_context_contains_state_without_prompt_instruction() -> None:
@@ -233,8 +240,6 @@ def test_plan_execution_rewrite_selects_create_plan_after_automatic_skill_call()
         client._rewrite_context_for_plan_execution(
             messages,
             turn_start=1,
-            project_graph=None,
-            work_mode="general",
         )
     )
 

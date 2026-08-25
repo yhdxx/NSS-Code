@@ -684,12 +684,6 @@ class MemoryConfig:
     session_ttl_days: int = field(
         default_factory=lambda: _user_int("memory.session_ttl_days", ("MYCODINGAGENT_MEMORY_SESSION_TTL_DAYS",), 90)
     )
-    default_work_mode: str = field(
-        default_factory=lambda: (
-            wm if (wm := _user_str("memory.default_work_mode", ("MYCODINGAGENT_DEFAULT_WORK_MODE",), "general").strip().lower()) in {"general", "code"}
-            else "general"
-        )
-    )
     workspace_snapshot_ttl_days: int = field(
         default_factory=lambda: _user_int("memory.workspace_snapshot_ttl_days", ("MYCODINGAGENT_MEMORY_WORKSPACE_SNAPSHOT_TTL_DAYS",), 30)
     )

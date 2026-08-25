@@ -448,15 +448,15 @@ def generate_long_term_workflow_cases() -> list[dict[str, Any]]:
     ]
     fact_cases = [
         ("entrypoint", "项目 CLI 入口是 mycodingagent/app/main.py。", ["mycodingagent/app/main.py"]),
-        ("graph_store", "项目图谱持久化文件名是 project_graph.sqlite3。", ["project_graph.sqlite3"]),
-        ("ignore_file", "项目图谱忽略规则来自项目根目录的 .agentignore。", [".agentignore"]),
-        ("default_mode", "Agent 默认工作模式是 general。", ["general"]),
-        ("code_tools", "Code 模式的图谱工具包括 ProjectArchitecture、UnitDependencyGraph 和 UpdateProjectDescription。", ["ProjectArchitecture", "UnitDependencyGraph", "UpdateProjectDescription"]),
+        ("dependency_store", "代码单位依赖关系按需持久化在 dynamic_dependency.sqlite3。", ["dynamic_dependency.sqlite3"]),
+        ("task_graph", "任务图由文件路径建立，并记录 work_status 与 test_status。", ["文件路径", "work_status", "test_status"]),
+        ("dependency_tool", "QueryUnitDependency 返回调用当前单位的调用方单位。", ["QueryUnitDependency", "调用方"]),
         ("snapshot_ttl", "workspace snapshot 默认保留 30 天。", ["30 天"]),
         ("sandbox_path", "容器中的工作区挂载路径是 /workspace。", ["/workspace"]),
         ("context_modes", "上下文渲染策略名称是 raw 和 virtualized。", ["raw", "virtualized"]),
         ("memory_db", "会话长期状态使用 SQLite 持久化。", ["SQLite"]),
         ("router_layers", "能力发现由 MCP Router 与 Skill Router 两层组成。", ["MCP Router", "Skill Router"]),
+        ("task_graph_tools", "任务图工具包括 CreateTaskGraph 和 UpdateTaskGraph。", ["CreateTaskGraph", "UpdateTaskGraph"]),
     ]
     cases = ([("workflow", name, text, anchors) for name, text, anchors in workflows] * 2)[:10]
     cases += [("preference", name, text, anchors) for name, text, anchors in preference_cases]

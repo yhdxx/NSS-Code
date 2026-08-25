@@ -32,7 +32,6 @@ from mycodingagent.terminal_ui.output import (
     processing_status,
     render_assistant_markdown,
     render_assistant_text,
-    render_project_graph_bootstrap_tree,
     tool_status_message,
 )
 from mycodingagent.terminal_ui.message_queue import FollowUpSignal
@@ -520,58 +519,6 @@ async def execute_local_tool(
             bind_cancel_event(None)
 
 
-async def append_project_graph_bootstrap_if_needed(
-    messages: list[dict[str, Any]],
-    project_graph: Any | None,
-    *,
-    work_mode: str,
-) -> bool:
-    if project_graph is None or str(work_mode) != "code":
-        return False
-    prepare_bootstrap = getattr(project_graph, "prepare_bootstrap", None)
-    if not callable(prepare_bootstrap):
-        return False
-    try:
-        update = await prepare_bootstrap(messages)
-    except Exception as exc:
-        print(f"[项目图谱] Bootstrap 生成失败：{type(exc).__name__}: {exc}", flush=True)
-        return False
-    if update is None:
-        return False
-    messages.extend(update.messages)
-    render_project_graph_bootstrap_tree(update.payload)
-    return True
-
-
-def _latest_project_graph_bootstrap_hash(messages: list[dict[str, Any]]) -> str:
-    for message in reversed(messages):
-        value = _project_graph_bootstrap_hash(message)
-        if value:
-            return value
-    return ""
-
-
-def _project_graph_bootstrap_hash(message: dict[str, Any]) -> str:
-    metadata = message.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("project_graph_bootstrap"):
-        return str(metadata.get("navigation_hash") or "")
-    payload = _project_graph_payload_from_message(message)
-    if payload and payload.get("bootstrap"):
-        return str(payload.get("navigation_hash") or "")
-    return ""
-
-
-def _project_graph_payload_from_message(message: dict[str, Any]) -> dict[str, Any]:
-    if message.get("role") != "tool":
-        return {}
-    content = str(message.get("content") or "")
-    try:
-        payload = json.loads(content)
-    except json.JSONDecodeError:
-        return {}
-    return payload if isinstance(payload, dict) else {}
-
-
 def create_initial_messages(
     registry: ToolRegistry,
     *,
@@ -596,7 +543,7 @@ def create_initial_messages(
                     skills_enabled=skill_runtime is not None,
                     mcp_enabled=capability_router is not None,
                     memory_enabled=memory_runtime is not None,
-                    project_graph_enabled=registry.get("ProjectArchitecture") is not None,
+                    code_intelligence_enabled=registry.get("QueryUnitDependency") is not None,
                 ),
                 skill_hint=skill_hint,
             ),
@@ -615,8 +562,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     workspace_tracker: Any | None = None,
     memory_runtime: MemoryRuntime | None = None,
     capability_router: Any | None = None,
-    project_graph: Any | None = None,
-    work_mode: str = "general",
+    task_graph_runtime: Any | None = None,
     long_term_memory_runtime: Any | None = None,
     cancel_event: asyncio.Event | None = None,
     follow_up_event: FollowUpSignal | None = None,
@@ -688,9 +634,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             success=success,
         )
 
-    if await append_project_graph_bootstrap_if_needed(messages, project_graph, work_mode=work_mode):
-        save_session_state(sync=True)
-
     turn_start = len(messages)
     if memory_runtime is not None and CONFIG.memory.enabled:
         memory_runtime.begin_workspace_checkpoint(prompt=prompt, message_index=turn_start)
@@ -746,9 +689,8 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
     base_runtime_context = RuntimeContextBuilder(
         workspace_tracker=workspace_tracker,
         context_mode=current_context_mode(),
-        work_mode=work_mode,
         capabilities=capability_result,
-        project_graph=project_graph,
+        task_graph=task_graph_runtime,
         long_term_memory=long_term_context.to_runtime_payload() if long_term_context is not None else None,
         context_budget=initial_budget_state,
         interaction_mode=plan_runtime.mode.value if plan_runtime is not None else InteractionMode.NORMAL.value,
@@ -786,6 +728,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 base_runtime_context,
                 context_render_mode=provisional_context_mode,
                 task_snapshot=summary_text or None,
+                task_graph=(getattr(task_graph_runtime, "runtime_payload", lambda: None)()),
             )
             if runtime_attachments:
                 rendered_prompt = PromptRenderer.render_current_user_message(
@@ -808,7 +751,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 summary_text=summary_text,
                 persist_snapshot=True,
                 current_turn_start=turn_start,
-                project_graph=project_graph if str(work_mode) == "code" else None,
+                task_graph=task_graph_runtime,
                 extra_tokens=prompt_wrapper_tokens,
             )
         if frozen_rendered_prompt is None and current_context_mode() != provisional_context_mode:
@@ -816,6 +759,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 base_runtime_context,
                 context_render_mode=current_context_mode(),
                 task_snapshot=summary_text or None,
+                task_graph=(getattr(task_graph_runtime, "runtime_payload", lambda: None)()),
             )
             if runtime_attachments:
                 rendered_prompt = PromptRenderer.render_current_user_message(
@@ -911,6 +855,9 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             if STEP_TOKEN:
                 print_token_block(f"[Token] {' '.join(parts)}")
         if stream_result.interrupted:
+            interrupted_task_graph = task_graph_runtime
+            if interrupted_task_graph is not None:
+                interrupted_task_graph.mark_interrupted()
             interruption_text = "本轮已被用户中断。已完成的工具结果已保留，可以继续对话。"
             if assistant_text:
                 interruption_text = f"{assistant_text}\n\n{interruption_text}"
@@ -929,6 +876,9 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             )
             return interruption_text, messages
         if assistant_text.startswith("Error: API ") and not tool_calls:
+            interrupted_task_graph = task_graph_runtime
+            if interrupted_task_graph is not None:
+                interrupted_task_graph.mark_interrupted()
             # `turn_start` 指向用户消息追加之前的位置。本轮如果已经执行过工具，
             # 这些工具结果是真实的工作进展，不能因为一次 API 失败被整体丢弃。
             has_progress = len(messages) > turn_start + 1
@@ -951,6 +901,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             return assistant_text, messages
 
         mixed_plan_call = any(call.tool_name == "create_plan" for call in tool_calls) and len(tool_calls) != 1
+        mixed_task_graph_call = any(call.tool_name == "CreateTaskGraph" for call in tool_calls) and len(tool_calls) != 1
         assistant_message: dict[str, Any] = {"role": "assistant"}  # 准备写入历史的 assistant 消息骨架。
         if assistant_text or not tool_calls:  # 有文本时保存文本；没有工具调用时即使文本为空也需要 content 字段表示最终回答。
             assistant_message["content"] = assistant_text  # 写入模型本轮普通文本输出。
@@ -976,10 +927,14 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         if persistent_assistant_message is not None:
             messages.append(persistent_assistant_message)  # 把可长期保存的模型输出加入历史。
         round_messages.append(assistant_message)
+        if task_graph_runtime is not None and tool_calls:
+            task_graph_runtime.tag_message(messages[-1])
         if persistent_assistant_message is not None:
             save_session_state(sync=not tool_calls)
 
         if not tool_calls:  # 如果模型没有请求工具，说明本轮任务已经完成。
+            if task_graph_runtime is not None:
+                task_graph_runtime.finish_after_final(len(messages) - 1)
             print_turn_token_summary()
             await record_long_term_turn_usage(True)
             return assistant_text, messages  # 返回最终文本和完整消息历史给调用方。
@@ -987,6 +942,7 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
         follow_up_after_tool = False
         created_plan_id = ""
         plan_progress_submitted = False
+        assistant_message_index = len(messages) - 1
         for index, tool_call in enumerate(tool_calls):  # 逐个执行模型请求的本地工具调用。
             tool_call_id = tool_call.tool_id or f"tool_call_{index}"  # 计算工具调用 ID，必须和上面的 assistant tool_calls 对象一致。
             registry_get = getattr(registry, "get", None)
@@ -1003,6 +959,8 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 execution = ToolExecution("收到新的排队消息，本工具调用未执行。", is_error=True)
             elif mixed_plan_call:
                 execution = ToolExecution("create_plan 必须是本轮唯一的工具调用，请单独提交计划。", is_error=True)
+            elif mixed_task_graph_call and tool_call.tool_name == "CreateTaskGraph":
+                execution = ToolExecution("CreateTaskGraph 必须是本轮唯一的工具调用，请单独提交任务图。", is_error=True)
             elif plan_runtime is not None and (selected_tool is None or not tool_policy.allows(selected_tool)):
                 execution = ToolExecution(
                     f"当前交互模式不允许调用工具 {tool_call.tool_name}。",
@@ -1072,6 +1030,16 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                 )
             else:
                 tool_output = truncate_tool_output(tool_output)
+            if (
+                not tool_failed
+                and selected_tool is not None
+                and selected_tool.category == "write"
+                and tool_call.tool_name in {"WriteFile", "EditFile"}
+            ):
+                tool_output = (
+                    f"{tool_output}\n\n修改后复核要求：请使用 QueryUnitDependency 查询本次修改涉及的代码单位，"
+                    "检查调用方、被调用方及原有逻辑影响。"
+                )
             tool_message = {
                 "role": "tool",
                 "tool_call_id": tool_call_id,
@@ -1097,6 +1065,10 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                     created_plan_id = str(json.loads(raw_tool_output).get("plan_id") or "")
                 except (json.JSONDecodeError, AttributeError):
                     created_plan_id = ""
+            if tool_call.tool_name == "CreateTaskGraph" and not tool_failed and task_graph_runtime is not None:
+                task_graph_runtime.set_start_boundary(max(0, assistant_message_index))
+                task_graph_runtime.tag_message(messages[assistant_message_index])
+                task_graph_runtime.tag_message(messages[-1])
             if tool_call.tool_name == "update_plan_step" and not tool_failed:
                 plan_progress_submitted = True
             if follow_up_event is not None and follow_up_event.is_set():
@@ -1123,8 +1095,6 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                         await _rewrite_context_for_plan_execution(
                             messages,
                             turn_start=turn_start,
-                            project_graph=project_graph,
-                            work_mode=work_mode,
                         )
                     plan_runtime.queue_implementation_prompt()
                 else:
@@ -1135,6 +1105,8 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
                     await record_long_term_turn_usage(True)
                 return "计划已提交，等待后续处理。", messages
         if follow_up_after_tool and not (cancel_event is not None and cancel_event.is_set()):
+            if task_graph_runtime is not None:
+                task_graph_runtime.mark_interrupted()
             interruption_text = "当前任务已在工具调用结束后暂停，接下来处理排队消息。"
             interrupted_message = {
                 "role": "assistant",
@@ -1149,6 +1121,8 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             render_assistant_text(interruption_text)
             return interruption_text, messages
         if cancel_event is not None and cancel_event.is_set():
+            if task_graph_runtime is not None:
+                task_graph_runtime.mark_interrupted()
             interruption_text = "本轮已被用户中断。已完成的工具结果已保留，可以继续对话。"
             interrupted_message = {
                 "role": "assistant",
@@ -1164,6 +1138,9 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             return interruption_text, messages
 
     print_turn_token_summary()
+    interrupted_task_graph = task_graph_runtime
+    if interrupted_task_graph is not None:
+        interrupted_task_graph.mark_interrupted()
     await record_long_term_turn_usage(False)
     return f"Error: exceeded max tool rounds ({MAX_TOOL_ROUNDS})", messages  # 超过工具循环上限时返回错误，避免无限运行。
 
@@ -1201,8 +1178,6 @@ async def resume_pending_plan_decision(
     messages: list[dict[str, Any]],
     *,
     plan_runtime: PlanRuntime,
-    project_graph: Any | None,
-    work_mode: str,
 ) -> list[dict[str, Any]]:
     plan = plan_runtime.proposed_plan()
     if plan is None:
@@ -1216,8 +1191,6 @@ async def resume_pending_plan_decision(
             await _rewrite_context_for_plan_execution(
                 messages,
                 turn_start=_plan_turn_start(messages, plan.id),
-                project_graph=project_graph,
-                work_mode=work_mode,
             )
         plan_runtime.queue_implementation_prompt()
     else:
@@ -1319,8 +1292,6 @@ async def _rewrite_context_for_plan_execution(
     messages: list[dict[str, Any]],
     *,
     turn_start: int,
-    project_graph: Any | None,
-    work_mode: str,
 ) -> None:
     system = next((message for message in messages if message.get("role") == "system"), None)
     turn_messages = messages[turn_start:]
@@ -1350,10 +1321,6 @@ async def _rewrite_context_for_plan_execution(
     if system is None or user is None or assistant is None or tool is None:
         raise ValueError("无法构造计划执行所需的完整消息链")
     rebuilt = [system, user]
-    if project_graph is not None and str(work_mode) == "code":
-        update = await project_graph.prepare_bootstrap(rebuilt, force=True)
-        if update is not None:
-            rebuilt.extend(update.messages)
     rebuilt.extend([assistant, tool])
     messages[:] = rebuilt
 

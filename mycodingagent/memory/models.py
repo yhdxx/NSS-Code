@@ -255,7 +255,6 @@ class SessionState:
     workspace_root: str = ""
     workspace_label: str = ""
     workspace_fingerprint: str = ""
-    work_mode: str = "general"
     token_usage: TokenUsageSummary = field(default_factory=TokenUsageSummary)
     context_epoch: ContextEpochState | None = None
 

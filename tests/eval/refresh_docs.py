@@ -13,8 +13,6 @@ from tests.eval.metrics import bootstrap_mean_ci
 
 
 CANONICAL_RUNS = {
-    "project_graph": "graph-resumable-20260801",
-    "code_general_ab": "standard-code-general-20260801",
     "context_virtualization": "standard-context-20260801",
     "runtime_context_virtualization": "standard-runtime-context-20260802",
     "prefix_cache": "standard-prefix-20260801",
@@ -94,13 +92,6 @@ def refresh_completed_documents(
         metadata = _read_json(run_dir / "run_metadata.json")
         details = _read_jsonl(run_dir / "details.jsonl")
         payload = _read_json(run_dir / "report_payload.json")
-        if metric == "code_general_ab":
-            from tests.eval.modern_runner import _code_general_summary
-
-            summary = _code_general_summary(
-                [{} for _ in range(int(summary.get("case_count", 0)))],
-                details, int(summary.get("repeats", 0)),
-            )
         _strengthen_summary(metric, summary, details)
         report = render_metric_document(metric, summary, metadata, str(payload["command"]), details)
         write_json(run_dir / "summary.json", summary)

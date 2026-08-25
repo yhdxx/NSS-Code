@@ -9,7 +9,6 @@ import asyncio
 import json
 import math
 import os
-import tempfile
 import time
 from pathlib import Path
 from typing import Any
@@ -20,18 +19,15 @@ from tests.eval.artifacts import (
 )
 from tests.eval.dataset_generators import generate_all
 from tests.eval.metrics import (
-    bootstrap_mean_ci, bootstrap_reduction_ci, mean, percentile, reduction_rate,
+    bootstrap_mean_ci, mean, percentile, reduction_rate,
 )
 from tests.eval.prefix_cache_benchmark import run_prefix_cache_benchmark
 from tests.eval.run_context import build_run_metadata
 from tests.eval.runtime_context_virtualization_benchmark import (
     run_runtime_context_virtualization_benchmark,
 )
-from tests.model_manager_stub import ask_model_with_raw_client
 
 DATASETS = Path("tests/eval/datasets")
-PROJECT_MANIFEST = Path("tests/eval/manifests/public_projects.json")
-DEFAULT_PROJECTS_ROOT = Path("/tmp/mycodingagent_eval_projects")
 
 
 def _config() -> tuple[str, str, str]:
@@ -65,50 +61,6 @@ def _start(metric: str, run_id: str | None, dataset: Path | None, repeats: int, 
     run_dir = metric_run_dir(RUNS_DIR, actual_id, metric)
     metadata = _run_metadata(actual_id, dataset, repeats, extra)
     return actual_id, run_dir, metadata
-
-
-def defer_metric(metric: str, *, reason: str, run_id: str | None = None) -> Path:
-    actual_id, run_dir, metadata = _start(metric, run_id, None, 0, extra={"deferred_by_user": True})
-    complete_metric_run(
-        metric=metric, run_dir=run_dir,
-        summary={"module": metric, "status": "deferred_by_user", "reason": reason},
-        metadata=metadata, command=f"python3 -m tests.eval.modern_runner defer-{metric.replace('_', '-')}",
-    )
-    return run_dir
-
-
-def prepare_public_projects(*, manifest: Path, destination: Path, force: bool = False) -> list[dict[str, Any]]:
-    from tests.eval.public_projects import prepare_projects
-
-    return prepare_projects(manifest, destination, force=force)
-
-
-def run_project_graph(*, manifest: Path, projects_root: Path, annotations: Path, run_id: str | None) -> tuple[dict[str, Any], Path]:
-    from tests.eval.project_graph_benchmark import run_project_graph_benchmark
-    from tests.eval.public_projects import load_manifest
-
-    actual_id, run_dir, metadata = _start("project_graph", run_id, manifest, 1, extra={
-        "projects_root": str(projects_root), "annotations_dir": str(annotations),
-        "graph_message_pinning": False,
-    })
-    projects = load_manifest(manifest)
-    summary = run_project_graph_benchmark(
-        projects, projects_root=projects_root, run_dir=run_dir, annotations_dir=annotations,
-    )
-    details = _read_jsonl(run_dir / "project_graph_details.jsonl")
-    if summary.get("status") == "passed" and summary.get("annotation_projects") == 0:
-        summary["accuracy_status"] = "not_run"
-        summary["accuracy_reason"] = "manual symbol/call annotations are absent"
-        summary["performance_status"] = "passed"
-        summary["resume_conclusion"] = (
-            f"在 {summary['completed_projects']} 个固定 commit 项目上完成图谱性能评测；"
-            "符号覆盖率及调用边精确率/召回率尚无人工标注，不作为准确性证据。"
-        )
-    complete_metric_run(
-        metric="project_graph", run_dir=run_dir, summary=summary, metadata=metadata, details=details,
-        command=f"python3 -m tests.eval.modern_runner run-project-graph --manifest {manifest} --projects-root {projects_root} --annotations {annotations}",
-    )
-    return summary, run_dir
 
 
 def run_prefix_cache(*, dataset: Path, run_id: str | None, repeats: int, limit: int | None) -> tuple[dict[str, Any], Path]:
@@ -370,212 +322,6 @@ def run_capability_routing(*, dataset: Path, run_id: str | None) -> tuple[dict[s
     complete_metric_run(metric="capability_routing", run_dir=run_dir, summary=summary, metadata=metadata, details=details, command=f"python3 -m tests.eval.modern_runner run-capability-routing --dataset {dataset}")
     return summary, run_dir
 
-
-def run_code_general_ab(*, dataset: Path, run_id: str | None, repeats: int, limit: int | None) -> tuple[dict[str, Any], Path]:
-    actual_id, run_dir, metadata = _start("code_general_ab", run_id, dataset, repeats, extra={
-        "graph_message_pinning": False, "tool_schema_stable_between_modes": True,
-    })
-    cases = _read_jsonl(dataset)
-    if limit:
-        cases = cases[:limit]
-    checkpoint = run_dir / "details.in_progress.jsonl"
-    details = asyncio.run(_run_code_general_cases(
-        cases, repeats=repeats, checkpoint=checkpoint, concurrency=6,
-    ))
-    summary = _code_general_summary(cases, details, repeats)
-    complete_metric_run(
-        metric="code_general_ab", run_dir=run_dir, summary=summary, metadata=metadata, details=details,
-        command=f"python3 -m tests.eval.modern_runner run-code-general-ab --dataset {dataset} --repeats {repeats}",
-    )
-    return summary, run_dir
-
-
-async def _run_code_general_cases(
-    cases: list[dict[str, Any]], *, repeats: int, checkpoint: Path, concurrency: int,
-) -> list[dict[str, Any]]:
-    details = _read_jsonl(checkpoint) if checkpoint.exists() else []
-    completed = {(row.get("case_id"), row.get("mode"), row.get("repeat")) for row in details}
-    semaphore = asyncio.Semaphore(max(1, concurrency))
-    lock = asyncio.Lock()
-
-    async def execute(case: dict[str, Any], mode: str, repeat: int, ordinal: int) -> None:
-        if (case["case_id"], mode, repeat) in completed:
-            return
-        async with semaphore:
-            row = await _run_code_general_case(case, mode=mode, repeat=repeat, ordinal=ordinal)
-        async with lock:
-            details.append(row)
-            from tests.eval.artifacts import write_jsonl
-            write_jsonl(checkpoint, details)
-
-    await asyncio.gather(*(
-        execute(case, mode, repeat, ordinal)
-        for repeat in range(repeats)
-        for ordinal, case in enumerate(cases, 1)
-        for mode in ("general", "code")
-    ))
-    return details
-
-
-async def _run_code_general_case(case: dict[str, Any], *, mode: str, repeat: int, ordinal: int) -> dict[str, Any]:
-    import httpx
-    from openai import AsyncOpenAI
-    from mycodingagent.code_intelligence import (
-        ProjectGraphRuntime,
-        ProjectGraphService,
-        WorkspaceCodeIndex,
-    )
-    from mycodingagent.configuration import CONFIG
-    from mycodingagent.llm_runtime import client as agent_client
-    from mycodingagent.memory import MemoryRuntime, SQLiteMemoryStore
-    from mycodingagent.work_mode import WorkMode, WorkModeManager
-    from tests.eval.runner import (
-        _run_eval_test, _snapshot_project_files, _tool_call_names_from_messages,
-        _workspace_registry, _write_eval_project,
-    )
-
-    started = time.perf_counter()
-    with tempfile.TemporaryDirectory(prefix=f"mca_code_ab_{mode}_{ordinal:02d}_") as temporary:
-        root = Path(temporary)
-        workspace = root / "workspace"
-        state = root / "state"
-        workspace.mkdir(); state.mkdir()
-        _write_eval_project(workspace, case["files"])
-        before = _snapshot_project_files(workspace)
-        memory = MemoryRuntime(
-            store=SQLiteMemoryStore(state / "sessions.sqlite3"),
-            context_window=96_000, model=_config()[0],
-            workspace_root=str(workspace),
-        )
-        index = WorkspaceCodeIndex(workspace, state / "code_index.sqlite3")
-        graph = ProjectGraphService(workspace, state / "project_graph.sqlite3", index)
-        work_mode = WorkModeManager(WorkMode.GENERAL)
-        graph_runtime = ProjectGraphRuntime(graph, index, work_mode)
-        if mode == "code":
-            await graph_runtime.activate()
-        registry = _workspace_registry(workspace, memory, graph_runtime)
-        schemas = agent_client.format_openai_tools(registry.get_all_schemas("openai"))
-        model, base_url, api_key = _config()
-        api_client = AsyncOpenAI(
-            api_key=api_key, base_url=base_url,
-            http_client=httpx.AsyncClient(trust_env=False),
-        )
-        try:
-            prompt = (
-                f"当前 /workspace 下有一个 Python 项目。任务：{case['input_task']}\n"
-                f"完成后必须运行 `{case['test_command']}`，并只做必要修改。"
-            )
-            text, messages = await ask_model_with_raw_client(
-                api_client,
-                prompt,
-                registry,
-                schemas,
-                messages=agent_client.create_initial_messages(registry, memory_runtime=memory),
-                memory_runtime=memory,
-                core_tool_schemas=registry.get_all_schemas("openai"),
-                project_graph=graph_runtime,
-                work_mode=mode,
-            )
-            verify = _run_eval_test(workspace, case["test_command"])
-            after = _snapshot_project_files(workspace)
-            tool_calls = _tool_calls(messages)
-            tool_names = [row["name"] for row in tool_calls]
-            token_summary = memory.load_token_usage_summary(memory.get_current_session_id())
-            visible_read_bytes = _visible_tool_bytes(messages, tool_calls, "ReadFile")
-            invalid_calls = _tool_error_count(messages)
-            tool_errors = _tool_error_details(messages, tool_calls)
-            repeated_calls = len(tool_calls) - len({(row["name"], row["arguments"]) for row in tool_calls})
-            return {
-                "case_id": case["case_id"], "mode": mode, "repeat": repeat,
-                "project_size": case.get("project_size"), "status": "passed" if verify.returncode == 0 else "failed",
-                "passed": verify.returncode == 0, "duration_seconds": round(time.perf_counter() - started, 3),
-                "tool_call_count": len(tool_calls), "tool_names": tool_names,
-                "graph_tool_calls": sum(name in {"ProjectArchitecture", "UnitDependencyGraph"} for name in tool_names),
-                "readfile_visible_bytes": visible_read_bytes, "invalid_tool_calls": invalid_calls,
-                "tool_errors": tool_errors,
-                "repeated_tool_calls": repeated_calls, "prompt_tokens": token_summary.prompt_tokens,
-                "completion_tokens": token_summary.completion_tokens, "total_tokens": token_summary.total_tokens,
-                "changed_files": sorted(path for path in after if before.get(path) != after.get(path)),
-                "pytest_returncode": verify.returncode, "pytest_stdout_tail": verify.stdout[-1000:],
-                "final_answer_tail": text[-1000:],
-            }
-        except Exception as exc:
-            return {"case_id": case["case_id"], "mode": mode, "repeat": repeat, "project_size": case.get("project_size"), "status": "failed", "passed": False, "duration_seconds": round(time.perf_counter() - started, 3), "error": f"{type(exc).__name__}: {exc}"}
-        finally:
-            await graph_runtime.close()
-            await memory.close()
-            await api_client.close()
-
-
-def _code_general_summary(cases: list[dict[str, Any]], rows: list[dict[str, Any]], repeats: int) -> dict[str, Any]:
-    by_mode: dict[str, Any] = {}
-    for mode in ("general", "code"):
-        selected = [row for row in rows if row.get("mode") == mode]
-        passed = [bool(row.get("passed")) for row in selected]
-        by_mode[mode] = {
-            "run_count": len(selected), "success_rate": mean(passed),
-            "success_rate_ci95": bootstrap_mean_ci(passed),
-            "duration_mean_seconds": mean(row.get("duration_seconds", 0) for row in selected),
-            "tool_calls_mean": mean(row.get("tool_call_count", 0) for row in selected),
-            "readfile_visible_bytes_mean": mean(row.get("readfile_visible_bytes", 0) for row in selected),
-            "prompt_tokens_mean": mean(row.get("prompt_tokens", 0) for row in selected),
-            "total_tokens_mean": mean(row.get("total_tokens", 0) for row in selected),
-            "invalid_tool_calls_mean": mean(row.get("invalid_tool_calls", 0) for row in selected),
-            "repeated_tool_calls_mean": mean(row.get("repeated_tool_calls", 0) for row in selected),
-            "graph_tool_calls_mean": mean(row.get("graph_tool_calls", 0) for row in selected),
-        }
-    general, code = by_mode["general"], by_mode["code"]
-    success_delta = code["success_rate"] - general["success_rate"]
-    cost_reductions = {
-        "tool_calls": reduction_rate(general["tool_calls_mean"], code["tool_calls_mean"]),
-        "readfile_visible_bytes": reduction_rate(general["readfile_visible_bytes_mean"], code["readfile_visible_bytes_mean"]),
-        "prompt_tokens": reduction_rate(general["prompt_tokens_mean"], code["prompt_tokens_mean"]),
-        "total_tokens": reduction_rate(general["total_tokens_mean"], code["total_tokens_mean"]),
-    }
-    paired_rows = {
-        mode: {
-            (row.get("case_id"), row.get("repeat")): row
-            for row in rows if row.get("mode") == mode
-        }
-        for mode in ("general", "code")
-    }
-    pair_keys = sorted(
-        set(paired_rows["general"]) & set(paired_rows["code"]), key=str,
-    )
-    metric_fields = {
-        "tool_calls": "tool_call_count",
-        "readfile_visible_bytes": "readfile_visible_bytes",
-        "prompt_tokens": "prompt_tokens",
-        "total_tokens": "total_tokens",
-    }
-    cost_reduction_ci95 = {
-        name: bootstrap_reduction_ci(
-            [paired_rows["general"][key].get(field, 0) for key in pair_keys],
-            [paired_rows["code"][key].get(field, 0) for key in pair_keys],
-        )
-        for name, field in metric_fields.items()
-    }
-    sufficient = len(cases) >= 30 and repeats >= 3 and len(rows) == len(cases) * repeats * 2
-    efficiency_gate = sufficient and success_delta >= -0.05 and any((value or 0) > 0 for value in cost_reductions.values())
-    status = "passed" if sufficient else "insufficient_sample"
-    summary = {
-        "module": "code_general_ab", "status": status, "case_count": len(cases),
-        "run_count": len(rows), "repeats": repeats, "by_mode": by_mode,
-        "code_success_rate_delta": success_delta, "code_cost_reductions": cost_reductions,
-        "code_cost_reduction_ci95": cost_reduction_ci95, "paired_run_count": len(pair_keys),
-        "efficiency_claim_gate_passed": efficiency_gate,
-        "reason": "" if sufficient else "requires 30 cases and 3 repeats per mode",
-    }
-    if efficiency_gate:
-        summary["resume_conclusion"] = "在 30 个开发任务、每模式 3 次的 A/B 中，Code 模式在成功率不劣于 General 5 个百分点的前提下降低了至少一项执行成本。"
-    elif sufficient:
-        summary["resume_conclusion"] = (
-            "30 个开发任务、每模式 3 次的 A/B 中两种模式成功率均为 100%，"
-            "但 Code 的工具调用、可见读取字节和 token 成本均未下降，当前不可宣称 Code 模式提高效率。"
-        )
-    return summary
-
-
 def _tool_calls(messages: list[dict[str, Any]]) -> list[dict[str, str]]:
     rows = []
     for message in messages:
@@ -617,7 +363,7 @@ def _tool_error_details(messages: list[dict[str, Any]], calls: list[dict[str, st
 def write_index() -> Path:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     lines = ["# myCodingAgent 评测索引", "", "每个指标都有独立、可审计的测试文档。`not_run`、`blocked`、`unavailable` 和 `deferred_by_user` 均不构成效果证据。", ""]
-    notes = {"project_graph": "（性能完成，准确率 `not_run`）"}
+    notes: dict[str, str] = {}
     for path in sorted(DOCS_DIR.glob("*.md")):
         if path.name == "README.md":
             continue
@@ -629,31 +375,27 @@ def write_index() -> Path:
         "",
         "## 总体判断",
         "",
-        "本轮评测并不支持‘所有模块均已达到优秀效果’的结论。当前证据较强的部分是前缀缓存、合成上下文虚拟化、正确记忆提供后的利用能力、项目图谱的热读取和增量刷新，以及真实 Runtime 虚拟化在 cold-start 未缓存输入口径下相对渐进式 Claude-style 压缩基线的成本下降；能力路由、图谱首次构建和 Code 模式执行成本仍有明确优化空间。",
+        "本轮评测并不支持‘所有模块均已达到优秀效果’的结论。当前证据较强的部分是前缀缓存、合成上下文虚拟化、正确记忆提供后的利用能力，以及真实 Runtime 虚拟化在 cold-start 未缓存输入口径下相对渐进式 Claude-style 压缩基线的成本下降；能力路由仍有明确优化空间。",
         "",
         "### 证据较强的指标",
         "",
-        "- 前缀缓存：30 个会话、每会话 3 次正式测量，token 加权命中率为 **98.66%**（95% CI **98.6586%–98.6615%**）。该结论基于服务商原生 hit/miss 字段，且项目图谱未常驻 message。",
+        "- 前缀缓存：30 个会话、每会话 3 次正式测量，token 加权命中率为 **98.66%**（95% CI **98.6586%–98.6615%**）。该结论基于服务商原生 hit/miss 字段。",
         "- 上下文虚拟化：在 30 个合成长会话、每策略 3 次的受控实验中，相对 raw 减少 **58.46%** 输入 token，同时保持 **100%** 锚点命中率。该结果不能外推为真实开发任务端到端成功率。",
         "- 长期记忆利用：在 runtime 已提供正确检索结果的条件下，锚点命中率为 **98.89%**（95% CI **96.67%–100%**）。该结果不覆盖记忆抽取、存储和检索召回。",
-        "- 项目图谱性能：热读取平均 **1.90 ms**、p95 **4.62 ms**；单文件增量刷新平均 **1.09 s**、p95 **4.64 s**；峰值内存平均 **17.46 MiB**。",
         "",
         "### 需要继续优化的指标",
         "",
         "- 能力路由：1200 项 Skill/MCP 与 200 条改写查询上，Recall@1 为 **73.0%**，Recall@3 为 **82.5%**，Recall@5 为 **84.5%**（95% CI **79.5%–89.0%**），说明候选召回仍有提升空间。该实验仅覆盖 BGE 候选召回与排序，不代表工具执行正确率。",
-        "- 项目图谱首次构建：平均 **178.56 s**、p50 **92.06 s**、p95 **587.06 s**，大项目冷启动耗时较高。",
-        "- Code / General A/B：两种模式成功率均为 **100%**，但 Code 的工具调用增加 **7.51%**、可见读取字节增加 **5.08%**、Prompt token 增加 **10.09%**、总 token 增加 **9.78%**。当前不能声明 Code 模式或项目图谱提高了 Agent 工作效率。",
         "- 真实 Runtime 上下文虚拟化：30 条轨迹 × 3 次重复 × 4 策略中，Raw 成功率 **100%**、渐进式 Claude-style baseline 成功率 **100%**、Natural 成功率 **97.78%** 且恢复成功率 **97.78%**，质量门禁通过；按 cold-start repeat 0 口径，Natural 相对渐进式 Claude-style baseline 的未缓存输入 token 降低 **29.55%**（95% CI **15.63%–38.92%**）。但 Natural 的 cold-start Prompt token 增加 **107.52%**、总 token 增加 **89.58%**；该结论只支持‘未缓存输入成本下降’，不支持‘总 token 下降’。",
         "",
         "### 尚未获得或不可使用的证据",
         "",
-        "- 项目图谱准确率为 `not_run`：缺少人工标注的符号和调用边，不能声明符号覆盖率、调用精确率或召回率。",
         "- 长期记忆尚无端到端抽取、存储、检索召回和最终任务效果证据。",
         "- Multi-Agent 状态为 `deprecated_incomplete`：标准实验已按计划停止，历史小样本和未配对中止数据均不能用于声明成功率或效率提升。",
         "",
         "### 简历表述建议",
         "",
-        "可以使用前缀缓存 98.66%、上下文虚拟化受控实验减少 58.46% 输入 token、真实 Runtime 虚拟化相对渐进式 Claude-style 压缩基线降低 29.55% cold-start 未缓存输入 token，以及图谱热读/增量刷新性能；必须同时写明样本规模、cold-start 口径和‘不代表总 token 下降’。暂不应声称 Code 模式、项目图谱或 Multi-Agent 提升了端到端开发效率，也不应声称项目图谱和长期记忆已经完成端到端准确率验证。",
+        "可以使用前缀缓存 98.66%、上下文虚拟化受控实验减少 58.46% 输入 token，以及真实 Runtime 虚拟化相对渐进式 Claude-style 压缩基线降低 29.55% cold-start 未缓存输入 token；必须同时写明样本规模、cold-start 口径和‘不代表总 token 下降’。暂不应声称 Multi-Agent 提升了端到端开发效率。",
         "",
         "## 回归验证",
         "",
@@ -704,43 +446,25 @@ def main() -> int:
     sub = parser.add_subparsers(dest="command", required=True)
     sub.add_parser("generate-datasets")
     sub.add_parser("init-docs")
-    prepare = sub.add_parser("prepare-projects")
-    prepare.add_argument("--manifest", default=str(PROJECT_MANIFEST))
-    prepare.add_argument("--destination", default=str(DEFAULT_PROJECTS_ROOT))
-    prepare.add_argument("--force", action="store_true")
-    graph = sub.add_parser("run-project-graph")
-    graph.add_argument("--manifest", default=str(PROJECT_MANIFEST))
-    graph.add_argument("--projects-root", default=str(DEFAULT_PROJECTS_ROOT))
-    graph.add_argument("--annotations", default="tests/eval/annotations")
-    graph.add_argument("--run-id")
     for name, default, repeats in [
         ("run-prefix-cache", "prefix_cache_cases.jsonl", 3),
         ("run-context", "context_virtualization_cases.jsonl", 3),
         ("run-runtime-context-virtualization", "runtime_context_virtualization_cases.jsonl", 3),
         ("run-long-term-memory", "long_term_workflow_cases.jsonl", 3),
         ("run-capability-routing", "capability_routing_1200_cases.jsonl", 1),
-        ("run-code-general-ab", "code_general_tasks.jsonl", 3),
     ]:
         item = sub.add_parser(name)
         item.add_argument("--dataset", default=str(DATASETS / default))
         item.add_argument("--run-id")
         item.add_argument("--repeats", type=int, default=repeats)
         item.add_argument("--limit", type=int)
-    for metric in ("project-graph", "code-general-ab"):
-        item = sub.add_parser(f"defer-{metric}")
-        item.add_argument("--run-id")
     sub.add_parser("report")
     args = parser.parse_args()
     if args.command == "generate-datasets":
         print(json.dumps(generate_all(), ensure_ascii=False, indent=2, sort_keys=True)); return 0
     if args.command == "init-docs":
         initialize_not_run_documents(); print(write_index()); return 0
-    if args.command == "prepare-projects":
-        rows = prepare_public_projects(manifest=Path(args.manifest), destination=Path(args.destination), force=args.force)
-        print(json.dumps(rows, ensure_ascii=False, indent=2, sort_keys=True)); return 0
-    if args.command == "run-project-graph":
-        result, directory = run_project_graph(manifest=Path(args.manifest), projects_root=Path(args.projects_root), annotations=Path(args.annotations), run_id=args.run_id)
-    elif args.command == "run-prefix-cache":
+    if args.command == "run-prefix-cache":
         result, directory = run_prefix_cache(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-context":
         result, directory = run_context(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
@@ -750,12 +474,6 @@ def main() -> int:
         result, directory = run_long_term_memory(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-capability-routing":
         result, directory = run_capability_routing(dataset=Path(args.dataset), run_id=args.run_id)
-    elif args.command == "run-code-general-ab":
-        result, directory = run_code_general_ab(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
-    elif args.command.startswith("defer-"):
-        metric = args.command.removeprefix("defer-").replace("-", "_")
-        directory = defer_metric(metric, reason="用户正在修改项目图谱逻辑；图谱与 Code/General 实测已显式延期。", run_id=args.run_id)
-        result = {"status": "deferred_by_user"}
     elif args.command == "report":
         print(write_index()); return 0
     else:

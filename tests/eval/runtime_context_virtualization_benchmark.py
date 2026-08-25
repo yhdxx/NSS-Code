@@ -131,7 +131,6 @@ async def _run_one_case(
             model=model,
             workspace_root=str(workspace),
         )
-        memory.set_work_mode("general")
         session_id = memory.start_session(model)
         messages = [] if strategy == COST_BASELINE_STRATEGY else _build_seed_messages(
             memory,
@@ -192,7 +191,6 @@ async def _run_one_case(
                 messages=messages,
                 memory_runtime=memory,
                 core_tool_schemas=raw_tool_schemas,
-                work_mode="general",
             )
             await memory.drain()
             token_records = _token_usage_records(db_path, session_id)
@@ -279,7 +277,7 @@ def _build_seed_messages(
                     skills_enabled=False,
                     mcp_enabled=False,
                     memory_enabled=True,
-                    project_graph_enabled=True,
+                    code_intelligence_enabled=True,
                 )
             ),
         },
@@ -451,7 +449,7 @@ async def _build_claude_compression_baseline_messages(
                     skills_enabled=False,
                     mcp_enabled=False,
                     memory_enabled=True,
-                    project_graph_enabled=True,
+                    code_intelligence_enabled=True,
                 )
             ),
         },

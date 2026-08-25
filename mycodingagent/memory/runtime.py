@@ -130,7 +130,6 @@ class MemoryRuntime:
         self._current_turn_summaries: dict[str, dict[str, Any]] = {}
         self._current_turn_summary_calls: int = 0
         self._closed = False
-        self.work_mode = CONFIG.memory.default_work_mode
         self.start_async_writer()
 
     def start_async_writer(self) -> None:
@@ -215,22 +214,12 @@ class MemoryRuntime:
                 workspace_root=self.workspace_root,
                 workspace_label=self.workspace_label,
                 workspace_fingerprint=self.workspace_fingerprint,
-                work_mode=self.work_mode,
             ),
         )
         return self.current_session_id
 
     def get_current_session_id(self) -> str | None:
         return self.current_session_id
-
-    def set_work_mode(self, work_mode: str) -> str:
-        normalized = work_mode.strip().lower()
-        if normalized not in {"general", "code"}:
-            raise ValueError("work_mode must be general or code")
-        self.work_mode = normalized
-        if self.current_session_id:
-            self.store.set_session_work_mode(self.current_session_id, normalized)
-        return normalized
 
     def begin_workspace_checkpoint(self, *, prompt: str, message_index: int) -> None:
         session_id = self.get_current_session_id()
@@ -353,6 +342,7 @@ class MemoryRuntime:
         *,
         session_id: str,
         messages: list[dict[str, Any]],
+        task_graph: Any | None = None,
     ) -> PromptBudgetSnapshot:
         transition_epoch = self.latest_committed_context_epoch(session_id)
         if transition_epoch is None:
@@ -381,7 +371,9 @@ class MemoryRuntime:
             current_summaries={},
             transition_epoch=transition_epoch,
         )
-        return self.prompt_budget_snapshot(rendered)
+        return self.prompt_budget_snapshot(
+            strip_completed_task_graph_messages(rendered, task_graph)
+        )
 
     def latest_committed_context_epoch(self, session_id: str) -> ContextEpochState | None:
         committed = [
@@ -509,7 +501,6 @@ class MemoryRuntime:
                 print("已移除上一轮未完成的工具调用，当前会话可以继续。", flush=True)
             self.store.touch_session(session_id)
             self.current_session_id = session_id
-            self.work_mode = state.work_mode if state.work_mode in {"general", "code"} else CONFIG.memory.default_work_mode
             epoch = state.context_epoch or self.ensure_context_epoch(
                 session_id=session_id,
                 messages=state.messages,
@@ -608,6 +599,9 @@ class MemoryRuntime:
             workspace_label=self.workspace_label,
             workspace_fingerprint=self.workspace_fingerprint,
         )
+        clone_task_graph = getattr(self.store, "clone_active_task_graph", None)
+        if callable(clone_task_graph):
+            clone_task_graph(source_session_id, fork_session_id)
         self.save_messages_now(fork_session_id, fork_messages)
         source_epoch = source_state.context_epoch
         self.context_epoch_manager.create(
@@ -845,7 +839,7 @@ class MemoryRuntime:
         summary_text: str = "",
         persist_snapshot: bool = True,
         current_turn_start: int | None = None,
-        project_graph: Any | None = None,
+        task_graph: Any | None = None,
         extra_tokens: int = 0,
     ) -> list[dict[str, Any]]:
         return self.render_messages_for_model(
@@ -856,7 +850,7 @@ class MemoryRuntime:
             current_turn_start=current_turn_start,
             summary_text=summary_text,
             persist_snapshot=persist_snapshot,
-            project_graph=project_graph,
+            task_graph=task_graph,
             extra_tokens=extra_tokens,
         )
 
@@ -870,11 +864,13 @@ class MemoryRuntime:
         current_turn_start: int | None,
         summary_text: str = "",
         persist_snapshot: bool = True,
-        project_graph: Any | None = None,
+        task_graph: Any | None = None,
         extra_tokens: int = 0,
     ) -> list[dict[str, Any]]:
         active_model = self.model
-        raw_rendered = sanitize_messages_for_model(messages)
+        raw_rendered = sanitize_messages_for_model(
+            strip_completed_task_graph_messages(messages, task_graph)
+        )
         epoch = self.ensure_context_epoch(
             session_id=session_id,
             messages=messages,
@@ -890,22 +886,24 @@ class MemoryRuntime:
             messages,
             epoch.start_message_index,
         )
+        historical_messages = strip_completed_task_graph_messages(historical_messages, task_graph)
+        current_messages = strip_completed_task_graph_messages(current_messages, task_graph)
         historical_turns = self.store.load_historical_turns(session_id) or build_historical_turns(
             session_id,
             historical_messages,
         )
         transition_epoch = self.latest_committed_context_epoch(session_id)
+        virtualized_source = render_virtualized_messages(
+            system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
+            historical_messages=historical_messages,
+            session_id=session_id,
+            historical_turns=historical_turns,
+            transition_epoch=transition_epoch,
+            current_messages=current_messages,
+            current_summaries=self._current_turn_summaries,
+        )
         virtualized_rendered = sanitize_messages_for_model(
-            render_virtualized_messages(
-                system_messages=[message for message in historical_messages if message.get("role") == "system"][:1],
-                historical_messages=historical_messages,
-                session_id=session_id,
-                historical_turns=historical_turns,
-                transition_epoch=transition_epoch,
-                current_messages=current_messages,
-                current_summaries=self._current_turn_summaries,
-                project_graph_bootstrap_messages=live_project_graph_bootstrap_messages(project_graph),
-            )
+            strip_completed_task_graph_messages(virtualized_source, task_graph)
         )
         decision = self._select_context_render(
             session_id=session_id,
@@ -1117,7 +1115,15 @@ class MemoryRuntime:
                 current_turn_start=len(messages),
                 persist_snapshot=False,
             )
-            cold_snapshot = self.cold_context_budget_snapshot(session_id=session_id, messages=messages)
+            latest_task_graph = None
+            load_task_graph = getattr(self.store, "load_latest_task_graph", None)
+            if callable(load_task_graph):
+                latest_task_graph = load_task_graph(session_id)
+            cold_snapshot = self.cold_context_budget_snapshot(
+                session_id=session_id,
+                messages=messages,
+                task_graph=latest_task_graph,
+            )
             turn_state = TurnState(
                 completed=True,
                 pending_tool_call=has_pending_tool_call(messages),
@@ -1431,57 +1437,14 @@ def render_virtualized_messages(
     current_messages: list[dict[str, Any]],
     current_summaries: dict[str, dict[str, Any]],
     transition_epoch: ContextEpochState | None = None,
-    project_graph_bootstrap_messages: list[dict[str, Any]] | None = None,
 ) -> list[dict[str, Any]]:
     rendered: list[dict[str, Any]] = []
     rendered.extend(system_messages[:1])
-    rendered.extend(project_graph_bootstrap_messages or [])
     rendered.extend(render_historical_topology(session_id, historical_messages, historical_turns))
     if transition_epoch is not None:
         rendered.extend(render_context_transition_marker(transition_epoch))
-    rendered.extend(apply_current_summaries(strip_project_graph_bootstrap_messages(current_messages), current_summaries))
+    rendered.extend(apply_current_summaries(current_messages, current_summaries))
     return rendered
-
-
-def live_project_graph_bootstrap_messages(project_graph: Any | None) -> list[dict[str, Any]]:
-    if project_graph is None:
-        return []
-    bootstrap_messages = getattr(project_graph, "bootstrap_messages", None)
-    if not callable(bootstrap_messages):
-        return []
-    try:
-        return sanitize_messages_for_model(bootstrap_messages())
-    except Exception:
-        return []
-
-
-def strip_project_graph_bootstrap_messages(messages: list[dict[str, Any]]) -> list[dict[str, Any]]:
-    return [dict(message) for message in messages if not is_project_graph_bootstrap_message(message)]
-
-
-def is_project_graph_bootstrap_message(message: dict[str, Any]) -> bool:
-    metadata = message.get("metadata")
-    if isinstance(metadata, dict) and metadata.get("project_graph_bootstrap"):
-        return True
-    if message.get("role") == "assistant":
-        for call in message.get("tool_calls") or []:
-            function = call.get("function") if isinstance(call, dict) else {}
-            if str((function or {}).get("name") or "") != "ProjectArchitecture":
-                continue
-            try:
-                args = json.loads(str((function or {}).get("arguments") or "{}"))
-            except json.JSONDecodeError:
-                args = {}
-            if isinstance(args, dict) and args.get("bootstrap") is True:
-                return True
-    if message.get("role") == "tool":
-        content = str(message.get("content") or "")
-        try:
-            payload = json.loads(content)
-        except json.JSONDecodeError:
-            return False
-        return isinstance(payload, dict) and payload.get("graph") == "project_architecture" and payload.get("bootstrap") is True
-    return False
 
 
 def render_context_transition_marker(epoch: ContextEpochState) -> list[dict[str, Any]]:
@@ -1545,8 +1508,6 @@ def render_historical_topology(
             metadata_by_call_id[metadata.tool_call_id] = metadata
     rendered: list[dict[str, Any]] = []
     for message in messages[system_offset:]:
-        if is_project_graph_bootstrap_message(message):
-            continue
         role = message.get("role")
         if role == "tool":
             tool_call_id = str(message.get("tool_call_id") or "")
@@ -1822,6 +1783,64 @@ def sanitize_messages_for_model(messages: list[dict[str, Any]]) -> list[dict[str
     return sanitized
 
 
+def strip_completed_task_graph_messages(
+    messages: list[dict[str, Any]],
+    task_graph: Any | None,
+) -> list[dict[str, Any]]:
+    """Hide completed task work only from model rendering; canonical history is untouched."""
+    payloads: list[dict[str, Any]] = []
+    if task_graph is not None:
+        getter = getattr(task_graph, "completed_boundaries", None)
+        if callable(getter):
+            try:
+                payloads = [item for item in getter() if isinstance(item, dict)]
+            except Exception:
+                payloads = []
+        getter = getattr(task_graph, "context_boundary", None)
+        if not payloads and callable(getter):
+            try:
+                payload = getter()
+            except Exception:
+                payload = None
+            if isinstance(payload, dict):
+                payloads = [payload]
+        if not payloads:
+            getter = getattr(task_graph, "runtime_payload", None)
+            payload = getter() if callable(getter) else task_graph
+            if isinstance(payload, dict):
+                payloads = [payload]
+    if not payloads:
+        return messages
+    graph_ids = {
+        str(payload.get("task_graph_id") or "")
+        for payload in payloads
+        if payload.get("status") == "completed" and payload.get("task_graph_id")
+    }
+    if not graph_ids:
+        return messages
+    # A tool-call batch is an indivisible OpenAI message protocol unit.  The
+    # assistant message and every immediately following tool result must be
+    # hidden together; removing only the tagged assistant message leaves
+    # orphaned `role=tool` messages and causes a 400 on the next request.
+    hidden_call_ids: set[str] = set()
+    hidden: list[dict[str, Any]] = []
+    for message in messages:
+        metadata = message.get("metadata")
+        message_graph_id = str(metadata.get("task_graph_id") or "") if isinstance(metadata, dict) else ""
+        role = message.get("role")
+        if role == "assistant" and message_graph_id in graph_ids:
+            hidden_call_ids.update(
+                str(call.get("id") or "")
+                for call in message.get("tool_calls") or []
+                if isinstance(call, dict) and call.get("id")
+            )
+            continue
+        if role == "tool" and (message_graph_id in graph_ids or str(message.get("tool_call_id") or "") in hidden_call_ids):
+            continue
+        hidden.append(message)
+    return hidden
+
+
 def build_historical_turns(session_id: str, messages: list[dict[str, Any]]) -> list[HistoricalTurn]:
     turns: list[HistoricalTurn] = []
     system_offset = 1 if messages and messages[0].get("role") == "system" else 0
@@ -1829,9 +1848,6 @@ def build_historical_turns(session_id: str, messages: list[dict[str, Any]]) -> l
     turn_index = 0
     while index < len(messages):
         message = messages[index]
-        if is_project_graph_bootstrap_message(message):
-            index += 1
-            continue
         if message.get("role") != "user":
             index += 1
             continue
@@ -1844,9 +1860,6 @@ def build_historical_turns(session_id: str, messages: list[dict[str, Any]]) -> l
         call_index = 0
         while index < len(messages):
             current = messages[index]
-            if is_project_graph_bootstrap_message(current):
-                index += 1
-                continue
             role = current.get("role")
             if role == "user":
                 break

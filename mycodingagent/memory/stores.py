@@ -71,6 +71,7 @@ class SQLiteMemoryStore:
                     "session_plan_runtime",
                     "session_plans",
                     "session_plan_steps",
+                    "session_task_graphs",
                 ),
             )
             conn.execute(
@@ -87,8 +88,7 @@ class SQLiteMemoryStore:
                     latest_file_state_json TEXT NOT NULL DEFAULT '{}',
                     workspace_root TEXT NOT NULL DEFAULT '',
                     workspace_label TEXT NOT NULL DEFAULT '',
-                    workspace_fingerprint TEXT NOT NULL DEFAULT '',
-                    work_mode TEXT NOT NULL DEFAULT 'general'
+                    workspace_fingerprint TEXT NOT NULL DEFAULT ''
                 )
                 """
             )
@@ -135,6 +135,22 @@ class SQLiteMemoryStore:
                     status TEXT NOT NULL,
                     note TEXT NOT NULL DEFAULT '',
                     PRIMARY KEY (plan_id, step_id)
+                )
+                """
+            )
+            conn.execute(
+                """
+                CREATE TABLE IF NOT EXISTS session_task_graphs (
+                    task_graph_id TEXT PRIMARY KEY,
+                    session_id TEXT NOT NULL,
+                    plan_id TEXT NOT NULL DEFAULT '',
+                    plan_step_id TEXT NOT NULL DEFAULT '',
+                    status TEXT NOT NULL,
+                    graph_json TEXT NOT NULL,
+                    start_message_index INTEGER,
+                    end_message_index INTEGER,
+                    created_at REAL NOT NULL,
+                    updated_at REAL NOT NULL
                 )
                 """
             )
@@ -412,7 +428,6 @@ class SQLiteMemoryStore:
         workspace_root: str = "",
         workspace_label: str = "",
         workspace_fingerprint: str = "",
-        work_mode: str | None = None,
     ) -> None:
         now = time()
         with self._connect() as conn:
@@ -420,9 +435,9 @@ class SQLiteMemoryStore:
                 """
                 INSERT INTO sessions(
                     session_id, created_at, updated_at, last_accessed_at, model, status,
-                    workspace_root, workspace_label, workspace_fingerprint, work_mode
+                    workspace_root, workspace_label, workspace_fingerprint
                 )
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 ON CONFLICT(session_id) DO UPDATE SET
                     updated_at=excluded.updated_at,
                     last_accessed_at=excluded.last_accessed_at,
@@ -433,8 +448,7 @@ class SQLiteMemoryStore:
                     END,
                     workspace_root=CASE WHEN excluded.workspace_root != '' THEN excluded.workspace_root ELSE sessions.workspace_root END,
                     workspace_label=CASE WHEN excluded.workspace_label != '' THEN excluded.workspace_label ELSE sessions.workspace_label END,
-                    workspace_fingerprint=CASE WHEN excluded.workspace_fingerprint != '' THEN excluded.workspace_fingerprint ELSE sessions.workspace_fingerprint END,
-                    work_mode=CASE WHEN ? IN ('general', 'code') THEN excluded.work_mode ELSE sessions.work_mode END
+                    workspace_fingerprint=CASE WHEN excluded.workspace_fingerprint != '' THEN excluded.workspace_fingerprint ELSE sessions.workspace_fingerprint END
                 """,
                 (
                     session_id,
@@ -446,25 +460,8 @@ class SQLiteMemoryStore:
                     workspace_root,
                     workspace_label,
                     workspace_fingerprint,
-                    work_mode if work_mode in {"general", "code"} else "general",
-                    work_mode,
                 ),
             )
-
-    def set_session_work_mode(self, session_id: str, work_mode: str) -> None:
-        if work_mode not in {"general", "code"}:
-            raise ValueError("work_mode must be general or code")
-        now = time()
-        with self._connect() as conn:
-            conn.execute(
-                "UPDATE sessions SET work_mode = ?, updated_at = ?, last_accessed_at = ? WHERE session_id = ?",
-                (work_mode, now, now, session_id),
-            )
-
-    def get_session_work_mode(self, session_id: str) -> str:
-        with self._connect() as conn:
-            row = conn.execute("SELECT work_mode FROM sessions WHERE session_id = ?", (session_id,)).fetchone()
-        return str(row["work_mode"] or "general") if row is not None else "general"
 
     def set_interaction_mode(self, session_id: str, interaction_mode: str) -> None:
         if interaction_mode not in {"normal", "plan"}:
@@ -569,6 +566,124 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM session_plan_steps WHERE plan_id = ?", (row["plan_id"],))
             conn.execute("DELETE FROM session_plans WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_plan_runtime WHERE session_id = ?", (session_id,))
+
+    def save_task_graph(self, graph: dict[str, object]) -> None:
+        with self._connect() as conn:
+            conn.execute(
+                """
+                INSERT INTO session_task_graphs(
+                    task_graph_id, session_id, plan_id, plan_step_id, status, graph_json,
+                    start_message_index, end_message_index, created_at, updated_at
+                ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                ON CONFLICT(task_graph_id) DO UPDATE SET
+                    status=excluded.status,
+                    graph_json=excluded.graph_json,
+                    start_message_index=excluded.start_message_index,
+                    end_message_index=excluded.end_message_index,
+                    updated_at=excluded.updated_at
+                """,
+                (
+                    str(graph.get("task_graph_id") or ""),
+                    str(graph.get("session_id") or ""),
+                    str(graph.get("plan_id") or ""),
+                    str(graph.get("plan_step_id") or ""),
+                    str(graph.get("status") or "active"),
+                    json.dumps(graph, ensure_ascii=False, sort_keys=True),
+                    graph.get("start_message_index"),
+                    graph.get("end_message_index"),
+                    float(graph.get("created_at") or time()),
+                    float(graph.get("updated_at") or time()),
+                ),
+            )
+
+    def load_active_task_graph(self, session_id: str) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT graph_json FROM session_task_graphs WHERE session_id = ? AND status = 'active' ORDER BY updated_at DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["graph_json"] or "{}"))
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def load_latest_task_graph(self, session_id: str) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute(
+                "SELECT graph_json FROM session_task_graphs WHERE session_id = ? ORDER BY updated_at DESC LIMIT 1",
+                (session_id,),
+            ).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["graph_json"] or "{}"))
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def load_completed_task_graphs(self, session_id: str) -> list[dict[str, object]]:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT graph_json FROM session_task_graphs WHERE session_id = ? AND status = 'completed' ORDER BY updated_at",
+                (session_id,),
+            ).fetchall()
+        result: list[dict[str, object]] = []
+        for row in rows:
+            try:
+                value = json.loads(str(row["graph_json"] or "{}"))
+            except json.JSONDecodeError:
+                continue
+            if isinstance(value, dict):
+                result.append(value)
+        return result
+
+    def load_task_graph(self, task_graph_id: str) -> dict[str, object] | None:
+        with self._connect() as conn:
+            row = conn.execute("SELECT graph_json FROM session_task_graphs WHERE task_graph_id = ?", (task_graph_id,)).fetchone()
+        if row is None:
+            return None
+        try:
+            value = json.loads(str(row["graph_json"] or "{}"))
+        except json.JSONDecodeError:
+            return None
+        return value if isinstance(value, dict) else None
+
+    def supersede_active_task_graphs(self, session_id: str) -> None:
+        with self._connect() as conn:
+            rows = conn.execute(
+                "SELECT task_graph_id, graph_json FROM session_task_graphs WHERE session_id = ? AND status = 'active'",
+                (session_id,),
+            ).fetchall()
+            for row in rows:
+                try:
+                    graph = json.loads(str(row["graph_json"] or "{}"))
+                except json.JSONDecodeError:
+                    graph = {}
+                if isinstance(graph, dict):
+                    graph["status"] = "superseded"
+                    graph["updated_at"] = time()
+                conn.execute(
+                    "UPDATE session_task_graphs SET status = 'superseded', graph_json = ?, updated_at = ? WHERE task_graph_id = ?",
+                    (json.dumps(graph, ensure_ascii=False, sort_keys=True), time(), row["task_graph_id"]),
+                )
+
+    def clone_active_task_graph(self, source_session_id: str, target_session_id: str) -> dict[str, object] | None:
+        graph = self.load_active_task_graph(source_session_id)
+        if graph is None:
+            return None
+        from uuid import uuid4
+
+        cloned = json.loads(json.dumps(graph, ensure_ascii=False))
+        cloned["task_graph_id"] = uuid4().hex
+        cloned["session_id"] = target_session_id
+        cloned["start_message_index"] = None
+        cloned["end_message_index"] = None
+        cloned["updated_at"] = time()
+        self.save_task_graph(cloned)
+        return cloned
 
     def save_messages(self, *, session_id: str, messages: list[dict]) -> None:
         now = time()
@@ -1227,6 +1342,7 @@ class SQLiteMemoryStore:
             conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
             conn.execute("DELETE FROM execution_records WHERE session_id = ?", (session_id,))
+            conn.execute("DELETE FROM session_task_graphs WHERE session_id = ?", (session_id,))
             self._delete_plan_state(conn, session_id)
             return cursor.rowcount > 0
 
@@ -1262,6 +1378,7 @@ class SQLiteMemoryStore:
                 conn.execute("DELETE FROM historical_session_refs WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM session_token_usage WHERE session_id = ?", (session_id,))
                 conn.execute("DELETE FROM execution_records WHERE session_id = ?", (session_id,))
+                conn.execute("DELETE FROM session_task_graphs WHERE session_id = ?", (session_id,))
                 self._delete_plan_state(conn, session_id)
             return len(session_ids)
 
@@ -1286,8 +1403,7 @@ class SQLiteMemoryStore:
                     last_accessed_at,
                     workspace_root,
                     workspace_label,
-                    workspace_fingerprint,
-                    work_mode
+                    workspace_fingerprint
                 FROM sessions
                 WHERE session_id = ?
                 """,
@@ -1306,7 +1422,6 @@ class SQLiteMemoryStore:
             workspace_root=row["workspace_root"],
             workspace_label=row["workspace_label"],
             workspace_fingerprint=row["workspace_fingerprint"],
-            work_mode=row["work_mode"] or "general",
             token_usage=self.load_token_usage_summary(session_id),
             context_epoch=self.load_active_context_epoch(session_id),
         )

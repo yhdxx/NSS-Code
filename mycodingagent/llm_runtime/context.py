@@ -27,13 +27,12 @@ class ContextBudgetState:
 
 @dataclass(frozen=True)
 class RuntimeContext:
-    work_mode: str = "general"
     interaction_mode: str = "normal"
     context_render_mode: str = "raw"
     workspace_changes: WorkspaceChanges = field(default_factory=WorkspaceChanges)
     context_budget: ContextBudgetState | None = None
     capabilities: dict[str, Any] | None = None
-    project_graph: dict[str, Any] | None = None
+    task_graph: dict[str, Any] | None = None
     task_snapshot: str | None = None
     long_term_memory: dict[str, Any] | None = None
     tool_policy: dict[str, Any] | None = None
@@ -45,7 +44,6 @@ class RuntimeContext:
 
     def stable_payload(self) -> dict[str, Any]:
         payload: dict[str, Any] = {
-            "work_mode": self.work_mode,
             "interaction_mode": self.interaction_mode,
             "context_render_mode": self.context_render_mode,
         }
@@ -57,8 +55,8 @@ class RuntimeContext:
             payload["plan"] = self.plan
         if self.capabilities:
             payload["capabilities"] = self.capabilities
-        if self.project_graph:
-            payload["project_graph"] = self.project_graph
+        if self.task_graph:
+            payload["task_graph"] = self.task_graph
         if self.long_term_memory:
             payload["long_term_memory"] = self.long_term_memory
         if self.context_budget is not None:
@@ -99,9 +97,8 @@ class RuntimeContextBuilder:
         *,
         workspace_tracker: Any | None = None,
         context_mode: str = "raw",
-        work_mode: str = "general",
         capabilities: Any | None = None,
-        project_graph: Any | None = None,
+        task_graph: Any | None = None,
         long_term_memory: dict[str, Any] | None = None,
         interaction_mode: str = "normal",
         tool_policy: dict[str, Any] | None = None,
@@ -111,9 +108,8 @@ class RuntimeContextBuilder:
     ) -> None:
         self.workspace_tracker = workspace_tracker
         self.context_mode = context_mode
-        self.work_mode = work_mode
         self.capabilities = capabilities
-        self.project_graph = project_graph
+        self.task_graph = task_graph
         self.long_term_memory = long_term_memory
         self.interaction_mode = interaction_mode
         self.tool_policy = tool_policy
@@ -123,12 +119,11 @@ class RuntimeContextBuilder:
 
     def build(self) -> RuntimeContext:
         return RuntimeContext(
-            work_mode=self.work_mode,
             interaction_mode=self.interaction_mode,
             context_render_mode=self.context_mode,
             workspace_changes=self._workspace_changes(),
             capabilities=self._capability_payload(),
-            project_graph=self._project_graph_payload(),
+            task_graph=self._task_graph_payload(),
             long_term_memory=self.long_term_memory,
             tool_policy=self.tool_policy,
             plan=self.plan,
@@ -155,11 +150,11 @@ class RuntimeContextBuilder:
             payload = self.capabilities
         return payload if isinstance(payload, dict) else None
 
-    def _project_graph_payload(self) -> dict[str, Any] | None:
-        if self.project_graph is None:
+    def _task_graph_payload(self) -> dict[str, Any] | None:
+        if self.task_graph is None:
             return None
-        runtime_payload = getattr(self.project_graph, "runtime_payload", None)
-        payload = runtime_payload() if callable(runtime_payload) else self.project_graph
+        runtime_payload = getattr(self.task_graph, "runtime_payload", None)
+        payload = runtime_payload() if callable(runtime_payload) else self.task_graph
         return payload if isinstance(payload, dict) else None
 
 class PromptRenderer:

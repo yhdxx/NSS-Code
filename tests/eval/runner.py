@@ -393,7 +393,7 @@ async def _run_long_term_workflow_async(cases: list[dict[str, Any]]) -> list[dic
     return rows
 
 
-def _workspace_registry(workspace: Path, memory_runtime: Any, project_graph_service: Any | None = None) -> Any:
+def _workspace_registry(workspace: Path, memory_runtime: Any, dynamic_dependency_runtime: Any | None = None) -> Any:
     from mycodingagent.tool_runtime import ToolRegistry
     from mycodingagent.tool_runtime.bash import Bash
     from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
@@ -430,13 +430,13 @@ def _workspace_registry(workspace: Path, memory_runtime: Any, project_graph_serv
     )
     registry.register(Glob(sandbox_root=workspace))
     registry.register(Grep(sandbox_root=workspace))
-    if project_graph_service is not None:
-        from mycodingagent.tool_runtime.project_graph import (
-            ProjectArchitectureTool, UnitDependencyGraphTool, UpdateProjectDescriptionTool,
-        )
-        registry.register(ProjectArchitectureTool(project_graph_service))
-        registry.register(UnitDependencyGraphTool(project_graph_service))
-        registry.register(UpdateProjectDescriptionTool(project_graph_service))
+    if dynamic_dependency_runtime is not None:
+        from mycodingagent.code_intelligence.dynamic_dependency import DynamicDependencyRuntime
+        from mycodingagent.tool_runtime.project_graph import QueryUnitDependencyTool, UpdateUnitDescriptionTool
+        dynamic_runtime = dynamic_dependency_runtime if isinstance(dynamic_dependency_runtime, DynamicDependencyRuntime) else None
+        if dynamic_runtime is not None:
+            registry.register(UpdateUnitDescriptionTool(dynamic_runtime))
+            registry.register(QueryUnitDependencyTool(dynamic_runtime))
     registry.register(CommitWorkingContext(memory_runtime))
     registry.register(BatchRecoverContext(memory_runtime))
     registry.register(RestoreSession(memory_runtime))
