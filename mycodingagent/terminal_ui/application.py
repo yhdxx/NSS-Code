@@ -1,6 +1,7 @@
 from __future__ import annotations
 
 import asyncio
+import re
 import sys
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -34,6 +35,7 @@ from mycodingagent.terminal_ui.theme import (
 
 
 MAX_OUTPUT_CHARS = 500_000
+STREAM_REFRESH_INTERVAL_SECONDS = 0.05
 QUEUE_PREVIEW_TITLE = (
     "Messages to be submitted after next tool call (press esc to interrupt and send immediately)"
 )
@@ -143,6 +145,7 @@ class TerminalApplication:
         self._stream_active = False
         self._stream_label = "模型"
         self._stream_text = ""
+        self._stream_refresh_handle: asyncio.TimerHandle | None = None
         self._command_registry: CommandRegistry | None = None
         self._command_suggestions: list[CommandSpec] = []
         self._command_selection_index: int | None = None
@@ -274,6 +277,7 @@ class TerminalApplication:
         )
 
     def _stream_start(self, label: str) -> None:
+        self._cancel_stream_refresh()
         self._stream_active = True
         self._stream_label = label
         self._stream_text = ""
@@ -284,7 +288,7 @@ class TerminalApplication:
             return
         self._stream_text += text
         self.notify_agent_output()
-        self._invalidate()
+        self._schedule_stream_refresh()
 
     def _stream_finish(
         self,
@@ -292,6 +296,7 @@ class TerminalApplication:
         *,
         renderer: Callable[..., None] | None = None,
     ) -> None:
+        self._cancel_stream_refresh()
         self._stream_active = False
         rendered = text or self._stream_text
         self._stream_text = ""
@@ -305,12 +310,43 @@ class TerminalApplication:
         *,
         renderer: Callable[..., None] | None = None,
     ) -> None:
+        self._cancel_stream_refresh()
         self._stream_active = False
         rendered = text or self._stream_text
         self._stream_text = ""
         if rendered:
             self._enqueue_assistant_render(rendered, renderer=renderer)
         self._invalidate()
+
+    def _stream_reset(self) -> None:
+        self._cancel_stream_refresh()
+        self._stream_active = False
+        self._stream_text = ""
+        self._invalidate()
+
+    def _schedule_stream_refresh(self) -> None:
+        """Coalesce provider deltas into bounded prompt-toolkit redraws."""
+        if self._stream_refresh_handle is not None:
+            return
+        loop = self._loop
+        if loop is None or not loop.is_running():
+            self._invalidate()
+            return
+        self._stream_refresh_handle = loop.call_later(
+            STREAM_REFRESH_INTERVAL_SECONDS,
+            self._flush_stream_refresh,
+        )
+
+    def _flush_stream_refresh(self) -> None:
+        self._stream_refresh_handle = None
+        if self._stream_active:
+            self._invalidate()
+
+    def _cancel_stream_refresh(self) -> None:
+        handle = self._stream_refresh_handle
+        self._stream_refresh_handle = None
+        if handle is not None:
+            handle.cancel()
 
     def mark_ready(self) -> None:
         """Expose the normal composer after startup initialization has completed."""
@@ -563,9 +599,9 @@ class TerminalApplication:
                 wrap_lines=True,
                 style="class:stream.text",
             ),
-            # Text is emitted incrementally; keeping the cumulative preview
-            # window would print old frames into terminal scrollback.
-            filter=Condition(lambda: False),
+            # This is a prompt-toolkit owned, replaceable preview. Persistent
+            # assistant output is only written once the stream completes.
+            filter=Condition(self._has_stream_preview),
         )
         plan_selection = ConditionalContainer(
             Window(
@@ -961,7 +997,8 @@ class TerminalApplication:
             rows = max(8, size.rows)
             columns = max(10, size.columns)
         max_rows = max(2, rows - self._input_height().preferred - 4)
-        text = f"{self._stream_label}:\n{self._stream_text}"
+        preview, _in_code_block = self._stream_preview_text(columns, rows)
+        text = f"{self._stream_label}:\n{preview}"
         visual_lines = sum(
             max(1, (max(1, get_cwidth(line)) + columns - 1) // columns)
             for line in text.splitlines() or [""]
@@ -975,16 +1012,22 @@ class TerminalApplication:
             size = self._prompt_output.get_size()
             rows = max(8, size.rows)
             columns = max(10, size.columns)
+        text, starts_in_code_block = self._stream_preview_text(columns, rows)
+        fragments: list[tuple[str, str]] = [
+            ("class:stream.label", f"{self._stream_label}:\n"),
+        ]
+        fragments.extend(_format_stream_markdown(text, starts_in_code_block=starts_in_code_block))
+        return FormattedText(fragments)
+
+    def _has_stream_preview(self) -> bool:
+        return self._stream_active
+
+    def _stream_preview_text(self, columns: int, rows: int) -> tuple[str, bool]:
         max_chars = max(columns * max(2, rows - 6), columns)
-        text = self._stream_text
-        if len(text) > max_chars:
-            text = "...\n" + text[-max_chars:]
-        return FormattedText(
-            [
-                ("class:stream.label", f"{self._stream_label}:\n"),
-                ("class:stream.text", text),
-            ]
-        )
+        if len(self._stream_text) <= max_chars:
+            return self._stream_text, False
+        omitted = self._stream_text[:-max_chars]
+        return "...\n" + self._stream_text[-max_chars:], _is_inside_code_fence(omitted)
 
     def _plan_selection_height(self) -> Dimension:
         rows = 24
@@ -1129,9 +1172,46 @@ class TerminalAssistantStream:
         if self._finished:
             return
         self._started = False
-        self._terminal._stream_active = False
-        self._terminal._stream_text = ""
-        self._terminal._invalidate()
+        self._terminal._stream_reset()
+
+
+def _is_inside_code_fence(text: str) -> bool:
+    return sum(1 for line in text.splitlines() if line.lstrip().startswith("```")) % 2 == 1
+
+
+def _format_stream_markdown(text: str, *, starts_in_code_block: bool = False) -> list[tuple[str, str]]:
+    """Format stable Markdown constructs without reparsing the full Rich document."""
+    fragments: list[tuple[str, str]] = []
+    in_code_block = starts_in_code_block
+    for line in text.splitlines(keepends=True) or [""]:
+        stripped = line.lstrip()
+        if stripped.startswith("```"):
+            fragments.append(("class:stream.code_block", line))
+            in_code_block = not in_code_block
+        elif in_code_block:
+            fragments.append(("class:stream.code_block", line))
+        elif re.match(r"^\s*#{1,6}\s+", line):
+            fragments.append(("class:stream.heading", line))
+        elif re.match(r"^\s*(?:[-*+]|\d+\.)\s+", line):
+            fragments.extend(_format_stream_inline(line, "class:stream.list"))
+        elif re.match(r"^\s*>\s?", line):
+            fragments.extend(_format_stream_inline(line, "class:stream.quote"))
+        else:
+            fragments.extend(_format_stream_inline(line, "class:stream.text"))
+    return fragments
+
+
+def _format_stream_inline(text: str, base_style: str) -> list[tuple[str, str]]:
+    fragments: list[tuple[str, str]] = []
+    cursor = 0
+    for match in re.finditer(r"`([^`]+)`", text):
+        if match.start() > cursor:
+            fragments.append((base_style, text[cursor : match.start()]))
+        fragments.append(("class:stream.inline_code", match.group(0)))
+        cursor = match.end()
+    if cursor < len(text) or not fragments:
+        fragments.append((base_style, text[cursor:]))
+    return fragments
 
 
 def current_terminal() -> TerminalApplication | None:

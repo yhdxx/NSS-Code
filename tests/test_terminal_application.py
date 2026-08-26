@@ -532,6 +532,56 @@ def test_streaming_assistant_region_survives_resize_and_keeps_input_working() ->
     asyncio.run(scenario())
 
 
+def test_stream_preview_formats_markdown_and_is_discarded_before_final_render() -> None:
+    terminal = TerminalApplication(stdin=io.StringIO(), stdout=io.StringIO())
+    terminal._stream_start("模型")
+    terminal._stream_delta("# 标题\n\n- `ReadFile`\n\n```python\nprint('ok')")
+
+    rendered = terminal._formatted_stream()
+
+    assert terminal._has_stream_preview() is True
+    assert ("class:stream.heading", "# 标题\n") in rendered
+    assert ("class:stream.inline_code", "`ReadFile`") in rendered
+    assert ("class:stream.code_block", "print('ok')") in rendered
+
+    terminal._stream_finish("完成", renderer=None)
+
+    assert terminal._has_stream_preview() is False
+    assert terminal._stream_text == ""
+
+
+def test_stream_preview_refreshes_are_coalesced() -> None:
+    async def scenario() -> None:
+        master_fd, slave_fd = pty.openpty()
+        input_stream = os.fdopen(os.dup(slave_fd), "r", encoding="utf-8", buffering=1)
+        output_stream = os.fdopen(os.dup(slave_fd), "w", encoding="utf-8", buffering=1)
+        terminal = TerminalApplication(stdin=input_stream, stdout=output_stream)
+        try:
+            await terminal.start()
+            terminal.mark_ready()
+            stream = terminal.begin_assistant_stream("模型")
+            stream.delta("第一段")
+            first_handle = terminal._stream_refresh_handle
+            stream.delta("第二段")
+
+            assert first_handle is not None
+            assert terminal._stream_refresh_handle is first_handle
+            assert "第一段第二段" in "".join(text for _style, text in terminal._formatted_stream())
+
+            await asyncio.sleep(0.08)
+            assert terminal._stream_refresh_handle is None
+            stream.reset()
+            assert terminal._has_stream_preview() is False
+        finally:
+            await terminal.close()
+            input_stream.close()
+            output_stream.close()
+            os.close(master_fd)
+            os.close(slave_fd)
+
+    asyncio.run(scenario())
+
+
 def test_builtin_stream_commits_final_answer_once(monkeypatch) -> None:
     async def scenario() -> None:
         output = io.StringIO()
