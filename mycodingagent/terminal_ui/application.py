@@ -1,7 +1,6 @@
 from __future__ import annotations
 
 import asyncio
-import re
 import sys
 from collections.abc import Callable
 from contextvars import ContextVar
@@ -27,6 +26,11 @@ from prompt_toolkit.utils import get_cwidth
 
 from mycodingagent.commands import CommandRegistry, CommandSpec
 from mycodingagent.terminal_ui.message_queue import FollowUpSignal, MessageQueue
+from mycodingagent.terminal_ui.streaming_markdown import (
+    MarkdownStreamCollector,
+    StreamingMarkdownRenderer,
+    visual_line_count,
+)
 from mycodingagent.terminal_ui.theme import (
     ACTIVE_USER_ANSI,
     RESET_ANSI,
@@ -145,6 +149,8 @@ class TerminalApplication:
         self._stream_active = False
         self._stream_label = "模型"
         self._stream_text = ""
+        self._stream_collector = MarkdownStreamCollector()
+        self._stream_renderer = StreamingMarkdownRenderer()
         self._stream_refresh_handle: asyncio.TimerHandle | None = None
         self._command_registry: CommandRegistry | None = None
         self._command_suggestions: list[CommandSpec] = []
@@ -281,12 +287,18 @@ class TerminalApplication:
         self._stream_active = True
         self._stream_label = label
         self._stream_text = ""
+        self._stream_collector.clear()
+        self._stream_renderer.reset()
         self._invalidate()
 
     def _stream_delta(self, text: str) -> None:
         if not text:
             return
         self._stream_text += text
+        self._stream_collector.push_delta(text)
+        if not self._stream_collector.commit_complete_source():
+            return
+        self._stream_renderer.update(self._stream_collector.committed_source)
         self.notify_agent_output()
         self._schedule_stream_refresh()
 
@@ -299,7 +311,10 @@ class TerminalApplication:
         self._cancel_stream_refresh()
         self._stream_active = False
         rendered = text or self._stream_text
+        self._stream_collector.finalize()
         self._stream_text = ""
+        self._stream_collector.clear()
+        self._stream_renderer.reset()
         if rendered:
             self._enqueue_assistant_render(rendered, renderer=renderer)
         self._invalidate()
@@ -313,7 +328,10 @@ class TerminalApplication:
         self._cancel_stream_refresh()
         self._stream_active = False
         rendered = text or self._stream_text
+        self._stream_collector.finalize()
         self._stream_text = ""
+        self._stream_collector.clear()
+        self._stream_renderer.reset()
         if rendered:
             self._enqueue_assistant_render(rendered, renderer=renderer)
         self._invalidate()
@@ -322,6 +340,8 @@ class TerminalApplication:
         self._cancel_stream_refresh()
         self._stream_active = False
         self._stream_text = ""
+        self._stream_collector.clear()
+        self._stream_renderer.reset()
         self._invalidate()
 
     def _schedule_stream_refresh(self) -> None:
@@ -997,12 +1017,8 @@ class TerminalApplication:
             rows = max(8, size.rows)
             columns = max(10, size.columns)
         max_rows = max(2, rows - self._input_height().preferred - 4)
-        preview, _in_code_block = self._stream_preview_text(columns, rows)
-        text = f"{self._stream_label}:\n{preview}"
-        visual_lines = sum(
-            max(1, (max(1, get_cwidth(line)) + columns - 1) // columns)
-            for line in text.splitlines() or [""]
-        )
+        preview = self._stream_preview_fragments(columns, rows)
+        visual_lines = 1 + visual_line_count(preview, columns=columns)
         return Dimension.exact(min(max_rows, visual_lines))
 
     def _formatted_stream(self) -> FormattedText:
@@ -1012,22 +1028,18 @@ class TerminalApplication:
             size = self._prompt_output.get_size()
             rows = max(8, size.rows)
             columns = max(10, size.columns)
-        text, starts_in_code_block = self._stream_preview_text(columns, rows)
         fragments: list[tuple[str, str]] = [
             ("class:stream.label", f"{self._stream_label}:\n"),
         ]
-        fragments.extend(_format_stream_markdown(text, starts_in_code_block=starts_in_code_block))
+        fragments.extend(self._stream_preview_fragments(columns, rows))
         return FormattedText(fragments)
 
     def _has_stream_preview(self) -> bool:
         return self._stream_active
 
-    def _stream_preview_text(self, columns: int, rows: int) -> tuple[str, bool]:
+    def _stream_preview_fragments(self, columns: int, rows: int) -> list[tuple[str, str]]:
         max_chars = max(columns * max(2, rows - 6), columns)
-        if len(self._stream_text) <= max_chars:
-            return self._stream_text, False
-        omitted = self._stream_text[:-max_chars]
-        return "...\n" + self._stream_text[-max_chars:], _is_inside_code_fence(omitted)
+        return self._stream_renderer.preview(max_chars=max_chars)
 
     def _plan_selection_height(self) -> Dimension:
         rows = 24
@@ -1173,45 +1185,6 @@ class TerminalAssistantStream:
             return
         self._started = False
         self._terminal._stream_reset()
-
-
-def _is_inside_code_fence(text: str) -> bool:
-    return sum(1 for line in text.splitlines() if line.lstrip().startswith("```")) % 2 == 1
-
-
-def _format_stream_markdown(text: str, *, starts_in_code_block: bool = False) -> list[tuple[str, str]]:
-    """Format stable Markdown constructs without reparsing the full Rich document."""
-    fragments: list[tuple[str, str]] = []
-    in_code_block = starts_in_code_block
-    for line in text.splitlines(keepends=True) or [""]:
-        stripped = line.lstrip()
-        if stripped.startswith("```"):
-            fragments.append(("class:stream.code_block", line))
-            in_code_block = not in_code_block
-        elif in_code_block:
-            fragments.append(("class:stream.code_block", line))
-        elif re.match(r"^\s*#{1,6}\s+", line):
-            fragments.append(("class:stream.heading", line))
-        elif re.match(r"^\s*(?:[-*+]|\d+\.)\s+", line):
-            fragments.extend(_format_stream_inline(line, "class:stream.list"))
-        elif re.match(r"^\s*>\s?", line):
-            fragments.extend(_format_stream_inline(line, "class:stream.quote"))
-        else:
-            fragments.extend(_format_stream_inline(line, "class:stream.text"))
-    return fragments
-
-
-def _format_stream_inline(text: str, base_style: str) -> list[tuple[str, str]]:
-    fragments: list[tuple[str, str]] = []
-    cursor = 0
-    for match in re.finditer(r"`([^`]+)`", text):
-        if match.start() > cursor:
-            fragments.append((base_style, text[cursor : match.start()]))
-        fragments.append(("class:stream.inline_code", match.group(0)))
-        cursor = match.end()
-    if cursor < len(text) or not fragments:
-        fragments.append((base_style, text[cursor:]))
-    return fragments
 
 
 def current_terminal() -> TerminalApplication | None:

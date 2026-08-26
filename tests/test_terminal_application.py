@@ -535,14 +535,14 @@ def test_streaming_assistant_region_survives_resize_and_keeps_input_working() ->
 def test_stream_preview_formats_markdown_and_is_discarded_before_final_render() -> None:
     terminal = TerminalApplication(stdin=io.StringIO(), stdout=io.StringIO())
     terminal._stream_start("模型")
-    terminal._stream_delta("# 标题\n\n- `ReadFile`\n\n```python\nprint('ok')")
+    terminal._stream_delta("# 标题\n\n- `ReadFile`\n\n```python\nprint('ok')\n```\n")
 
     rendered = terminal._formatted_stream()
 
     assert terminal._has_stream_preview() is True
-    assert ("class:stream.heading", "# 标题\n") in rendered
-    assert ("class:stream.inline_code", "`ReadFile`") in rendered
-    assert ("class:stream.code_block", "print('ok')") in rendered
+    assert ("class:stream.heading", "标题") in rendered
+    assert ("class:stream.inline_code", "ReadFile") in rendered
+    assert any(style == "class:stream.code_string" and "ok" in text for style, text in rendered)
 
     terminal._stream_finish("完成", renderer=None)
 
@@ -561,8 +561,10 @@ def test_stream_preview_refreshes_are_coalesced() -> None:
             terminal.mark_ready()
             stream = terminal.begin_assistant_stream("模型")
             stream.delta("第一段")
+            assert terminal._stream_refresh_handle is None
+            stream.delta("第二段\n")
             first_handle = terminal._stream_refresh_handle
-            stream.delta("第二段")
+            stream.delta("第三段\n")
 
             assert first_handle is not None
             assert terminal._stream_refresh_handle is first_handle
