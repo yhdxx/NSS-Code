@@ -155,6 +155,12 @@ def test_tool_calls_are_grouped_not_mixed_raw_json(capsys):
     assert output.index("• Bash") > output.index("• Explored")
 
 
+def test_glob_call_summary_shows_requested_path_type(capsys):
+    render_tool_calls([_call("Glob", pattern="*", path=".", type="directories")])
+
+    assert "Search directories * in ." in capsys.readouterr().out
+
+
 def test_rendering_does_not_mutate_tool_calls():
     calls = [
         _call("ReadFile", file_path="mycodingagent/terminal_ui/output.py", offset=0, limit=10),

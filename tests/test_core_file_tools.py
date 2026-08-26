@@ -86,6 +86,25 @@ def test_glob_truncation_is_deterministic_and_file_path_is_rejected(tmp_path, mo
     assert "必须是目录" in invalid.output
 
 
+def test_glob_filters_files_directories_or_both_and_marks_directories(tmp_path) -> None:
+    (tmp_path / "empty").mkdir()
+    (tmp_path / "src").mkdir()
+    (tmp_path / "src" / "main.py").write_text("", encoding="utf-8")
+    tool = Glob(tmp_path)
+
+    files = run(tool.execute(GlobParams(pattern="*", path=".", type="files")))
+    directories = run(tool.execute(GlobParams(pattern="*", path=".", type="directories")))
+    both = run(tool.execute(GlobParams(pattern="*", path=".", type="both")))
+    nested_directories = run(
+        tool.execute(GlobParams(pattern="**/*", path=".", type="directories"))
+    )
+
+    assert files.output == "没有匹配的路径。"
+    assert directories.output.splitlines() == ["empty/", "src/"]
+    assert both.output.splitlines() == ["empty/", "src/"]
+    assert nested_directories.output.splitlines() == ["empty/", "src/"]
+
+
 def test_read_file_validates_ranges_and_reports_continuation(tmp_path) -> None:
     source = tmp_path / "source.txt"
     source.write_text("one\ntwo\nthree\n", encoding="utf-8")

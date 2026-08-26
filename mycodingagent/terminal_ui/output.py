@@ -487,7 +487,12 @@ def read_call_summary(call: _ToolCallView) -> _ReadSummary:
     if call.name == "Glob":
         pattern = compact_one_line(call.args.get("pattern"), 80)
         path = compact_one_line(call.args.get("path") or ".", 80)
-        return _ReadSummary("Search", f"files {pattern} in {path}")
+        path_type = str(call.args.get("type") or "both")
+        target = {"files": "files", "directories": "directories", "both": "paths"}.get(
+            path_type,
+            "paths",
+        )
+        return _ReadSummary("Search", f"{target} {pattern} in {path}")
     if call.name == "Grep":
         pattern = compact_one_line(call.args.get("pattern"), 80)
         path = compact_one_line(call.args.get("path") or ".", 80)
