@@ -69,6 +69,14 @@ class _InputResult:
     eof: bool = False
 
 
+@dataclass(frozen=True)
+class _RenderEvent:
+    """A queued terminal event with optional rich rendering semantics."""
+
+    plain_text: str
+    renderer: Callable[[TextIO], None] | None = None
+
+
 class _TerminalStream:
     def __init__(self, terminal: TerminalApplication, fallback: TextIO) -> None:
         self.terminal = terminal
@@ -116,7 +124,7 @@ class TerminalApplication:
         self._output_lock = RLock()
         self._message_queue = MessageQueue()
         self._response_queue: asyncio.Queue[_InputResult] = asyncio.Queue()
-        self._render_queue: asyncio.Queue[str] = asyncio.Queue()
+        self._render_queue: asyncio.Queue[str | _RenderEvent] = asyncio.Queue()
         self._ready = False
         self._modal_input = False
         self._agent_busy = False
@@ -254,34 +262,54 @@ class TerminalApplication:
     def begin_assistant_stream(
         self,
         label: str = "模型",
+        *,
+        markdown_renderer: Callable[..., None] | None = None,
+        text_renderer: Callable[..., None] | None = None,
     ) -> "TerminalAssistantStream":
-        return TerminalAssistantStream(self, label)
+        return TerminalAssistantStream(
+            self,
+            label,
+            markdown_renderer=markdown_renderer,
+            text_renderer=text_renderer,
+        )
 
     def _stream_start(self, label: str) -> None:
         self._stream_active = True
         self._stream_label = label
         self._stream_text = ""
-        self.emit(f"{label}：")
         self._invalidate()
 
     def _stream_delta(self, text: str) -> None:
         if not text:
             return
         self._stream_text += text
-        self.emit(text)
         self.notify_agent_output()
         self._invalidate()
 
-    def _stream_finish(self, _text: str, *, markdown: bool) -> None:
+    def _stream_finish(
+        self,
+        text: str,
+        *,
+        renderer: Callable[..., None] | None = None,
+    ) -> None:
         self._stream_active = False
+        rendered = text or self._stream_text
         self._stream_text = ""
-        self.emit("\n")
+        if rendered:
+            self._enqueue_assistant_render(rendered, renderer=renderer)
         self._invalidate()
 
-    def _stream_abort(self, _text: str) -> None:
+    def _stream_abort(
+        self,
+        text: str,
+        *,
+        renderer: Callable[..., None] | None = None,
+    ) -> None:
         self._stream_active = False
+        rendered = text or self._stream_text
         self._stream_text = ""
-        self.emit("\n")
+        if rendered:
+            self._enqueue_assistant_render(rendered, renderer=renderer)
         self._invalidate()
 
     def mark_ready(self) -> None:
@@ -733,6 +761,12 @@ class TerminalApplication:
 
         style = prompt_toolkit_style()
         self._prompt_output = create_output(stdout=self.stdout)
+        # Some terminals and PTY wrappers do not answer cursor-position
+        # reports. `run_in_terminal` waits for that response before flushing
+        # persistent output, which can otherwise leave model answers stuck in
+        # the render queue and echo fragments of the escape sequence.
+        if hasattr(self._prompt_output, "enable_cpr"):
+            self._prompt_output.enable_cpr = False
         self._application = Application(
             layout=Layout(root, focused_element=self._loading_control),
             key_bindings=key_bindings,
@@ -752,22 +786,54 @@ class TerminalApplication:
 
     async def _consume_output(self) -> None:
         while True:
-            text = await self._render_queue.get()
+            event = await self._render_queue.get()
             try:
-                await run_in_terminal(lambda: self._write_rendered(text))
+                if isinstance(event, _RenderEvent) and event.renderer is not None:
+                    await run_in_terminal(lambda: event.renderer(self.stdout))
+                else:
+                    text = event.plain_text if isinstance(event, _RenderEvent) else event
+                    await run_in_terminal(lambda: self._write_rendered(text))
             finally:
                 self._render_queue.task_done()
 
     def _write_rendered(self, text: str) -> None:
-        if self._prompt_output is None:
-            return
-        self._prompt_output.write_raw(text)
-        self._prompt_output.flush()
+        # Persistent agent output must bypass prompt_toolkit's redraw buffer.
+        # Writing through `Output.write_raw` lets the next redraw erase the
+        # answer, which is especially visible for streamed model deltas.
+        self.stdout.write(text)
+        self.stdout.flush()
 
     def _enqueue_output(self, text: str) -> None:
         with self._output_lock:
             self._append_output(text)
         self._render_queue.put_nowait(text)
+
+    def _enqueue_assistant_render(
+        self,
+        text: str,
+        *,
+        renderer: Callable[..., None] | None,
+    ) -> None:
+        label = self._stream_label
+        plain_text = f"{label}：{text}\n"
+
+        with self._output_lock:
+            self._append_output(plain_text)
+        if renderer is None:
+            if not self.is_tty:
+                self.stdout.write(plain_text)
+                self.stdout.flush()
+                return
+            self._render_queue.put_nowait(_RenderEvent(plain_text=plain_text))
+            return
+
+        def render(output: TextIO) -> None:
+            renderer(text, label=label, file=output)
+
+        if not self.is_tty:
+            render(self.stdout)
+            return
+        self._render_queue.put_nowait(_RenderEvent(plain_text=plain_text, renderer=render))
 
     def _apply_clear(self) -> None:
         with self._output_lock:
@@ -1020,9 +1086,14 @@ class TerminalAssistantStream:
         self,
         terminal: TerminalApplication,
         label: str,
+        *,
+        markdown_renderer: Callable[..., None] | None = None,
+        text_renderer: Callable[..., None] | None = None,
     ) -> None:
         self._terminal = terminal
         self._label = label
+        self._markdown_renderer = markdown_renderer
+        self._text_renderer = text_renderer
         self._started = False
         self._finished = False
 
@@ -1045,19 +1116,18 @@ class TerminalAssistantStream:
         self._finished = True
         if not self._started:
             self.start()
-        self._terminal._stream_finish(text, markdown=markdown)
+        renderer = self._markdown_renderer if markdown else self._text_renderer
+        self._terminal._stream_finish(text, renderer=renderer)
 
     def abort(self, text: str) -> None:
         if self._finished:
             return
         self._finished = True
-        self._terminal._stream_abort(text)
+        self._terminal._stream_abort(text, renderer=self._text_renderer)
 
     def reset(self) -> None:
         if self._finished:
             return
-        if self._started and self._terminal._stream_text:
-            self._terminal.emit("\n")
         self._started = False
         self._terminal._stream_active = False
         self._terminal._stream_text = ""
@@ -1070,11 +1140,18 @@ def current_terminal() -> TerminalApplication | None:
 
 def create_assistant_stream(
     label: str = "模型",
+    *,
+    markdown_renderer: Callable[..., None] | None = None,
+    text_renderer: Callable[..., None] | None = None,
 ) -> TerminalAssistantStream | None:
     terminal = current_terminal()
     if terminal is None or not terminal.is_tty:
         return None
-    return terminal.begin_assistant_stream(label)
+    return terminal.begin_assistant_stream(
+        label,
+        markdown_renderer=markdown_renderer,
+        text_renderer=text_renderer,
+    )
 
 
 async def request_text(prompt: str) -> str:

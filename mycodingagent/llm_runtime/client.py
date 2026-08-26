@@ -802,7 +802,11 @@ async def ask_model(  # 执行一次用户请求的完整 agent 循环：问模�
             stream_kwargs["bash_classifier"] = bash_classifier
         provider = model_manager.active_provider()
         active_model = provider.model
-        stream_sink = create_assistant_stream("模型")
+        stream_sink = create_assistant_stream(
+            "模型",
+            markdown_renderer=render_assistant_markdown,
+            text_renderer=render_assistant_text,
+        )
         stream_result = normalize_stream_result(
             await provider.stream_chat(
                 ChatRequest(
