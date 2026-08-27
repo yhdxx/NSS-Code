@@ -18,6 +18,7 @@ def write_jsonl(path: Path, rows: list[dict[str, Any]]) -> None:
 
 def generate_all(output_dir: Path = DATASET_DIR) -> dict[str, int]:
     datasets = {
+        "context_compression_100k_cases.jsonl": generate_context_compression_100k_cases(),
         "code_general_tasks.jsonl": generate_code_general_tasks(),
         "context_virtualization_cases.jsonl": generate_context_virtualization_cases(),
         "runtime_context_virtualization_cases.jsonl": generate_runtime_context_virtualization_cases(),
@@ -33,6 +34,47 @@ def generate_all(output_dir: Path = DATASET_DIR) -> dict[str, int]:
         write_jsonl(output_dir / name, rows)
         counts[name] = len(rows)
     return counts
+
+
+def generate_context_compression_100k_cases() -> list[dict[str, Any]]:
+    cases = [
+        ("early_tool_fact", "V100_TOOL", "ledger_core", "ledger_adapter.py"),
+        ("early_user_constraint", "V100_RULE", "auth_core", "auth_adapter.py"),
+        ("topic_return", "V100_TOPIC", "pricing_core", "pricing_adapter.py"),
+        ("historical_error", "V100_ERROR", "payment_core", "payment_adapter.py"),
+    ]
+    return [
+        {
+            "case_id": f"ctx100k_{index:02d}_{category}",
+            "category": category,
+            "initial_user": (
+                f"Record the early engineering constraint for {category}; preserve exact identifiers for later recall."
+            ),
+            "critical_evidence": (
+                f"CRITICAL_RECORD code={code} forbidden_module={module} adapter_path={adapter} "
+                f"case={index:02d} category={category}."
+            ),
+            "tool_name": "ReadFile",
+            "tool_arguments": {"path": f"/workspace/evidence/{category}_{index:02d}.txt", "intent": "load early benchmark evidence"},
+            "tool_output": (
+                f"CRITICAL_RECORD code={code} forbidden_module={module} adapter_path={adapter} "
+                f"case={index:02d} category={category}."
+            ),
+            "filler_turn_count": 36,
+            "large_noise_turns": [6, 12, 18, 24, 30, 36],
+            "noise_unit": f"ctx100k_noise_{index:02d}",
+            "noise_line_count": 750,
+            "requires_recoverable_tool_output": True,
+            "expected_answer_contains": [code, module, adapter],
+            "final_query": (
+                "Return the exact early record code, forbidden module, and adapter path in one sentence. "
+                "Use recovery only when the evidence is no longer visible."
+            ),
+            "target_ratio": 0.90,
+            "compression_full_history": True,
+        }
+        for index, (category, code, module, adapter) in enumerate(cases, start=1)
+    ]
 
 
 def generate_runtime_context_virtualization_cases() -> list[dict[str, Any]]:

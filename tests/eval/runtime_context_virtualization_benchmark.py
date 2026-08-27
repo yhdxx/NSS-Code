@@ -18,6 +18,7 @@ from tests.eval.metrics import (
     percentile,
     reduction_rate,
 )
+from mycodingagent.memory.budget import estimate_tokens
 
 
 QUALITY_REFERENCE_STRATEGY = "raw"
@@ -38,6 +39,8 @@ def run_runtime_context_virtualization_benchmark(
     repeats: int,
     limit: int | None,
     run_dir: Path,
+    context_window_override: int | None = None,
+    baseline_trigger_ratio: float | None = None,
 ) -> tuple[dict[str, Any], list[dict[str, Any]]]:
     cases = _read_jsonl(dataset)
     if limit:
@@ -58,6 +61,8 @@ def run_runtime_context_virtualization_benchmark(
             repeats=repeats,
             checkpoint=run_dir / "details.in_progress.jsonl",
             benchmark_salt=run_dir.parent.name,
+            context_window_override=context_window_override,
+            baseline_trigger_ratio=baseline_trigger_ratio,
         )
     )
     return _summary(cases, details, repeats), details
@@ -72,6 +77,8 @@ async def _run_cases(
     repeats: int,
     checkpoint: Path,
     benchmark_salt: str,
+    context_window_override: int | None = None,
+    baseline_trigger_ratio: float | None = None,
 ) -> list[dict[str, Any]]:
     details = _read_jsonl(checkpoint) if checkpoint.exists() else []
     completed = {(row.get("case_id"), row.get("strategy"), row.get("repeat")) for row in details}
@@ -90,6 +97,8 @@ async def _run_cases(
                     base_url=base_url,
                     api_key=api_key,
                     benchmark_salt=benchmark_salt,
+                    context_window_override=context_window_override,
+                    baseline_trigger_ratio=baseline_trigger_ratio,
                 )
                 details.append(row)
                 write_jsonl(checkpoint, details)
@@ -106,6 +115,8 @@ async def _run_one_case(
     base_url: str,
     api_key: str,
     benchmark_salt: str,
+    context_window_override: int | None = None,
+    baseline_trigger_ratio: float | None = None,
 ) -> dict[str, Any]:
     import httpx
     from openai import AsyncOpenAI
@@ -117,7 +128,7 @@ async def _run_one_case(
     from mycodingagent.tool_runtime import create_default_registry
 
     started = time.perf_counter()
-    context_window = _context_window_for_strategy(strategy)
+    context_window = context_window_override or _context_window_for_strategy(strategy)
     with tempfile.TemporaryDirectory(prefix=f"mca_runtime_ctx_{strategy}_{ordinal:02d}_") as temporary:
         root = Path(temporary)
         workspace = root / "workspace"
@@ -143,6 +154,8 @@ async def _run_one_case(
             await memory.drain()
         if strategy == "forced_virtualized":
             memory.force_context_virtualized(session_id)
+        elif strategy == "raw":
+            memory.disable_auto_context_compression = True
         from mycodingagent.tool_runtime.command_policy import BashPolicyEvaluator, BashPolicyStore
 
         registry = create_default_registry(
@@ -165,6 +178,8 @@ async def _run_one_case(
                     case,
                     model=model,
                     benchmark_salt=benchmark_salt,
+                    context_window=context_window,
+                    trigger_ratio=baseline_trigger_ratio or 0.80,
                 )
                 memory.save_messages_now(session_id, messages)
                 await memory.drain()
@@ -189,6 +204,7 @@ async def _run_one_case(
                 registry,
                 tools,
                 messages=messages,
+                model=model,
                 memory_runtime=memory,
                 core_tool_schemas=raw_tool_schemas,
             )
@@ -339,7 +355,9 @@ def _build_seed_messages(
                 ensure_ascii=False,
                 sort_keys=True,
             )
-            noise_output = _noise_blob(str(case["noise_unit"]), turn)
+            noise_output = _noise_blob(
+                str(case["noise_unit"]), turn, line_count=int(case.get("noise_line_count", 45))
+            )
             noise_output_id = memory.save_tool_output(
                 session_id=session_id,
                 tool_call_id=noise_call_id,
@@ -387,21 +405,39 @@ async def _build_claude_compression_baseline_messages(
     *,
     model: str,
     benchmark_salt: str,
+    context_window: int = 1_000_000,
+    trigger_ratio: float = 0.80,
 ) -> list[dict[str, Any]]:
     from mycodingagent.llm_runtime import client as agent_client
     from mycodingagent.llm_runtime.system_prompt import PromptFeatures, build_system_prompt
 
     recent_messages = _claude_recent_messages(case)
     summary_text = ""
-    for epoch_index, end_turn in enumerate(
-        range(
-            CLAUDE_BASELINE_COMPRESSION_INTERVAL,
-            int(case["filler_turn_count"]) + 1,
-            CLAUDE_BASELINE_COMPRESSION_INTERVAL,
-        ),
-        start=1,
-    ):
-        segment = _claude_compression_segment(case, end_turn=end_turn)
+    compression_ends: list[int] = []
+    filler_turn_count = int(case["filler_turn_count"])
+    for end_turn in range(1, filler_turn_count + 1):
+        segment = _claude_compression_segment(
+            case,
+            end_turn=end_turn,
+            full_history=bool(case.get("compression_full_history")),
+        )
+        candidate = _claude_compression_prompt(
+            case,
+            previous_summary=summary_text,
+            segment=segment,
+            epoch_index=len(compression_ends) + 1,
+            end_turn=end_turn,
+            benchmark_salt=benchmark_salt,
+        )
+        if estimate_tokens(candidate) >= int(context_window * trigger_ratio):
+            compression_ends.append(end_turn)
+            break
+    for epoch_index, end_turn in enumerate(compression_ends, start=1):
+        segment = _claude_compression_segment(
+            case,
+            end_turn=end_turn,
+            full_history=bool(case.get("compression_full_history")),
+        )
         compression_messages = _claude_compression_prompt(
             case,
             previous_summary=summary_text,
@@ -486,8 +522,13 @@ def _claude_recent_messages(case: dict[str, Any]) -> list[dict[str, Any]]:
     return messages
 
 
-def _claude_compression_segment(case: dict[str, Any], *, end_turn: int) -> str:
-    start_turn = max(1, end_turn - CLAUDE_BASELINE_COMPRESSION_INTERVAL + 1)
+def _claude_compression_segment(
+    case: dict[str, Any],
+    *,
+    end_turn: int,
+    full_history: bool = False,
+) -> str:
+    start_turn = 1 if full_history else max(1, end_turn - CLAUDE_BASELINE_COMPRESSION_INTERVAL + 1)
     parts: list[str] = []
     if start_turn == 1:
         parts.extend(
@@ -506,7 +547,11 @@ def _claude_compression_segment(case: dict[str, Any], *, end_turn: int) -> str:
             parts.extend(
                 [
                     f"Tool output at turn {turn}:",
-                    _noise_blob(str(case["noise_unit"]), turn),
+                    _noise_blob(
+                        str(case["noise_unit"]),
+                        turn,
+                        line_count=int(case.get("noise_line_count", 45)),
+                    ),
                 ]
             )
         parts.append(f"Assistant turn {turn}: Acknowledged interleaved request {turn}.")
@@ -573,10 +618,10 @@ def _first_nonempty_line(text: str) -> str:
     return "暂未描述"
 
 
-def _noise_blob(unit: str, turn: int) -> str:
+def _noise_blob(unit: str, turn: int, *, line_count: int = 45) -> str:
     return "\n".join(
-        f"{unit}_{turn}_{line:03d}: unrelated log payload for context pressure."
-        for line in range(45)
+        f"{unit}_{turn}_{line:04d}: unrelated log payload for context pressure."
+        for line in range(max(1, line_count))
     )
 
 

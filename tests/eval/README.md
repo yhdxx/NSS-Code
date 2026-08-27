@@ -20,6 +20,7 @@ PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner init-docs
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-capability-routing
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-prefix-cache --repeats 3
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-context --repeats 3
+PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-context-compression-100k --repeats 2
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner run-long-term-memory --repeats 3
 PYTHONPATH=. .venv/bin/python -m tests.eval.modern_runner report
 ```

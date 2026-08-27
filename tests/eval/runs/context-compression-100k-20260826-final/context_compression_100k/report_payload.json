@@ -1,0 +1,4 @@
+{
+  "command": "python3 -m tests.eval.modern_runner run-context-compression-100k --dataset tests/eval/datasets/context_compression_100k_cases.jsonl --repeats 2",
+  "metric": "context_compression_100k"
+}

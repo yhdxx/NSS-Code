@@ -1,0 +1,27 @@
+{
+  "base_url": "https://api.deepseek.com",
+  "dataset_path": "tests/eval/datasets/context_compression_100k_cases.jsonl",
+  "dataset_sha256": "5f2d3f533dfc5c3c2bc147fccea2ad8e4ef9049165fedd062d4fef32b33de737",
+  "extra": {
+    "baseline_trigger_ratio": 0.8,
+    "context_window": 100000,
+    "runtime_path": "MemoryRuntime.prepare_messages_for_model -> ask_model",
+    "strategies": [
+      "raw",
+      "claude_compression_baseline",
+      "forced_virtualized",
+      "natural"
+    ],
+    "synthetic_prompt_only": false
+  },
+  "generated_at": "2026-08-26T22:52:16+0800",
+  "git_commit": "f1a309995f4fe3e382061426f845de98127ac451",
+  "git_dirty": true,
+  "model": "deepseek-v4-pro",
+  "platform": "Linux-5.4.0-216-generic-x86_64-with-glibc2.31",
+  "python": "3.12.6",
+  "random_seed": 20260801,
+  "repeats": 2,
+  "run_id": "context-compression-100k-20260826-final",
+  "tool_schema_hash": "ba7189c376e71df34d845b0405648a4489bd0b27760dc64d53ab3b4515c8545c"
+}

@@ -1643,6 +1643,31 @@ def test_context_switches_to_virtualized_when_raw_usage_exceeds_threshold(tmp_pa
     assert output_id in rendered[3]["content"]
 
 
+def test_raw_quality_reference_can_disable_automatic_compression(tmp_path, monkeypatch):
+    runtime = MemoryRuntime(
+        store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"),
+        context_window=1200,
+    )
+    runtime.disable_auto_context_compression = True
+    session_id = runtime.start_session("test")
+
+    def unexpected_switch(**_kwargs):
+        raise AssertionError("automatic RAW -> virtualized transition must be disabled")
+
+    monkeypatch.setattr(runtime, "_should_switch_to_virtualized", unexpected_switch)
+    decision = runtime._select_context_render(
+        session_id=session_id,
+        raw_messages=[{"role": "system", "content": "system"}, {"role": "user", "content": "x" * 5000}],
+        virtualized_messages=[{"role": "system", "content": "system"}],
+        tools=[],
+        current_prompt="inspect",
+    )
+
+    assert decision.mode == ContextMode.RAW
+    assert decision.switched is False
+    assert runtime.context_mode(session_id) == ContextMode.RAW
+
+
 def test_virtualized_tool_metadata_prefers_model_intent(tmp_path):
     runtime = MemoryRuntime(store=SQLiteMemoryStore(tmp_path / "memory.sqlite3"))
     session_id = runtime.start_session("test")

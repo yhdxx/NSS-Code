@@ -130,6 +130,51 @@ def run_runtime_context_virtualization(
     return summary, run_dir
 
 
+def run_context_compression_100k(
+    *, dataset: Path, run_id: str | None, repeats: int, limit: int | None
+) -> tuple[dict[str, Any], Path]:
+    actual_id, run_dir, metadata = _start(
+        "context_compression_100k",
+        run_id,
+        dataset,
+        repeats,
+        extra={
+            "runtime_path": "MemoryRuntime.prepare_messages_for_model -> ask_model",
+            "strategies": ["raw", "claude_compression_baseline", "forced_virtualized", "natural"],
+            "context_window": 100000,
+            "baseline_trigger_ratio": 0.80,
+            "synthetic_prompt_only": False,
+        },
+    )
+    model, base_url, api_key = _config()
+    summary, details = run_runtime_context_virtualization_benchmark(
+        dataset,
+        model=model,
+        base_url=base_url,
+        api_key=api_key,
+        repeats=repeats,
+        limit=limit,
+        run_dir=run_dir,
+        context_window_override=100000,
+        baseline_trigger_ratio=0.80,
+    )
+    summary["module"] = "context_compression_100k"
+    summary["context_window"] = 100000
+    summary["baseline_trigger_ratio"] = 0.80
+    complete_metric_run(
+        metric="context_compression_100k",
+        run_dir=run_dir,
+        summary=summary,
+        metadata=metadata,
+        details=details,
+        command=(
+            "python3 -m tests.eval.modern_runner run-context-compression-100k "
+            f"--dataset {dataset} --repeats {repeats}"
+        ),
+    )
+    return summary, run_dir
+
+
 async def _run_context(
     cases: list[dict[str, Any]], model: str, base_url: str, api_key: str, repeats: int,
     *, checkpoint_path: Path | None = None, concurrency: int = 6,
@@ -363,7 +408,9 @@ def _tool_error_details(messages: list[dict[str, Any]], calls: list[dict[str, st
 def write_index() -> Path:
     DOCS_DIR.mkdir(parents=True, exist_ok=True)
     lines = ["# myCodingAgent 评测索引", "", "每个指标都有独立、可审计的测试文档。`not_run`、`blocked`、`unavailable` 和 `deferred_by_user` 均不构成效果证据。", ""]
-    notes: dict[str, str] = {}
+    notes: dict[str, str] = {
+        "project_graph": "（性能完成，准确率 `not_run`）",
+    }
     for path in sorted(DOCS_DIR.glob("*.md")):
         if path.name == "README.md":
             continue
@@ -375,27 +422,30 @@ def write_index() -> Path:
         "",
         "## 总体判断",
         "",
-        "本轮评测并不支持‘所有模块均已达到优秀效果’的结论。当前证据较强的部分是前缀缓存、合成上下文虚拟化、正确记忆提供后的利用能力，以及真实 Runtime 虚拟化在 cold-start 未缓存输入口径下相对渐进式 Claude-style 压缩基线的成本下降；能力路由仍有明确优化空间。",
+        "本轮评测并不支持‘所有模块均已达到优秀效果’的结论。当前证据较强的部分是前缀缓存、正确记忆提供后的利用能力和项目图谱的热读取与增量刷新；能力路由、图谱首次构建和 Code 模式执行成本仍有明确优化空间。上下文压缩的 100K 定向评测样本不足，不能作为正式效果证据。",
         "",
         "### 证据较强的指标",
         "",
-        "- 前缀缓存：30 个会话、每会话 3 次正式测量，token 加权命中率为 **98.66%**（95% CI **98.6586%–98.6615%**）。该结论基于服务商原生 hit/miss 字段。",
-        "- 上下文虚拟化：在 30 个合成长会话、每策略 3 次的受控实验中，相对 raw 减少 **58.46%** 输入 token，同时保持 **100%** 锚点命中率。该结果不能外推为真实开发任务端到端成功率。",
+        "- 前缀缓存：30 个会话、每会话 3 次正式测量，token 加权命中率为 **98.66%**（95% CI **98.6586%–98.6615%**）。该结论基于服务商原生 hit/miss 字段，且项目图谱未常驻 message。",
         "- 长期记忆利用：在 runtime 已提供正确检索结果的条件下，锚点命中率为 **98.89%**（95% CI **96.67%–100%**）。该结果不覆盖记忆抽取、存储和检索召回。",
+        "- 项目图谱性能：热读取平均 **1.90 ms**、p95 **4.62 ms**；单文件增量刷新平均 **1.09 s**、p95 **4.64 s**；峰值内存平均 **17.46 MiB**。",
         "",
         "### 需要继续优化的指标",
         "",
         "- 能力路由：1200 项 Skill/MCP 与 200 条改写查询上，Recall@1 为 **73.0%**，Recall@3 为 **82.5%**，Recall@5 为 **84.5%**（95% CI **79.5%–89.0%**），说明候选召回仍有提升空间。该实验仅覆盖 BGE 候选召回与排序，不代表工具执行正确率。",
-        "- 真实 Runtime 上下文虚拟化：30 条轨迹 × 3 次重复 × 4 策略中，Raw 成功率 **100%**、渐进式 Claude-style baseline 成功率 **100%**、Natural 成功率 **97.78%** 且恢复成功率 **97.78%**，质量门禁通过；按 cold-start repeat 0 口径，Natural 相对渐进式 Claude-style baseline 的未缓存输入 token 降低 **29.55%**（95% CI **15.63%–38.92%**）。但 Natural 的 cold-start Prompt token 增加 **107.52%**、总 token 增加 **89.58%**；该结论只支持‘未缓存输入成本下降’，不支持‘总 token 下降’。",
+        "- 项目图谱首次构建：平均 **178.56 s**、p50 **92.06 s**、p95 **587.06 s**，大项目冷启动耗时较高。",
+        "- Code / General A/B：两种模式成功率均为 **100%**，但 Code 的工具调用增加 **7.51%**、可见读取字节增加 **5.08%**、Prompt token 增加 **10.09%**、总 token 增加 **9.78%**。当前不能声明 Code 模式或项目图谱提高了 Agent 工作效率。",
+        "- 上下文压缩 100K 定向评测：4 个 case × 4 策略 × 2 次重复，四种策略任务成功率均为 **100%**；Natural 平均 Prompt token **17,100**，摘要 + 最近 10 轮基线为 **2,274**，Raw 参考为 **97,916**。该样本状态为 `insufficient_sample`，只能用于验证机制和相对趋势，不能宣称 1M 窗口下的效果。",
         "",
         "### 尚未获得或不可使用的证据",
         "",
         "- 长期记忆尚无端到端抽取、存储、检索召回和最终任务效果证据。",
+        "- 项目图谱准确率为 `not_run`：缺少人工标注的符号和调用边，不能声明符号覆盖率、调用精确率或召回率。",
         "- Multi-Agent 状态为 `deprecated_incomplete`：标准实验已按计划停止，历史小样本和未配对中止数据均不能用于声明成功率或效率提升。",
         "",
         "### 简历表述建议",
         "",
-        "可以使用前缀缓存 98.66%、上下文虚拟化受控实验减少 58.46% 输入 token，以及真实 Runtime 虚拟化相对渐进式 Claude-style 压缩基线降低 29.55% cold-start 未缓存输入 token；必须同时写明样本规模、cold-start 口径和‘不代表总 token 下降’。暂不应声称 Multi-Agent 提升了端到端开发效率。",
+        "可以使用前缀缓存 98.66% 以及图谱热读/增量刷新性能；必须同时写明样本规模。100K 上下文压缩结果仅可作为探索性结果，不能外推到 1M，也不应声称 Code 模式、项目图谱或 Multi-Agent 提升了端到端开发效率。",
         "",
         "## 回归验证",
         "",
@@ -450,6 +500,7 @@ def main() -> int:
         ("run-prefix-cache", "prefix_cache_cases.jsonl", 3),
         ("run-context", "context_virtualization_cases.jsonl", 3),
         ("run-runtime-context-virtualization", "runtime_context_virtualization_cases.jsonl", 3),
+        ("run-context-compression-100k", "context_compression_100k_cases.jsonl", 2),
         ("run-long-term-memory", "long_term_workflow_cases.jsonl", 3),
         ("run-capability-routing", "capability_routing_1200_cases.jsonl", 1),
     ]:
@@ -470,6 +521,8 @@ def main() -> int:
         result, directory = run_context(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-runtime-context-virtualization":
         result, directory = run_runtime_context_virtualization(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
+    elif args.command == "run-context-compression-100k":
+        result, directory = run_context_compression_100k(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-long-term-memory":
         result, directory = run_long_term_memory(dataset=Path(args.dataset), run_id=args.run_id, repeats=max(1, args.repeats), limit=args.limit)
     elif args.command == "run-capability-routing":

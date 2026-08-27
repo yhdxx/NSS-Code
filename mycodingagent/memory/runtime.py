@@ -130,6 +130,10 @@ class MemoryRuntime:
         self._current_turn_summaries: dict[str, dict[str, Any]] = {}
         self._current_turn_summary_calls: int = 0
         self._closed = False
+        # Evaluation and diagnostic callers may use the same 100K window as a
+        # quality reference without allowing the automatic RAW -> virtualized
+        # transition to alter the reference history.
+        self.disable_auto_context_compression = False
         self.start_async_writer()
 
     def start_async_writer(self) -> None:
@@ -391,6 +395,8 @@ class MemoryRuntime:
         current_turn_start: int | None,
         epoch: ContextEpochState,
     ) -> ContextEpochState:
+        if self.disable_auto_context_compression:
+            return epoch
         can_finalize_now = can_finalize_context_rotation(messages, current_turn_start)
         if epoch.status == ContextEpochStatus.PENDING_COMMIT:
             if can_finalize_now:
@@ -980,8 +986,12 @@ class MemoryRuntime:
         )
         mode = self.context_mode(session_id)
         switched = False
-        if mode == ContextMode.RAW and self._should_switch_to_virtualized(
-            raw_snapshot=raw_snapshot,
+        if (
+            mode == ContextMode.RAW
+            and not self.disable_auto_context_compression
+            and self._should_switch_to_virtualized(
+                raw_snapshot=raw_snapshot,
+            )
         ):
             mode = ContextMode.VIRTUALIZED
             switched = True

@@ -10,9 +10,11 @@ from tests.eval.artifacts import (
 )
 from tests.eval.dataset_generators import (
     generate_capability_routing_1200_cases, generate_context_virtualization_cases,
+    generate_context_compression_100k_cases,
     generate_long_term_workflow_cases, generate_prefix_cache_cases,
     generate_runtime_context_virtualization_cases,
 )
+from tests.eval import modern_runner
 from tests.eval.metrics import (
     bootstrap_mean_ci, cache_hit_rate, percentile, reduction_rate, stable_json_hash,
 )
@@ -56,6 +58,45 @@ def test_standard_datasets_have_locked_scale_and_no_exact_capability_ids() -> No
     assert len(routing["queries"]) == 200
     capability_ids = {row["id"] for row in routing["capabilities"]}
     assert all(not any(identifier in query["query"] for identifier in capability_ids) for query in routing["queries"])
+
+
+def test_context_compression_100k_dataset_has_required_scenarios_and_budget() -> None:
+    cases = generate_context_compression_100k_cases()
+    assert len(cases) == 4
+    assert {case["category"] for case in cases} == {
+        "early_tool_fact", "early_user_constraint", "topic_return", "historical_error",
+    }
+    assert all(case["filler_turn_count"] == 36 for case in cases)
+    assert all(case["noise_line_count"] == 750 for case in cases)
+    assert all(case["target_ratio"] == 0.90 for case in cases)
+    assert all(case["compression_full_history"] for case in cases)
+
+
+def test_context_compression_100k_runner_locks_window_and_baseline(monkeypatch, tmp_path: Path) -> None:
+    dataset = tmp_path / "cases.jsonl"
+    dataset.write_text('{"case_id": "one"}\n', encoding="utf-8")
+    captured: dict[str, object] = {}
+
+    monkeypatch.setattr(modern_runner, "RUNS_DIR", tmp_path / "runs")
+    monkeypatch.setattr(modern_runner, "_config", lambda: ("model", "https://example.invalid", "key"))
+    monkeypatch.setattr(modern_runner, "_schemas", lambda: [])
+
+    def fake_benchmark(*args, **kwargs):
+        captured.update(kwargs)
+        return {"status": "insufficient_sample"}, []
+
+    monkeypatch.setattr(modern_runner, "run_runtime_context_virtualization_benchmark", fake_benchmark)
+    monkeypatch.setattr(modern_runner, "complete_metric_run", lambda **kwargs: None)
+
+    summary, run_dir = modern_runner.run_context_compression_100k(
+        dataset=dataset, run_id="test-100k", repeats=2, limit=None,
+    )
+
+    assert run_dir == tmp_path / "runs" / "test-100k" / "context_compression_100k"
+    assert captured["context_window_override"] == 100000
+    assert captured["baseline_trigger_ratio"] == 0.80
+    assert summary["context_window"] == 100000
+    assert summary["baseline_trigger_ratio"] == 0.80
 
 
 def test_public_project_manifest_has_fixed_commits() -> None:

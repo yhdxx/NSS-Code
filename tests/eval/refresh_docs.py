@@ -13,8 +13,7 @@ from tests.eval.metrics import bootstrap_mean_ci
 
 
 CANONICAL_RUNS = {
-    "context_virtualization": "standard-context-20260801",
-    "runtime_context_virtualization": "standard-runtime-context-20260802",
+    "context_compression_100k": "context-compression-100k-20260826-final",
     "prefix_cache": "standard-prefix-20260801",
     "long_term_memory": "standard-ltm-v2-20260801",
     "capability_routing": "standard-routing-batched-20260801",

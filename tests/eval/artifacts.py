@@ -11,6 +11,27 @@ RUNS_DIR = Path("tests/eval/runs")
 DOCS_DIR = Path("docs/eval_metrics")
 
 METRIC_SPECS: dict[str, dict[str, Any]] = {
+    "context_compression_100k": {
+        "title": "100K 上下文压缩策略评测",
+        "definition": "在统一 100K token 上下文窗口中，对比 Raw、当前自然虚拟化与 80% 触发的摘要 + 最近 10 轮策略。",
+        "test_object": [
+            "当前 MemoryRuntime 的工具输出外置、ContextEpoch 和可恢复冷历史渲染链路。",
+            "80% token 压力触发的一次性工程摘要，并保留压缩点最近 10 个用户轮次及后续消息。",
+            "不压缩 Raw 质量参考；所有策略使用相同系统提示和最终工具 schema。",
+        ],
+        "test_plan": [
+            "每条轨迹按项目 token 估算器构造到 90%（约 90K），摘要基线在首次达到 80% 的完整轮次边界压缩。",
+            "当前策略使用真实 MemoryRuntime 和恢复工具；Raw 与摘要基线直接回答可见上下文，不执行恢复工具。",
+            "每个 case/策略重复运行，累计摘要、最终回答和恢复调用的真实 API token；失败不从分母剔除。",
+        ],
+        "formulas": [
+            "任务成功率 = 包含全部预定义答案锚点的运行数 / API 完成运行数",
+            "最终 Prompt 压缩率 = 1 - 候选最终可见 Prompt 估算 token / Raw 最终 Prompt 估算 token",
+            "累计 token 节省率 = 1 - 候选累计 token / 对照累计 token",
+            "缓存命中率 = prompt_cache_hit_tokens / (prompt_cache_hit_tokens + prompt_cache_miss_tokens)",
+        ],
+        "gate": "至少 4 类长会话、每策略 2 次；必须报告摘要与恢复开销。该规模只形成 100K 探索性证据，不作为 1M 直接证明。",
+    },
     "context_virtualization": {
         "title": "上下文虚拟化评测",
         "definition": "比较 raw、virtualized 与 recent_only 在多轮长会话中的任务成功率、历史证据恢复率和输入成本。",
@@ -139,10 +160,18 @@ def render_metric_document(
     else:
         reason = summary.get("reason") or summary.get("annotation_reason") or "评测尚未满足执行条件。"
         resume = f"不可使用量化结论（status={status}）：{reason}"
+    object_lines = []
+    if spec.get("test_object"):
+        object_lines = ["## 测试对象", "", *[f"- {item}" for item in spec["test_object"]], ""]
+    plan_lines = []
+    if spec.get("test_plan"):
+        plan_lines = ["## 测试方案", "", *[f"- {item}" for item in spec["test_plan"]], ""]
     lines = [
         f"# {spec['title']}", "", f"- 状态：`{status}`", f"- 指标 ID：`{metric}`", "",
+        *object_lines,
         "## 指标定义", "", str(spec["definition"]), "",
         "## 计算公式", "", *[f"- {item}" for item in spec["formulas"]], "",
+        *plan_lines,
         "## 数据集与样本", "", _json_block({"sample_count": _sample_count(summary), **hashes}), "",
         "## 测试环境", "", _json_block(environment), "",
         "## 执行命令", "", f"```bash\n{command}\n```", "",
