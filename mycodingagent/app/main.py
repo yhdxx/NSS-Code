@@ -10,6 +10,7 @@ import asyncio  # 导入当前模块需要的依赖。
 import json
 import sys  # 判断标准输入是否为交互式终端，决定是否启用高危命令审批。
 import traceback
+import time
 from pathlib import Path
 from typing import Any, Awaitable
 
@@ -125,6 +126,12 @@ async def main() -> int:  # 定义异步函数，供事件循环调用。
 
 
 async def _run(terminal: TerminalApplication) -> None:
+    startup_started = time.monotonic()
+
+    def startup_progress(message: str) -> None:
+        elapsed = time.monotonic() - startup_started
+        print(f"启动阶段 [{elapsed:6.1f}s] {message}", flush=True)
+
     model_manager = ModelManager()
     config_errors = [
         *model_manager.validation_errors(
@@ -153,6 +160,7 @@ async def _run(terminal: TerminalApplication) -> None:
         print(f"Docker 资源限制提示：{swap_limit_notice}", flush=True)
 
     workspace_root = get_sandbox_root()
+    startup_progress("准备运行时资源（随后会创建工作区容器）")
     media_runtime = MediaModelRuntime(CONFIG.model, sandbox_root=workspace_root)
     network_access = NetworkAccessRuntime(enabled=CONFIG.network.enabled)
     managed_network = ManagedNetworkRuntime(
@@ -172,6 +180,7 @@ async def _run(terminal: TerminalApplication) -> None:
         f"上游代理={managed_network.display_upstream()}，容器直连已禁用。",
         flush=True,
     )
+    startup_progress("托管网络已就绪，检查工作区容器")
     terminal.set_network_enabled(network_access.enabled)
     audio_availability = media_runtime.audio_availability()
     vision_availability = media_runtime.vision_availability()
@@ -200,6 +209,8 @@ async def _run(terminal: TerminalApplication) -> None:
         workspace_runtime_error = await workspace_runtime.ensure_container()
     if workspace_runtime_error:
         print(f"工作区运行容器未就绪：{workspace_runtime_error}", flush=True)
+    else:
+        startup_progress("工作区运行容器已就绪")
     web_fetch_runtime = WebFetchRuntime(
         CONFIG.web_fetch,
         network_access=network_access,
@@ -343,7 +354,12 @@ async def _run(terminal: TerminalApplication) -> None:
         registry=registry,
         summary_provider_getter=model_manager.active_provider,
     )  # 结束上方的多行结构。
-    await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_skill/skill 工具执行入口。
+    startup_progress("同步 Skill 索引（可能包含首次向量索引）")
+    skill_report = await skill_runtime.initialize()  # 启动时同步 SKILL，并注册 search_skill/skill 工具执行入口。
+    startup_progress(
+        "Skill 索引已就绪"
+        + ("（已同步变更）" if skill_report.changed else "")
+    )
     if long_term_memory_runtime is not None:
         long_term_memory_runtime.set_skill_materializer(skill_runtime.materialize_dynamic_skill)
     mcp_manager: MCPClientManager | None = None
@@ -372,6 +388,7 @@ async def _run(terminal: TerminalApplication) -> None:
             workspace_root=workspace_root,
         )
         try:
+            startup_progress("初始化 MCP Server（每个 Server 有独立超时）")
             await mcp_manager.initialize()
         except ValueError as exc:
             print(f"MCP 配置错误：{exc}", flush=True)
@@ -462,6 +479,7 @@ async def _run(terminal: TerminalApplication) -> None:
         long_term_memory_runtime.schedule_startup_backfill()
 
     terminal.mark_ready()
+    startup_progress("启动完成，等待输入")
     terminal.bind_shift_tab_handler(
         lambda: _exit_plan_mode_from_terminal(plan_runtime)
     )
